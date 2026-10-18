@@ -5,6 +5,7 @@
 #   uniloader-<version>-win64.zip            dwmapi.dll, plugins/
 #   uniloader-overlay-<version>-win64.zip    overlay.dll
 #   uniloader-lua-bridge-<version>-win64.zip lua_bridge.dll
+#   uniloader.dll, overlay.dll, lua_bridge.dll   as built, for the manual install (renaming)
 #   SHA256SUMS
 #
 # Extracting the first into a game's exe folder is a complete install in the standard layout
@@ -41,6 +42,7 @@ lua="uniloader-lua-bridge-$version-win64.zip"
 echo "dist/$loader: dwmapi.dll (uniloader.dll), plugins/"
 echo "dist/$overlay: overlay.dll"
 echo "dist/$lua: lua_bridge.dll"
+echo "dist/: uniloader.dll, overlay.dll, lua_bridge.dll"
 (( CHECK )) && exit 0
 
 stage="$(mktemp -d)"
@@ -51,9 +53,13 @@ cp -- "$RELEASE/overlay.dll" "$stage/overlay/"
 cp -- "$RELEASE/lua_bridge.dll" "$stage/lua/"
 
 rm -f -- "$DIST/$loader" "$DIST/$overlay" "$DIST/$lua" "$DIST/SHA256SUMS"
+dlls=(uniloader.dll overlay.dll lua_bridge.dll)
+for dll in "${dlls[@]}"; do
+    cp -- "$RELEASE/$dll" "$DIST/$dll"
+done
 # -X: no extra file attributes (Unix owners, extended timestamps), which Windows ignores.
 (cd "$stage/loader" && zip -qrX "$DIST/$loader" dwmapi.dll plugins)
 (cd "$stage/overlay" && zip -qX "$DIST/$overlay" overlay.dll)
 (cd "$stage/lua" && zip -qX "$DIST/$lua" lua_bridge.dll)
-(cd "$DIST" && sha256sum "$loader" "$overlay" "$lua" > SHA256SUMS)
+(cd "$DIST" && sha256sum "$loader" "$overlay" "$lua" "${dlls[@]}" > SHA256SUMS)
 cat "$DIST/SHA256SUMS"
