@@ -2,6 +2,7 @@
 
 use core::ffi::c_void;
 
+use crate::registry::{GuardedFn, HotkeyInfoFn, PluginEntryFn, ServiceInfo, SettingInfoFn};
 use crate::types::{
     ArgEntry, Bytes, CommandDesc, EnvEntry, HotkeyDesc, LogLevel, PluginHandle, PluginState,
     SettingDesc, Status, Str,
@@ -190,4 +191,65 @@ pub struct HostApi {
     /// Returns [`Status::NOT_FOUND`] for an unknown id or one belonging to another plugin.
     pub hook_remove:
         unsafe extern "C" fn(host: *mut c_void, plugin: PluginHandle, id: u64) -> Status,
+
+    /// Every started plugin, then every plugin waiting for a dependency, then the `.asi`
+    /// files and chain-loaded libraries, each handed to `sink` once.
+    pub plugin_enumerate: unsafe extern "C" fn(
+        host: *mut c_void,
+        sink: Option<PluginEntryFn>,
+        ctx: *mut c_void,
+    ) -> Status,
+    /// Every setting of the plugin named `plugin_name`, or of all plugins when it is empty.
+    pub setting_enumerate: unsafe extern "C" fn(
+        host: *mut c_void,
+        plugin_name: Str,
+        sink: Option<SettingInfoFn>,
+        ctx: *mut c_void,
+    ) -> Status,
+    /// Every hotkey action.
+    pub hotkey_enumerate: unsafe extern "C" fn(
+        host: *mut c_void,
+        sink: Option<HotkeyInfoFn>,
+        ctx: *mut c_void,
+    ) -> Status,
+    /// Bind any plugin's hotkey action (qualified name) to `binding` in key grammar, which
+    /// may list several chords separated by commas; empty unbinds it. Saved to
+    /// `hotkeys.toml`; a binding equal to the default removes the override.
+    pub hotkey_rebind: unsafe extern "C" fn(
+        host: *mut c_void,
+        plugin: PluginHandle,
+        name: Str,
+        binding: Str,
+    ) -> Status,
+
+    /// Provide a service: a function table other plugins look up by `name`
+    /// (`[a-z0-9_.-]+`). `table` must stay valid for the life of the process. Returns
+    /// [`Status::ALREADY_EXISTS`] when another plugin provides that name.
+    pub service_register: unsafe extern "C" fn(
+        host: *mut c_void,
+        plugin: PluginHandle,
+        name: Str,
+        version: u32,
+        table: *const c_void,
+    ) -> Status,
+    /// Look a service up. Returns [`Status::NOT_FOUND`] when nobody provides it or its
+    /// provider is not running. `out.struct_size` must be set by the caller.
+    pub service_get: unsafe extern "C" fn(
+        host: *mut c_void,
+        plugin: PluginHandle,
+        name: Str,
+        out: *mut ServiceInfo,
+    ) -> Status,
+    /// Run `f(ctx)` on behalf of plugin `target` under the loader's fault guard.
+    ///
+    /// For a service calling back into a consumer: a panic or hardware fault inside `f`
+    /// disables `target`, exactly as if a loader callback had faulted, and returns
+    /// [`Status::ERROR`]. Returns [`Status::NOT_FOUND`] without calling `f` when `target` is
+    /// not running.
+    pub guarded_call: unsafe extern "C" fn(
+        host: *mut c_void,
+        target: PluginHandle,
+        f: Option<GuardedFn>,
+        ctx: *mut c_void,
+    ) -> Status,
 }

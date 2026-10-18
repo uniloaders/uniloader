@@ -75,8 +75,8 @@ pub struct PluginRef(pub(crate) PluginHandle);
 /// The loader, as seen by one plugin. Cheap to copy; valid for the plugin's lifetime.
 #[derive(Clone, Copy)]
 pub struct Host {
-    api: &'static HostApi,
-    handle: PluginHandle,
+    pub(crate) api: &'static HostApi,
+    pub(crate) handle: PluginHandle,
 }
 
 // SAFETY: the loader documents every HostApi function as thread safe, and the table itself

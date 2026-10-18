@@ -22,10 +22,15 @@ use core::ffi::c_void;
 
 mod callbacks;
 mod host;
+mod registry;
 mod types;
 
 pub use callbacks::PluginCallbacks;
 pub use host::{HostApi, LineFn, ReplyFn};
+pub use registry::{
+    GuardedFn, HotkeyInfo, HotkeyInfoFn, ModuleKind, PluginEntry, PluginEntryFn, ServiceInfo,
+    SettingInfo, SettingInfoFn,
+};
 pub use types::{
     ArgEntry, Bytes, CommandDesc, Dependency, DependencyKind, EnvEntry, HotkeyDesc, LogLevel,
     PluginHandle, PluginInfo, PluginState, SettingDesc, SettingFlags, SettingKind, Status,
@@ -54,7 +59,10 @@ pub type StopFn = unsafe extern "C" fn(*mut c_void, StopReason);
 
 /// Topics the loader itself publishes, under the reserved `loader.` namespace.
 pub mod topics {
-    /// A plugin changed state. Payload: the plugin's name, a NUL, then its
-    /// [`PluginState`](crate::PluginState) as a little-endian `u32`.
+    /// A plugin changed state: it started, was paused or resumed, stopped or faulted.
+    /// Payload: its [`PluginHandle`](crate::PluginHandle) and its
+    /// [`PluginState`](crate::PluginState), each a little-endian `u32`, then its name.
+    ///
+    /// Services use it to forget what a stopped consumer registered with them.
     pub const PLUGIN_STATE: &str = "loader.plugin_state";
 }

@@ -7,6 +7,7 @@ members = [
     "crates/uniloader",
     "examples/hello-plugin",
     "examples/smoke-host",
+    "examples/kitchen-sink",
     "plugins/lua-bridge",
 ]
 

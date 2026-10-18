@@ -14,6 +14,7 @@ mod dispatch;
 mod foreign;
 mod guard;
 mod hostapi;
+mod hostapi_registry;
 mod input;
 mod lifecycle;
 mod plugin_hooks;

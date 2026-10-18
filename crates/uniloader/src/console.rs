@@ -128,6 +128,15 @@ fn list_plugins(state: &mut State) -> Outcome {
         };
         format!("  {}{version} ({}) {}", f.name, f.file, f.kind)
     }));
+    let services: Vec<String> = state
+        .services
+        .iter()
+        .map(|(name, s)| {
+            let provider = state.plugin(s.provider).map_or("?", |p| p.name());
+            format!("service {name} v{} from {provider}", s.version)
+        })
+        .collect();
+    lines.extend(services);
     print_all(state, lines, "no plugins loaded")
 }
 
@@ -418,6 +427,11 @@ mod tests {
         });
         execute(&mut s, None, "plugins");
         assert_eq!(last(&s), "  UE4SS 3.0.1 (ue4ss/UE4SS.dll) library");
+        let vr = s.find_plugin("vr").unwrap_or(PluginHandle::NONE);
+        s.register_service(vr, "overlay", 2, 0x10)
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        execute(&mut s, None, "plugins");
+        assert_eq!(last(&s), "service overlay v2 from vr");
         let _ = std::fs::remove_dir_all(&s.paths.game_dir);
     }
 

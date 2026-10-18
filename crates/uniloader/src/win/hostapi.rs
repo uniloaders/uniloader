@@ -21,6 +21,7 @@ use crate::config::Paths;
 use crate::process::Process;
 use crate::state::CommandInfo;
 
+use super::hostapi_registry as registry;
 use super::{console, plugin_hooks, plugins, state};
 
 /// Owned backing storage for every string the table hands out. Leaked once at startup so
@@ -114,6 +115,13 @@ pub(crate) fn build(paths: &Paths, process: &Process) -> &'static HostApi {
         hook_vtable,
         hook_detour,
         hook_remove,
+        plugin_enumerate: registry::plugin_enumerate,
+        setting_enumerate: registry::setting_enumerate,
+        hotkey_enumerate: registry::hotkey_enumerate,
+        hotkey_rebind: registry::hotkey_rebind,
+        service_register: registry::service_register,
+        service_get: registry::service_get,
+        guarded_call: registry::guarded_call,
     }))
 }
 

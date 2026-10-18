@@ -8,10 +8,10 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use uniloader_api::{PluginHandle, Status};
-use uniloader_core::{hotkeys, names, settings, store};
+use uniloader_core::{hotkeys, keys, names, settings, store};
 
 use crate::config::{LoaderConfig, Paths};
-use crate::scrollback;
+use crate::{scrollback, services};
 
 /// Lines the console keeps for display.
 pub const CONSOLE_HISTORY: usize = 500;
@@ -128,6 +128,8 @@ pub struct State {
     pub pending: Vec<(String, String)>,
     /// Loaded DLLs that are not plugins, in load order.
     pub foreign: Vec<Foreign>,
+    /// Services plugins provide to each other.
+    pub services: services::Registry,
     /// Recent console output and log records, oldest first.
     pub console: VecDeque<scrollback::Line>,
     /// How many lines the console has ever held.
@@ -170,6 +172,7 @@ impl State {
             phase: Phase::Idle,
             pending: Vec::new(),
             foreign: Vec::new(),
+            services: services::Registry::default(),
             console: VecDeque::new(),
             console_printed: 0,
             hook_lines: no_hooks,
@@ -408,6 +411,66 @@ impl State {
             .collect()
     }
 
+    /// Register a service for a running or starting plugin.
+    ///
+    /// # Errors
+    /// See [`services::Registry::register`]; [`Status::NOT_FOUND`] for an unknown plugin.
+    pub fn register_service(
+        &mut self,
+        plugin: PluginHandle,
+        name: &str,
+        version: u32,
+        table: usize,
+    ) -> Result<(), Status> {
+        self.plugin(plugin).ok_or(Status::NOT_FOUND)?;
+        self.services.register(
+            name,
+            services::Service {
+                provider: plugin,
+                version,
+                table,
+            },
+        )
+    }
+
+    /// The service registered under `name`, if its provider is running.
+    #[must_use]
+    pub fn service(&self, name: &str) -> Option<services::Service> {
+        self.services
+            .get(name)
+            .filter(|s| self.plugin(s.provider).is_some_and(|p| p.enabled))
+    }
+
+    /// Bind a hotkey action to `binding` (key grammar, chords separated by commas; empty
+    /// unbinds) and save it to `hotkeys.toml`. A binding equal to the default removes the
+    /// override, so a changed default still reaches the user later.
+    ///
+    /// # Errors
+    /// [`Status::NOT_FOUND`] for an unknown action, [`Status::INVALID_ARGUMENT`] for a
+    /// binding that does not parse.
+    pub fn rebind_hotkey(&mut self, name: &str, binding: &str) -> Result<(), Status> {
+        let chords = keys::parse_list(binding).map_err(|_| Status::INVALID_ARGUMENT)?;
+        let default = self
+            .hotkeys
+            .iter()
+            .find(|e| e.name == name)
+            .map(hotkeys::Entry::default_binding)
+            .ok_or(Status::NOT_FOUND)?;
+        let canonical = keys::format_list(&chords);
+        if !self.hotkeys.rebind_all(name, chords) {
+            return Err(Status::NOT_FOUND);
+        }
+        if canonical == default {
+            self.hotkey_overrides.remove(name);
+        } else {
+            self.hotkey_overrides.insert(name.to_owned(), canonical);
+        }
+        if let Err(e) = store::write(&self.paths.hotkeys_file(), &self.hotkey_overrides) {
+            log::error!("could not save hotkeys: {e}");
+        }
+        Ok(())
+    }
+
     /// Note that a plugin is waiting for a dependency, replacing any earlier note.
     pub fn set_pending(&mut self, plugin: &str, reason: &str) {
         self.pending.retain(|(name, _)| name != plugin);
@@ -644,6 +707,44 @@ pub(crate) mod tests {
         }
         assert_eq!(s.subscribers(a, "pose"), vec![b]);
         assert_eq!(s.subscribers(a, "other"), Vec::<PluginHandle>::new());
+    }
+
+    #[test]
+    fn services_need_a_running_provider() {
+        let mut s = state();
+        let a = started(&mut s, "a");
+        assert_eq!(s.register_service(a, "overlay", 1, 0x10), Ok(()));
+        assert_eq!(
+            s.register_service(PluginHandle(9), "x", 1, 0x10),
+            Err(Status::NOT_FOUND)
+        );
+        assert_eq!(s.service("overlay"), None, "not running yet");
+        s.set_enabled(a, true);
+        assert_eq!(s.service("overlay").map(|x| x.table), Some(0x10));
+        s.set_enabled(a, false);
+        assert_eq!(s.service("overlay"), None, "paused provider");
+    }
+
+    #[test]
+    fn rebinding_persists_only_differences_from_the_default() {
+        let mut s = state();
+        let a = started(&mut s, "a");
+        s.register_hotkey(a, "go", "Go", "f5")
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        assert_eq!(s.rebind_hotkey("a.go", "ctrl+f6, f7"), Ok(()));
+        assert_eq!(s.hotkey_overrides["a.go"], "ctrl+f6, f7");
+        assert_eq!(
+            store::read(&s.paths.hotkeys_file()).unwrap_or_default()["a.go"],
+            "ctrl+f6, f7"
+        );
+        assert_eq!(s.rebind_hotkey("a.go", "f5"), Ok(()));
+        assert!(!s.hotkey_overrides.contains_key("a.go"));
+        assert_eq!(s.rebind_hotkey("a.nope", "f5"), Err(Status::NOT_FOUND));
+        assert_eq!(
+            s.rebind_hotkey("a.go", "nokey"),
+            Err(Status::INVALID_ARGUMENT)
+        );
+        let _ = std::fs::remove_dir_all(&s.paths.game_dir);
     }
 
     #[test]

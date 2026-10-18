@@ -1,0 +1,125 @@
+//! What the loader knows, as plugins can ask for it: the loaded modules, every setting, every
+//! hotkey, and the services plugins provide to each other.
+//!
+//! Enumeration hands each entry to a sink callback while the call is on the stack; the
+//! strings in an entry are valid for that one sink call only.
+
+use core::ffi::c_void;
+
+use crate::types::{PluginHandle, PluginState, SettingFlags, SettingKind, Str};
+
+/// What kind of module a [`PluginEntry`] describes.
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModuleKind(pub u32);
+
+impl ModuleKind {
+    /// A uniloader plugin.
+    pub const PLUGIN: ModuleKind = ModuleKind(0);
+    /// An `.asi` file from the plugin directory. Never called, only listed.
+    pub const ASI: ModuleKind = ModuleKind(1);
+    /// A library chain-loaded through `loader.toml`'s `load` list, such as UE4SS.
+    pub const LIBRARY: ModuleKind = ModuleKind(2);
+}
+
+/// One module the loader loaded, or one plugin waiting for a dependency.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct PluginEntry {
+    /// `size_of::<PluginEntry>()` as compiled into the loader.
+    pub struct_size: usize,
+    /// Handle, or [`PluginHandle::NONE`] for anything that is not a started plugin.
+    pub handle: PluginHandle,
+    /// What it is.
+    pub kind: ModuleKind,
+    /// Plugin state; [`PluginState::RUNNING`] for `.asi` files and libraries.
+    pub state: PluginState,
+    /// Unique plugin name, or the file stem for other modules.
+    pub name: Str,
+    /// Human readable name.
+    pub title: Str,
+    /// Version text; for other modules the product version of their version resource.
+    pub version: Str,
+    /// Authors, comma separated.
+    pub authors: Str,
+    /// One-line description, or why a waiting plugin waits.
+    pub description: Str,
+    /// File, relative to the game directory.
+    pub file: Str,
+}
+
+/// Receives one [`PluginEntry`].
+pub type PluginEntryFn = unsafe extern "C" fn(ctx: *mut c_void, entry: *const PluginEntry);
+
+/// One registered setting with its current value.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct SettingInfo {
+    /// `size_of::<SettingInfo>()` as compiled into the loader.
+    pub struct_size: usize,
+    /// Owning plugin's name.
+    pub plugin: Str,
+    /// Key within the plugin; the console name is `<plugin>.<key>`.
+    pub key: Str,
+    /// Short label.
+    pub title: Str,
+    /// Longer help text.
+    pub description: Str,
+    /// Value type.
+    pub kind: SettingKind,
+    /// Default value as text.
+    pub default: Str,
+    /// Lower bound for numeric kinds.
+    pub min: f64,
+    /// Upper bound for numeric kinds.
+    pub max: f64,
+    /// `|`-separated choices for enum settings.
+    pub choices: Str,
+    /// Flags from the descriptor.
+    pub flags: SettingFlags,
+    /// Current value as text.
+    pub value: Str,
+}
+
+/// Receives one [`SettingInfo`].
+pub type SettingInfoFn = unsafe extern "C" fn(ctx: *mut c_void, setting: *const SettingInfo);
+
+/// One hotkey action and what it is bound to.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct HotkeyInfo {
+    /// `size_of::<HotkeyInfo>()` as compiled into the loader.
+    pub struct_size: usize,
+    /// Qualified action name, `<plugin>.<action>`.
+    pub name: Str,
+    /// Short label.
+    pub title: Str,
+    /// Current binding in key grammar, empty when unbound.
+    pub binding: Str,
+    /// The binding the plugin asked for.
+    pub default_binding: Str,
+}
+
+/// Receives one [`HotkeyInfo`].
+pub type HotkeyInfoFn = unsafe extern "C" fn(ctx: *mut c_void, hotkey: *const HotkeyInfo);
+
+/// A service a plugin provides: a function table under a name, with a version.
+///
+/// The table's layout is a contract between the provider and its consumers, usually written
+/// down as a small client crate; the loader only stores the pointer. A consumer declares a
+/// plugin dependency on the provider so it starts after it, then looks the service up.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct ServiceInfo {
+    /// `size_of::<ServiceInfo>()` as compiled into the caller.
+    pub struct_size: usize,
+    /// The table. Valid for the life of the process; the provider's DLL is never unloaded.
+    pub table: *const c_void,
+    /// Version the provider registered. Same major number, same layout prefix.
+    pub version: u32,
+    /// The providing plugin.
+    pub provider: PluginHandle,
+}
+
+/// Function run by [`crate::HostApi::guarded_call`].
+pub type GuardedFn = unsafe extern "C" fn(ctx: *mut c_void);

@@ -26,7 +26,7 @@ for arg in "$@"; do
 done
 
 if (( BUILD )); then
-    distrobox enter build-box -- bash -c "export PATH=/opt/rust/cargo/bin:\$PATH RUSTUP_HOME=/opt/rust/rustup CARGO_HOME=\$HOME/.cargo; cd '$ROOT' && nice -n 10 cargo xwin build --release --target $TARGET -p uniloader -p hello-plugin -p lua-bridge -p smoke-host"
+    distrobox enter build-box -- bash -c "export PATH=/opt/rust/cargo/bin:\$PATH RUSTUP_HOME=/opt/rust/rustup CARGO_HOME=\$HOME/.cargo; cd '$ROOT' && nice -n 10 cargo xwin build --release --target $TARGET -p uniloader -p hello-plugin -p lua-bridge -p kitchen-sink -p smoke-host"
 fi
 
 WINE="${SMOKE_WINE:-$(ls -d "$HOME"/.local/share/Steam/compatibilitytools.d/GE-Proton*/files/bin/wine 2>/dev/null | sort -V | tail -1)}"
@@ -40,7 +40,7 @@ mkdir -p "$STAGE/plugins" "$STAGE/extra" "$STAGE/uniloader/config"
 rm -rf "$STAGE/uniloader/logs"
 cp "$OUT/smoke-host.exe" "$STAGE/"
 cp "$OUT/uniloader.dll" "$STAGE/version.dll"
-cp "$OUT/hello.dll" "$OUT/lua_bridge.dll" "$STAGE/plugins/"
+cp "$OUT/hello.dll" "$OUT/lua_bridge.dll" "$OUT/kitchen_sink.dll" "$STAGE/plugins/"
 mkdir -p "$STAGE/plugins/lua"
 cat > "$STAGE/plugins/lua/smoke.lua" <<'LUA'
 uniloader.setting("speed", "Speed", 2.5, function(v) uniloader.log("speed now " .. v) end)
@@ -70,7 +70,9 @@ grep -q '^forwarded' "$STAGE/run.log" || { echo "FAIL: version.dll call was not 
 [[ -n "$log" ]] || { echo "FAIL: the loader wrote no log"; fail=1; }
 if [[ -n "$log" ]]; then
     grep -q 'proxy for version.dll' "$log" || { echo "FAIL: proxy summary missing"; fail=1; }
-    grep -q '2 of 2 plugins running' "$log" || { echo "FAIL: hello and lua did not both start"; fail=1; }
+    grep -q '3 of 3 plugins running' "$log" || { echo "FAIL: not every plugin started"; fail=1; }
+    grep -qE 'kitchen self-test: [0-9]+ passed, 0 failed' "$log" \
+        || { echo "FAIL: the kitchen sink self-test failed or did not run"; fail=1; }
     grep -q 'lua smoke: version .* get ok=true -> lua.speed = 2.5' "$log" \
         || { echo "FAIL: the Lua script did not run or could not read its setting"; fail=1; }
     grep -q 'loaded asi plugins/standin.asi' "$log" || { echo "FAIL: .asi not loaded"; fail=1; }

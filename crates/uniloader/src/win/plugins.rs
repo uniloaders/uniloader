@@ -18,8 +18,8 @@ use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::sync::Mutex;
 
 use uniloader_api::{
-    DescribeFn, PluginCallbacks, PluginHandle, StartFn, Status, StopFn, StopReason, API_VERSION,
-    DESCRIBE_EXPORT, START_EXPORT, STOP_EXPORT,
+    topics, DescribeFn, PluginCallbacks, PluginHandle, PluginState, StartFn, Status, StopFn,
+    StopReason, API_VERSION, DESCRIBE_EXPORT, START_EXPORT, STOP_EXPORT,
 };
 use uniloader_core::deps::{self, Candidate, PluginReq};
 use windows::core::{PCSTR, PCWSTR};
@@ -77,13 +77,21 @@ pub(crate) fn active() -> &'static [&'static Active] {
 /// it at this exact moment, and one leaked vector of references per load is nothing against
 /// the cost of making dispatch take a lock.
 fn publish(plugins: Vec<Active>) {
-    let _guard = PUBLISH
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mut combined: Vec<&'static Active> = active().to_vec();
-    combined.extend(plugins.into_iter().map(|p| &*Box::leak(Box::new(p))));
-    let boxed = Box::into_raw(Box::new(combined));
-    ACTIVE.store(boxed, Ordering::Release);
+    let started: Vec<(PluginHandle, String)> =
+        plugins.iter().map(|p| (p.handle, p.name.clone())).collect();
+    {
+        let _guard = PUBLISH
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut combined: Vec<&'static Active> = active().to_vec();
+        combined.extend(plugins.into_iter().map(|p| &*Box::leak(Box::new(p))));
+        let boxed = Box::into_raw(Box::new(combined));
+        ACTIVE.store(boxed, Ordering::Release);
+    }
+    // After publishing, so a subscriber reacting to the event can already find the plugin.
+    for (handle, name) in started {
+        announce(handle, &name, PluginState::RUNNING);
+    }
 }
 
 /// Find a started plugin by handle.
@@ -94,6 +102,34 @@ pub(crate) fn find(handle: PluginHandle) -> Option<&'static Active> {
 /// Find a started plugin by name.
 pub(crate) fn find_by_name(name: &str) -> Option<&'static Active> {
     active().iter().copied().find(|p| p.name == name)
+}
+
+/// Run `body` on behalf of `target` under the fault guard, disabling `target` if it faults.
+pub(crate) fn guarded(target: PluginHandle, body: impl FnOnce()) -> Status {
+    let Some(plugin) = find(target).filter(|p| p.is_enabled()) else {
+        return Status::NOT_FOUND;
+    };
+    // SAFETY: the caller passes a closure performing one call into `target`; the guard
+    // contains a fault inside it.
+    match unsafe { super::guard::call(body) } {
+        Ok(()) => Status::OK,
+        Err(fault) => {
+            plugin.disable(&format!("service callback {fault}"));
+            Status::ERROR
+        }
+    }
+}
+
+/// Publish `loader.plugin_state` for one plugin. Never called with the state lock held.
+fn announce(handle: PluginHandle, name: &str, plugin_state: PluginState) {
+    let mut payload = Vec::with_capacity(8 + name.len());
+    payload.extend_from_slice(&handle.0.to_le_bytes());
+    payload.extend_from_slice(&plugin_state.0.to_le_bytes());
+    payload.extend_from_slice(name.as_bytes());
+    // Including the plugin itself: seeing its own `RUNNING` is how a plugin learns that
+    // start is over and the others are up.
+    let targets = super::state().subscribers(PluginHandle::NONE, topics::PLUGIN_STATE);
+    deliver_event(PluginHandle::NONE, &targets, topics::PLUGIN_STATE, &payload);
 }
 
 impl Active {
@@ -109,6 +145,7 @@ impl Active {
             super::state().set_enabled(self.handle, true);
             // After the atomic, so the plugin may already act on frames from here on.
             super::dispatch::enabled(self, true);
+            announce(self.handle, &self.name, PluginState::RUNNING);
         }
         changed
     }
@@ -121,6 +158,7 @@ impl Active {
                 self.name
             );
             super::state().set_enabled(self.handle, false);
+            announce(self.handle, &self.name, PluginState::FAULTED);
         }
     }
 
@@ -136,6 +174,7 @@ impl Active {
         let changed = self.enabled.swap(false, Ordering::Relaxed);
         if changed {
             super::state().set_enabled(self.handle, false);
+            announce(self.handle, &self.name, PluginState::DISABLED);
         }
         changed
     }
@@ -154,6 +193,7 @@ impl Active {
             }
         }
         super::plugin_hooks::remove_all(self.handle, &self.name);
+        announce(self.handle, &self.name, PluginState::STOPPED);
     }
 }
 

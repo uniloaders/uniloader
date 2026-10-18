@@ -1,0 +1,19 @@
+[package]
+name = "kitchen-sink"
+description = "A uniloader plugin that exercises every host function and checks the results."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "kitchen_sink"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+uniloader-sdk.workspace = true
+log.workspace = true
+
+[lints]
+workspace = true

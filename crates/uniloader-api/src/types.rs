@@ -326,4 +326,17 @@ impl PluginState {
     pub const STOPPED: PluginState = PluginState(3);
     /// A callback panicked or faulted; delivery stopped for good.
     pub const FAULTED: PluginState = PluginState(4);
+
+    /// Lower-case name for logs and listings; `unknown` for a value a newer loader added.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self.0 {
+            0 => "waiting",
+            1 => "running",
+            2 => "disabled",
+            3 => "stopped",
+            4 => "faulted",
+            _ => "unknown",
+        }
+    }
 }
