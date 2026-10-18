@@ -42,6 +42,14 @@ pub(crate) fn target(
 ) -> windows::core::Result<Target> {
     // SAFETY: `swapchain` is a live swapchain; buffer 0 always exists.
     let backbuffer: ID3D11Texture2D = unsafe { swapchain.GetBuffer(0) }?;
+    target_of(&backbuffer, device)
+}
+
+/// A render target view for `backbuffer`, as [`target`] makes it.
+pub(crate) fn target_of(
+    backbuffer: &ID3D11Texture2D,
+    device: &ID3D11Device,
+) -> windows::core::Result<Target> {
     let mut desc = D3D11_TEXTURE2D_DESC::default();
     // SAFETY: `backbuffer` is a live texture and `desc` is a valid out-pointer.
     unsafe { backbuffer.GetDesc(&raw mut desc) };
@@ -56,7 +64,7 @@ pub(crate) fn target(
     // SAFETY: the texture and the descriptor are both valid, and `view` is a valid
     // out-pointer for the created view.
     unsafe {
-        device.CreateRenderTargetView(&backbuffer, Some(&raw const view_desc), Some(&raw mut view))
+        device.CreateRenderTargetView(backbuffer, Some(&raw const view_desc), Some(&raw mut view))
     }?;
     view.map(|view| Target {
         view,

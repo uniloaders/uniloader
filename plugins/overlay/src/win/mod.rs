@@ -1,10 +1,12 @@
-//! The Windows half: the DXGI hook, the `Direct3D` 11 renderer, window input and clipboard.
+//! The Windows half: the DXGI hook, the `Direct3D` 11 renderer (also over `Direct3D` 12),
+//! window input and clipboard.
 //!
 //! Everything that touches the device runs on the thread that calls `Present`, which is why
 //! the renderer lives in a thread local: the immediate context is not thread safe, and this
 //! way nothing else can reach it.
 
 mod clipboard;
+mod d3d12;
 mod hooks;
 mod render;
 mod wnd;
@@ -24,8 +26,20 @@ use windows::Win32::Graphics::Dxgi::{IDXGISwapChain, DXGI_PRESENT_TEST, DXGI_SWA
 use crate::ui::{calls, FrameInput, Gui};
 use crate::{registry, shared};
 
-/// Set once a swapchain turned out not to be `Direct3D` 11, so it is said once.
-static NOT_D3D11: AtomicBool = AtomicBool::new(false);
+/// Set once a swapchain turned out to be neither `Direct3D` 11 nor 12, so it is said once.
+static UNKNOWN_DEVICE: AtomicBool = AtomicBool::new(false);
+/// Set once `Direct3D` 11 on 12 failed: it is not tried again.
+static ON12_FAILED: AtomicBool = AtomicBool::new(false);
+/// Set once a swapchain this overlay can draw on was presented, and said through the
+/// `drawing` setting.
+static DRAWABLE: AtomicBool = AtomicBool::new(false);
+
+/// Says through the `drawing` setting whether the overlay draws in this game.
+fn announce(host: &Host, drawing: bool) {
+    if let Err(e) = host.set("drawing", if drawing { "true" } else { "false" }) {
+        log::debug!("could not set drawing: {e}");
+    }
+}
 
 thread_local! {
     /// The renderer, made on the first frame that needs it.
@@ -39,8 +53,16 @@ thread_local! {
 struct Overlay {
     gui: Gui,
     renderer: egui_directx11::Renderer,
-    device: ID3D11Device,
+    backend: Backend,
     started: Instant,
+}
+
+/// What the renderer draws with.
+enum Backend {
+    /// The game's own `Direct3D` 11 device.
+    D3D11(ID3D11Device),
+    /// A `Direct3D` 11 device over the game's `Direct3D` 12 queue.
+    D3D12(d3d12::On12),
 }
 
 /// Hook DXGI. Called from the plugin's `start`.
@@ -67,6 +89,12 @@ pub(crate) fn frame(swapchain: *mut c_void, sync_interval: u32, flags: u32) {
     IN_FRAME.with(|f| f.set(true));
     // The game's own code is below us: a panic unwinding into it would abort the process.
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if !DRAWABLE.load(Ordering::Relaxed)
+            && (render::device_of(&chain).is_some() || d3d12::device_of(&chain).is_some())
+        {
+            DRAWABLE.store(true, Ordering::Relaxed);
+            announce(host, true);
+        }
         let desc = describe(&chain);
         wnd::subclass(desc.OutputWindow.0);
         subscribers(host, &chain, &desc, (sync_interval, flags));
@@ -129,64 +157,121 @@ fn draw(host: &Host, slot: &mut Option<Overlay>, chain: &IDXGISwapChain) {
 
 /// Build the renderer from the device behind the swapchain.
 fn create(chain: &IDXGISwapChain) -> Option<Overlay> {
-    let Some(device) = render::device_of(chain) else {
-        if !NOT_D3D11.swap(true, Ordering::Relaxed) {
-            log::warn!("the game's swapchain is not Direct3D 11; the overlay is not drawn");
+    let (backend, device) = if let Some(device) = render::device_of(chain) {
+        (Backend::D3D11(device.clone()), device)
+    } else if let Some(device12) = d3d12::device_of(chain) {
+        if ON12_FAILED.load(Ordering::Relaxed) {
+            return None;
+        }
+        match d3d12::On12::create(&device12) {
+            // The game has not executed on a direct queue yet.
+            Ok(None) => return None,
+            Ok(Some(on12)) => {
+                let device = on12.device.clone();
+                (Backend::D3D12(on12), device)
+            }
+            Err(e) => {
+                ON12_FAILED.store(true, Ordering::Relaxed);
+                log::warn!("no Direct3D 11 on 12 ({e}); the overlay is not drawn");
+                if let Some(host) = crate::host() {
+                    announce(host, false);
+                }
+                return None;
+            }
+        }
+    } else {
+        if !UNKNOWN_DEVICE.swap(true, Ordering::Relaxed) {
+            log::warn!(
+                "the game's swapchain is neither Direct3D 11 nor 12; the overlay is not drawn"
+            );
         }
         return None;
     };
     let renderer = egui_directx11::Renderer::new(&device)
         .inspect_err(|e| log::error!("could not create the overlay renderer: {e}"))
         .ok()?;
-    log::info!("overlay ready");
+    let api = match backend {
+        Backend::D3D11(_) => "Direct3D 11",
+        Backend::D3D12(_) => "Direct3D 12, through 11 on 12",
+    };
+    log::info!("overlay ready ({api})");
     Some(Overlay {
         gui: Gui::new(),
         renderer,
-        device,
+        backend,
         started: Instant::now(),
     })
 }
 
 impl Overlay {
     fn draw(&mut self, host: &Host, chain: &IDXGISwapChain) -> windows::core::Result<()> {
-        let target = render::target(chain, &self.device)?;
-        let Some(context) = render::context(&self.device) else {
-            return Ok(());
-        };
-        #[allow(clippy::cast_precision_loss, reason = "pixel sizes")]
-        let (width, height) = (target.size.0 as f32, target.size.1 as f32);
-        self.gui.rescale(height);
-        wnd::set_screen(width, height);
-        let raw = wnd::take_input(
-            Rect::from_min_size(Pos2::ZERO, Vec2::new(width, height)),
-            self.started.elapsed().as_secs_f64(),
-        );
-        let pressed = if self.gui.recording() {
-            wnd::take_last_key()
-        } else {
-            // Not wanted, but taken anyway, so a key pressed long ago does not end the next
-            // recording the moment it starts.
-            let _ = wnd::take_last_key();
-            None
-        };
-        let input = FrameInput {
-            raw,
-            pointer: wnd::pointer(),
-            pressed,
-        };
-        let output = self.gui.run(host, input);
-        let (renderer_output, platform, _viewports) = egui_directx11::split_output(output);
-        // egui asks its host to copy; with no backend under us, that is this.
-        for command in platform.commands {
-            if let egui::OutputCommand::CopyText(text) = command {
-                clipboard::set_text(&text);
+        match &self.backend {
+            Backend::D3D11(device) => {
+                let target = render::target(chain, device)?;
+                let Some(context) = render::context(device) else {
+                    return Ok(());
+                };
+                let output = gui_pass(&mut self.gui, self.started, host, target.size);
+                // The game keeps drawing with this context: its state goes back as it was.
+                let saved = render::save(&context);
+                let result =
+                    self.renderer
+                        .render(&context, &target.view, self.gui.context(), output);
+                render::restore(&context, &saved);
+                result
+            }
+            Backend::D3D12(on12) => {
+                let wrapped = on12.wrap(chain)?;
+                let output = gui_pass(&mut self.gui, self.started, host, wrapped.target.size);
+                // Our own context: no game state on it to put back.
+                let result = self.renderer.render(
+                    &on12.context,
+                    &wrapped.target.view,
+                    self.gui.context(),
+                    output,
+                );
+                on12.finish(wrapped);
+                result
             }
         }
-        let saved = render::save(&context);
-        let result =
-            self.renderer
-                .render(&context, &target.view, self.gui.context(), renderer_output);
-        render::restore(&context, &saved);
-        result
     }
+}
+
+/// One egui pass for a backbuffer of `size`, input in, what to render out.
+fn gui_pass(
+    gui: &mut Gui,
+    started: Instant,
+    host: &Host,
+    size: (u32, u32),
+) -> egui_directx11::RendererOutput {
+    #[allow(clippy::cast_precision_loss, reason = "pixel sizes")]
+    let (width, height) = (size.0 as f32, size.1 as f32);
+    gui.rescale(height);
+    wnd::set_screen(width, height);
+    let raw = wnd::take_input(
+        Rect::from_min_size(Pos2::ZERO, Vec2::new(width, height)),
+        started.elapsed().as_secs_f64(),
+    );
+    let pressed = if gui.recording() {
+        wnd::take_last_key()
+    } else {
+        // Not wanted, but taken anyway, so a key pressed long ago does not end the next
+        // recording the moment it starts.
+        let _ = wnd::take_last_key();
+        None
+    };
+    let input = FrameInput {
+        raw,
+        pointer: wnd::pointer(),
+        pressed,
+    };
+    let output = gui.run(host, input);
+    let (renderer_output, platform, _viewports) = egui_directx11::split_output(output);
+    // egui asks its host to copy; with no backend under us, that is this.
+    for command in platform.commands {
+        if let egui::OutputCommand::CopyText(text) = command {
+            clipboard::set_text(&text);
+        }
+    }
+    renderer_output
 }

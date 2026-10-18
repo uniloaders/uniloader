@@ -41,6 +41,7 @@ use std::sync::OnceLock;
 
 use uniloader_sdk::{
     export_plugin, topics, Host, Plugin, PluginError, PluginRef, PluginState, PluginStateEvent,
+    Setting,
 };
 
 /// The loader, for code that runs outside a plugin callback: the render thread and the
@@ -82,16 +83,30 @@ impl Plugin for OverlayPlugin {
             "Open or close the console or the settings editor, or flip who has the mouse.",
             "console|settings|mouse",
         )?;
+        host.setting(
+            &Setting::bool("drawing", "Drawing in this game", false)
+                .transient()
+                .advanced()
+                .with_description(
+                    "Set once the overlay has a swapchain it can draw on. A game's own UI \
+                     reads it to open this console rather than its own.",
+                ),
+        )?;
         host.subscribe(topics::PLUGIN_STATE)?;
         // SAFETY: `service::TABLE` is the `OverlayApi` layout of this version, and every
         // function in it is thread safe.
-        unsafe {
+        let provided = unsafe {
             host.provide(
                 uniloader_overlay::SERVICE,
                 uniloader_overlay::VERSION,
                 &service::TABLE,
-            )?;
+            )
         };
+        // A game's own UI may provide the service already (tsw_ui): its panels go there, and
+        // this plugin is the console and settings editor that open everywhere.
+        if let Err(e) = provided {
+            log::info!("the overlay service is provided by another plugin ({e}); console and settings only");
+        }
         let _ = HOST.set(host);
         layout::load(&host);
         #[cfg(windows)]

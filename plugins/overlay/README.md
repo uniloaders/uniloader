@@ -60,8 +60,7 @@ From another language, look the service up by name (`overlay`, version 1) and ca
 | --- | --- |
 | Direct3D 11 (native, DXVK) | drawn |
 | Direct3D 10 | hooked, not drawn: the device is not a Direct3D 11 one |
-| Direct3D 12 (native DXGI) | hooked, not drawn yet |
-| Direct3D 12 under vkd3d-proton | not hooked: its swapchain is a different class |
+| Direct3D 12 (native DXGI, vkd3d-proton) | drawn through Direct3D 11 on 12; not yet tried in a game |
 | Vulkan | not hooked yet |
 | OpenGL | not hooked yet |
 
@@ -71,12 +70,16 @@ window is enough to find the vtable, and patching it through the loader covers e
 the game makes. This works whether or not uniloader itself is the `dxgi.dll` proxy, and
 whether the game made its swapchain before or after the plugin loaded.
 
-The plan for the rest keeps the split that is already there. `ui` builds an egui frame and
-knows nothing about devices; `win` owns one renderer. Each new API is one more renderer behind
-the same `Gui::run`:
+Direct3D 12 gets a throwaway swapchain of its own, because under Proton it presents through
+vkd3d-proton's swapchain class rather than DXVK's; when the class differs it is hooked too.
+The game's direct queue is taken from `ExecuteCommandLists`, and a Direct3D 11 device layered
+over it (`D3D11On12CreateDevice`, native on Windows and implemented by DXVK over vkd3d-proton)
+runs the same egui renderer into the backbuffer, wrapped and released within each `Present`.
 
-- **Direct3D 12**: the same Present hook, plus the game's command queue (taken from
-  `ExecuteCommandLists`) and an `egui` D3D12 renderer.
+The plan for the rest keeps the split that is already there. `ui` builds an egui frame and
+knows nothing about devices; `win` owns the renderers. Each new API is one more behind the
+same `Gui::run`:
+
 - **Vulkan**: hook `vkQueuePresentKHR` and `vkCreateSwapchainKHR` via the loader's
   `vkGetDeviceProcAddr`, and render with an egui Vulkan backend into the swapchain image.
 - **OpenGL**: hook `wglSwapBuffers` and draw with the egui glow backend in the game's context.
