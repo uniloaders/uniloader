@@ -30,13 +30,54 @@ Enfusion adapter for DayZ, a Direct3D present hook for overlays. **Lua scripting
 bridge plugin too, so a game that needs no scripting ships without a runtime.
 
 `.asi` files work both ways: uniloader loads the `.asi` mods of the Ultimate ASI Loader
-ecosystem from `plugins/`, and it can itself be loaded as an `.asi`.
+ecosystem from `plugins/`, and it can itself be loaded as an `.asi` (under any name that is
+not a system DLL's, it only hosts plugins and forwards nothing).
+
+## Installing into a game
+
+```text
+<game exe dir>/
+  dwmapi.dll            uniloader.dll, renamed to a DLL the game imports
+  plugins/
+    coop.dll            native plugins
+    lua_bridge.dll      the Lua bridge, if wanted
+    lua/*.lua           scripts for it
+    something.asi       .asi mods
+  uniloader/
+    config/loader.toml  optional; see below
+    config/<plugin>.toml, hotkeys.toml   written by the loader
+    logs/loader.log
+```
+
+Which name to use: any DLL the game imports from the system directory and whose exports
+are listed in `crates/uniloader/exports/` (`dwmapi`, `dxgi`, `d3d10`, `d3d11`, `d3d12`,
+`dinput8`, `xinput1_3`/`1_4`, `version`, `winmm`, `winhttp`, `opengl32`). Under Wine or
+Proton add a native override, for example `WINEDLLOVERRIDES="dwmapi=n,b"`.
+
+`loader.toml`, every key optional:
+
+```toml
+enabled = true                  # false: forward only, load nothing
+disabled_plugins = ["jump"]     # file stems never loaded
+log_level = "info"
+asi = true                      # load plugins/*.asi
+load = ["ue4ss/UE4SS.dll"]      # chain-load DLLs this one displaced, listed with their version
+```
+
+Command line: `--loader-console` opens a console window, `--noplugins` loads nothing,
+`--loader-log=debug` overrides the level.
 
 ## Repository layout
 
 | Crate | What it is |
 | --- | --- |
-| `crates/uniloader-core` | Platform independent logic: settings, key grammar, hotkeys, dependency ordering, console parsing, config files. Builds and tests on any host. |
+| `crates/uniloader-api` | The C ABI between loader and plugins. |
+| `crates/uniloader-core` | Platform independent logic: settings, key grammar, hotkeys, dependency ordering, console parsing, config files, PE version resources. Builds and tests on any host. |
+| `crates/uniloader-sdk` | The safe Rust side of the ABI: implement `Plugin`, call `export_plugin!`. |
+| `crates/uniloader` | The loader DLL: proxy, plugin host, host API, console. |
+| `plugins/lua-bridge` | Lua 5.4 scripting as a plugin; its API is documented in `src/api.rs`. |
+| `examples/hello-plugin` | The smallest useful plugin. |
+| `examples/smoke-host` | A stand-in game for `scripts/smoke.sh`. |
 
 ## Building
 
@@ -47,6 +88,7 @@ handling that contains a faulting plugin).
 ```bash
 scripts/gate.sh          # fmt, clippy, tests, docs, Windows clippy and release build
 scripts/gate.sh --host   # host steps only
+scripts/smoke.sh         # end to end under Wine with a stand-in game, no real game needed
 ```
 
 ## License
