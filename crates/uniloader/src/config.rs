@@ -9,6 +9,12 @@ use uniloader_core::store;
 /// Name of the loader's own directory in the game directory.
 pub const LOADER_DIR: &str = "uniloader";
 
+/// Optional file next to the executable naming the loader's root elsewhere (a mod manager's
+/// folder, the way UE4SS's `override.txt` does): the first line that is neither empty nor a
+/// `#` comment, absolute or relative to the game directory. `plugins/`, `config/` and `logs/`
+/// then all live under that root, so only the proxy DLL and this file are in the game's folder.
+pub const ROOT_OVERRIDE: &str = "uniloader-root.txt";
+
 /// Where everything lives, derived from the game directory.
 ///
 /// Every field names a directory, so the shared `_dir` suffix is the point rather than
@@ -38,6 +44,35 @@ impl Paths {
         Paths {
             game_dir: game_dir.to_path_buf(),
             plugins_dir: game_dir.join("plugins"),
+            config_dir: root.join("config"),
+            logs_dir: root.join("logs"),
+        }
+    }
+
+    /// The layout for `game_dir`, moved to the root its [`ROOT_OVERRIDE`] file names when
+    /// there is one.
+    #[must_use]
+    pub fn resolve(game_dir: &Path) -> Self {
+        let text = std::fs::read_to_string(game_dir.join(ROOT_OVERRIDE)).ok();
+        Self::with_override(game_dir, text.as_deref())
+    }
+
+    /// [`Paths::resolve`] with the override file's text given.
+    #[must_use]
+    pub fn with_override(game_dir: &Path, text: Option<&str>) -> Self {
+        let root = text.and_then(|t| {
+            t.lines()
+                .map(str::trim)
+                .find(|l| !l.is_empty() && !l.starts_with('#'))
+        });
+        let Some(root) = root else {
+            return Self::from_game_dir(game_dir);
+        };
+        // A relative root is under the game directory; `join` keeps an absolute one as is.
+        let root = game_dir.join(root);
+        Paths {
+            game_dir: game_dir.to_path_buf(),
+            plugins_dir: root.join("plugins"),
             config_dir: root.join("config"),
             logs_dir: root.join("logs"),
         }
@@ -150,6 +185,26 @@ mod tests {
             p.loader_file(),
             Path::new("/g/uniloader/config/loader.toml")
         );
+    }
+
+    #[test]
+    fn an_override_file_moves_the_whole_root() {
+        let game = Path::new("/g");
+        let moved = Paths::with_override(game, Some("# by a mod manager\n\n  /m/tsw/uniloader \n"));
+        assert_eq!(moved.game_dir, game);
+        assert_eq!(moved.plugins_dir, Path::new("/m/tsw/uniloader/plugins"));
+        assert_eq!(moved.config_dir, Path::new("/m/tsw/uniloader/config"));
+        assert_eq!(moved.logs_dir, Path::new("/m/tsw/uniloader/logs"));
+        let relative = Paths::with_override(game, Some("mods/ul"));
+        assert_eq!(relative.plugins_dir, Path::new("/g/mods/ul/plugins"));
+        // Empty or only comments: the standard layout.
+        let standard = Paths::from_game_dir(game);
+        for text in [None, Some(""), Some("# nothing\n")] {
+            assert_eq!(
+                Paths::with_override(game, text).plugins_dir,
+                standard.plugins_dir
+            );
+        }
     }
 
     #[test]

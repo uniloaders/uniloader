@@ -59,6 +59,17 @@ are listed in `crates/uniloader/exports/` (`dwmapi`, `dxgi`, `d3d10`, `d3d11`, `
 `dinput8`, `xinput1_3`/`1_4`, `version`, `winmm`, `winhttp`, `opengl32`). Under Wine or
 Proton add a native override, for example `WINEDLLOVERRIDES="dwmapi=n,b"`.
 
+To keep everything but the proxy DLL out of the game's folder (a mod manager's own folder,
+as RaiPal does for UE4SS), put `uniloader-root.txt` next to it. Its first line that is
+neither empty nor a `#` comment names the root, absolute or relative to the exe's folder.
+`plugins/`, `config/` and `logs/` then all live there:
+
+```text
+<game exe dir>/dwmapi.dll
+<game exe dir>/uniloader-root.txt    Z:\home\me\mods\tsw\uniloader
+<that root>/plugins/  config/  logs/
+```
+
 `loader.toml`, every key optional:
 
 ```toml

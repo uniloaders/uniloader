@@ -53,12 +53,7 @@ static ENABLED: OnceLock<bool> = OnceLock::new();
 /// elsewhere must not turn every later hotkey poll into a second panic inside the game.
 pub(crate) fn state() -> MutexGuard<'static, State> {
     STATE
-        .get_or_init(|| {
-            Mutex::new(State::new(
-                Paths::from_game_dir(&proxy::game_dir()),
-                LoaderConfig::default(),
-            ))
-        })
+        .get_or_init(|| Mutex::new(State::new(paths(), LoaderConfig::default())))
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
@@ -68,11 +63,15 @@ pub(crate) fn host_api() -> &'static HostApi {
     HOST.get().map_or_else(
         || {
             // Only reachable if a plugin is started before `init` finished, which it is not.
-            let paths = Paths::from_game_dir(&proxy::game_dir());
-            hostapi::build(&paths, &Process::current())
+            hostapi::build(&paths(), &Process::current())
         },
         |h| h.0,
     )
+}
+
+/// The loader's directories for this game, moved by `uniloader-root.txt` when present.
+fn paths() -> Paths {
+    Paths::resolve(&proxy::game_dir())
 }
 
 /// Initialise once; returns whether any plugin is running.
@@ -104,6 +103,13 @@ fn start_logging(paths: &Paths, process: &Process) -> LoaderConfig {
         env!("CARGO_PKG_VERSION"),
         paths.game_dir.display()
     );
+    if !paths.plugins_dir.starts_with(&paths.game_dir) {
+        log::info!(
+            "root moved by {}: plugins in {}",
+            crate::config::ROOT_OVERRIDE,
+            paths.plugins_dir.display()
+        );
+    }
     proxy::log_summary();
     if let Some(e) = config_error {
         log::error!("loader.toml ignored: {e}");
@@ -119,7 +125,7 @@ fn start_logging(paths: &Paths, process: &Process) -> LoaderConfig {
 }
 
 fn init() -> bool {
-    let paths = Paths::from_game_dir(&proxy::game_dir());
+    let paths = paths();
     let process = Process::current();
     let config = start_logging(&paths, &process);
     let host = hostapi::build(&paths, &process);
