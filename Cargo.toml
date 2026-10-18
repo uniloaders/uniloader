@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/uniloader-core"]
+members = ["crates/uniloader-api", "crates/uniloader-core"]
 
 [workspace.package]
 version = "0.1.0"
@@ -9,6 +9,7 @@ rust-version = "1.88"
 license = "MIT"
 
 [workspace.dependencies]
+uniloader-api = { path = "crates/uniloader-api" }
 uniloader-core = { path = "crates/uniloader-core" }
 thiserror = "2"
 toml = "0.8"
