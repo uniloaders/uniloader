@@ -245,7 +245,7 @@ pub(crate) fn run(sink: &KitchenSink, host: &Host) {
     environment(&mut c, host);
     crate::hooks::run(&mut |what, ok| c.check(what, ok), host);
     if let Some(overlay) = &sink.overlay {
-        crate::overlay::checks(&mut |what, ok| c.check(what, ok), overlay);
+        crate::overlay::checks(&mut |what, ok| c.check(what, ok), overlay, host);
     }
     log::info!(
         "kitchen self-test: {} passed, {} failed",

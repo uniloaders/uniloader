@@ -75,6 +75,11 @@ impl Plugin for OverlayPlugin {
             "Give the mouse back to the game, or take it",
             "ctrl+shift+m",
         )?;
+        host.command(
+            "toggle",
+            "Open or close the console or the settings editor, or flip who has the mouse.",
+            "console|settings|mouse",
+        )?;
         host.subscribe(topics::PLUGIN_STATE)?;
         // SAFETY: `service::TABLE` is the `OverlayApi` layout of this version, and every
         // function in it is thread safe.
@@ -100,13 +105,21 @@ impl Plugin for OverlayPlugin {
         layout::save();
     }
 
-    fn on_hotkey(&self, _host: &Host, action: &str) {
-        match action {
-            "console" => shared::toggle_console(),
-            "settings" => shared::toggle_editor(),
-            "mouse" => shared::toggle_grab(),
-            _ => {}
+    fn on_command(&self, _host: &Host, name: &str, args: &str) -> Result<(), PluginError> {
+        match (name, args.trim()) {
+            ("toggle", what @ ("console" | "settings" | "mouse")) => {
+                toggle(what);
+                Ok(())
+            }
+            ("toggle", other) => Err(PluginError::from(format!(
+                "toggle what? {other:?} is not console, settings or mouse"
+            ))),
+            _ => Err(PluginError::Unsupported),
         }
+    }
+
+    fn on_hotkey(&self, _host: &Host, action: &str) {
+        toggle(action);
     }
 
     fn on_event(&self, _host: &Host, _from: PluginRef, topic: &str, payload: &[u8]) {
@@ -123,6 +136,16 @@ impl Plugin for OverlayPlugin {
             notices::take_all(event.plugin.raw());
             shared::refresh();
         }
+    }
+}
+
+/// What the hotkeys and the `toggle` command share.
+fn toggle(what: &str) {
+    match what {
+        "console" => shared::toggle_console(),
+        "settings" => shared::toggle_editor(),
+        "mouse" => shared::toggle_grab(),
+        _ => {}
     }
 }
 

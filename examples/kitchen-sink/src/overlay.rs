@@ -95,8 +95,22 @@ fn draw(ui: &mut Ui<'_>) {
     }
 }
 
-/// Checks that need no frame: the panel registry through the service.
-pub(crate) fn checks(check: &mut dyn FnMut(&str, bool), overlay: &Overlay) {
+/// Checks that need no frame: the panel registry through the service, and the overlay's
+/// console command. The console and the settings editor are left open, so the smoke test's
+/// captured frame shows them.
+pub(crate) fn checks(check: &mut dyn FnMut(&str, bool), overlay: &Overlay, host: &Host) {
+    check(
+        "overlay opens its console by command",
+        host.console_exec("overlay.toggle console").is_ok(),
+    );
+    check(
+        "overlay opens its settings editor by command",
+        host.console_exec("overlay.toggle settings").is_ok(),
+    );
+    check(
+        "overlay refuses to toggle nonsense",
+        host.console_exec("overlay.toggle nonsense").is_err(),
+    );
     check("overlay panel starts open", overlay.is_open("panel"));
     check(
         "overlay panel toggles",
