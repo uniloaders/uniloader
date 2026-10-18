@@ -42,6 +42,16 @@ impl Showcase {
     /// How long a card stays before the next one comes.
     pub const DWELL: Duration = Duration::from_secs(6);
 
+    /// An empty showcase, usable in a `static`.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            cards: Vec::new(),
+            shown: None,
+            revision: 0,
+        }
+    }
+
     /// Adds `card`, or replaces the owner's card of the same name in place.
     pub fn set(&mut self, card: ShownCard) {
         match self
