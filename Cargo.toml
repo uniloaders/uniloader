@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/uniloader-api", "crates/uniloader-core"]
+members = [
+    "crates/uniloader-api",
+    "crates/uniloader-core",
+    "crates/uniloader-sdk",
+    "examples/hello-plugin",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,6 +16,8 @@ license = "MIT"
 [workspace.dependencies]
 uniloader-api = { path = "crates/uniloader-api" }
 uniloader-core = { path = "crates/uniloader-core" }
+uniloader-sdk = { path = "crates/uniloader-sdk" }
+log = "0.4"
 thiserror = "2"
 toml = "0.8"
 serde = { version = "1", features = ["derive"] }

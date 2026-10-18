@@ -1,0 +1,19 @@
+[package]
+name = "hello-plugin"
+description = "Smallest useful uniloader plugin, and the SDK's smoke test."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "hello"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+uniloader-sdk.workspace = true
+log.workspace = true
+
+[lints]
+workspace = true

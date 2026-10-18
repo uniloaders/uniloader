@@ -1,0 +1,15 @@
+[package]
+name = "uniloader-sdk"
+description = "Safe Rust API for writing uniloader plugins on top of uniloader-api."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+uniloader-api.workspace = true
+uniloader-core.workspace = true
+log.workspace = true
+
+[lints]
+workspace = true
