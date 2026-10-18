@@ -72,6 +72,20 @@ pub(crate) fn check(status: Status) -> Result<(), PluginError> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PluginRef(pub(crate) PluginHandle);
 
+impl PluginRef {
+    /// The raw handle, for a service ABI that identifies its callers.
+    #[must_use]
+    pub const fn raw(self) -> PluginHandle {
+        self.0
+    }
+
+    /// Wrap a raw handle a service ABI received.
+    #[must_use]
+    pub const fn from_raw(handle: PluginHandle) -> Self {
+        PluginRef(handle)
+    }
+}
+
 /// The loader, as seen by one plugin. Cheap to copy; valid for the plugin's lifetime.
 #[derive(Clone, Copy)]
 pub struct Host {

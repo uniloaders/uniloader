@@ -10,10 +10,11 @@
 use core::ffi::c_void;
 
 use uniloader_api::{
-    ConsoleKind, ConsoleLine, ConsoleLineFn, GuardedFn, HotkeyInfo, HotkeyInfoFn, LineFn, LogLevel,
-    ModuleKind, PluginEntry, PluginEntryFn, PluginHandle, PluginState, ServiceInfo, SettingFlags,
-    SettingInfo, SettingInfoFn, SettingKind, Status, Str,
+    ConsoleKind, ConsoleLine, ConsoleLineFn, GuardedFn, HotkeyInfo, HotkeyInfoFn, KeyModifiers,
+    LineFn, LogLevel, ModuleKind, PluginEntry, PluginEntryFn, PluginHandle, PluginState,
+    ServiceInfo, SettingFlags, SettingInfo, SettingInfoFn, SettingKind, Status, Str,
 };
+use uniloader_core::keys::Modifiers;
 use uniloader_core::settings;
 
 use super::hostapi::text;
@@ -345,6 +346,46 @@ pub(super) unsafe extern "C" fn console_names(
     for name in &names {
         // SAFETY: `name` lives until the sink returns, as documented.
         unsafe { sink(ctx, Str::new(name)) };
+    }
+    Status::OK
+}
+
+pub(super) unsafe extern "C" fn hotkey_press(
+    _host: *mut c_void,
+    _plugin: PluginHandle,
+    scancode: u16,
+    modifiers: KeyModifiers,
+) -> Status {
+    let held = Modifiers {
+        ctrl: modifiers.0 & KeyModifiers::CTRL != 0,
+        alt: modifiers.0 & KeyModifiers::ALT != 0,
+        shift: modifiers.0 & KeyModifiers::SHIFT != 0,
+    };
+    let fired = {
+        let mut guard = state();
+        let pressed = guard.hotkeys.press(scancode, held);
+        guard.allowed_hotkeys(pressed)
+    };
+    for action in fired {
+        log::debug!("hotkey {action} (scan code {scancode:#x})");
+        super::dispatch::hotkey(&action);
+    }
+    Status::OK
+}
+
+pub(super) unsafe extern "C" fn input_capture(
+    _host: *mut c_void,
+    plugin: PluginHandle,
+    capture: bool,
+) -> Status {
+    let mut guard = state();
+    if guard.plugin(plugin).is_none() {
+        return Status::INVALID_ARGUMENT;
+    }
+    if capture {
+        guard.input_owner = Some(plugin);
+    } else if guard.input_owner == Some(plugin) {
+        guard.input_owner = None;
     }
     Status::OK
 }

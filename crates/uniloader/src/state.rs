@@ -130,6 +130,8 @@ pub struct State {
     pub foreign: Vec<Foreign>,
     /// Services plugins provide to each other.
     pub services: services::Registry,
+    /// The plugin holding the keyboard, whose hotkeys are then the only ones that fire.
+    pub input_owner: Option<PluginHandle>,
     /// Recent console output and log records, oldest first.
     pub console: VecDeque<scrollback::Line>,
     /// How many lines the console has ever held.
@@ -173,6 +175,7 @@ impl State {
             pending: Vec::new(),
             foreign: Vec::new(),
             services: services::Registry::default(),
+            input_owner: None,
             console: VecDeque::new(),
             console_printed: 0,
             hook_lines: no_hooks,
@@ -570,6 +573,24 @@ impl State {
             .collect()
     }
 
+    /// The hotkey actions out of `fired` that may fire now: all of them, or only the ones of
+    /// the plugin holding the keyboard. A claim by a plugin that is no longer running is void.
+    #[must_use]
+    pub fn allowed_hotkeys(&self, fired: Vec<String>) -> Vec<String> {
+        let Some(owner) = self
+            .input_owner
+            .and_then(|handle| self.plugin(handle))
+            .filter(|p| p.enabled)
+        else {
+            return fired;
+        };
+        let prefix = format!("{}.", owner.name());
+        fired
+            .into_iter()
+            .filter(|action| action.starts_with(&prefix))
+            .collect()
+    }
+
     /// Every name the console completes: built-ins, plugin commands, qualified settings,
     /// hotkey actions and plugin names, sorted and without repeats.
     #[must_use]
@@ -830,6 +851,30 @@ pub(crate) mod tests {
             ("t", "careful")
         );
         assert_eq!(all[0].clock.len(), "HH:MM:SS".len());
+    }
+
+    #[test]
+    fn a_capturing_plugin_keeps_only_its_own_hotkeys() {
+        let mut s = state();
+        let described = |name: &str| Described {
+            name: name.to_owned(),
+            ..Described::default()
+        };
+        let overlay = s.add_plugin(described("overlay"), "o.dll");
+        let other = s.add_plugin(described("other"), "x.dll");
+        let (Ok(overlay), Ok(_)) = (overlay, other) else {
+            panic!("plugins added");
+        };
+        let fired = || vec!["overlay.mouse".to_owned(), "other.jump".to_owned()];
+        assert_eq!(s.allowed_hotkeys(fired()).len(), 2, "nobody captures");
+        s.input_owner = Some(overlay);
+        assert_eq!(
+            s.allowed_hotkeys(fired()).len(),
+            2,
+            "a stopped owner is void"
+        );
+        s.plugins[0].enabled = true;
+        assert_eq!(s.allowed_hotkeys(fired()), vec!["overlay.mouse".to_owned()]);
     }
 
     #[test]

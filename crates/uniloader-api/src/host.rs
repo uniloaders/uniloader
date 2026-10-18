@@ -3,7 +3,7 @@
 use core::ffi::c_void;
 
 use crate::registry::{
-    ConsoleLineFn, GuardedFn, HotkeyInfoFn, PluginEntryFn, ServiceInfo, SettingInfoFn,
+    ConsoleLineFn, GuardedFn, HotkeyInfoFn, KeyModifiers, PluginEntryFn, ServiceInfo, SettingInfoFn,
 };
 use crate::types::{
     ArgEntry, Bytes, CommandDesc, EnvEntry, HotkeyDesc, LogLevel, PluginHandle, PluginState,
@@ -269,4 +269,22 @@ pub struct HostApi {
     /// (qualified), hotkey actions and plugin names, each handed to `sink` once.
     pub console_names:
         unsafe extern "C" fn(host: *mut c_void, sink: Option<LineFn>, ctx: *mut c_void) -> Status,
+
+    /// Report a key press the plugin saw in the game window's messages.
+    ///
+    /// Hotkeys bound by position (`sc29`) cannot be polled, because which virtual key sits at
+    /// a scan code is not reliable to ask; they fire from presses reported here. For a plugin
+    /// that subclasses the game window, such as an overlay.
+    pub hotkey_press: unsafe extern "C" fn(
+        host: *mut c_void,
+        plugin: PluginHandle,
+        scancode: u16,
+        modifiers: KeyModifiers,
+    ) -> Status,
+    /// Claim the keyboard (`capture` true) or give it back.
+    ///
+    /// While a plugin holds it, only that plugin's own hotkeys fire, so typing into an
+    /// overlay does not also trigger other plugins' bindings. A stopped plugin's claim ends.
+    pub input_capture:
+        unsafe extern "C" fn(host: *mut c_void, plugin: PluginHandle, capture: bool) -> Status,
 }

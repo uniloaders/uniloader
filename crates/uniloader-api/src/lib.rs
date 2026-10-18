@@ -28,8 +28,8 @@ mod types;
 pub use callbacks::PluginCallbacks;
 pub use host::{HostApi, LineFn, ReplyFn};
 pub use registry::{
-    ConsoleKind, ConsoleLine, ConsoleLineFn, GuardedFn, HotkeyInfo, HotkeyInfoFn, ModuleKind,
-    PluginEntry, PluginEntryFn, ServiceInfo, SettingInfo, SettingInfoFn,
+    ConsoleKind, ConsoleLine, ConsoleLineFn, GuardedFn, HotkeyInfo, HotkeyInfoFn, KeyModifiers,
+    ModuleKind, PluginEntry, PluginEntryFn, ServiceInfo, SettingInfo, SettingInfoFn,
 };
 pub use types::{
     ArgEntry, Bytes, CommandDesc, Dependency, DependencyKind, EnvEntry, HotkeyDesc, LogLevel,

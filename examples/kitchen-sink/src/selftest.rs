@@ -2,7 +2,9 @@
 
 use std::sync::atomic::Ordering;
 
-use uniloader_sdk::{ConsoleKind, Host, LogLevel, ModuleKind, PluginState, SettingKind};
+use uniloader_sdk::{
+    ConsoleKind, Host, KeyModifiers, LogLevel, ModuleKind, PluginState, SettingKind,
+};
 
 use crate::{KitchenSink, MathService};
 
@@ -187,6 +189,24 @@ fn console(c: &mut Checks, sink: &KitchenSink, host: &Host) {
             && fresh.iter().any(|l| {
                 l.kind == ConsoleKind::OUTPUT && l.text.ends_with("[kitchen] console read output")
             }),
+    );
+    let before = sink.hotkeys.load(Ordering::Relaxed);
+    host.hotkey_press(0x58, KeyModifiers::default());
+    c.check(
+        "scan code press fires its binding",
+        sink.hotkeys.load(Ordering::Relaxed) == before + 1,
+    );
+    host.capture_input(true);
+    host.hotkey_press(0x58, KeyModifiers::default());
+    host.capture_input(false);
+    c.check(
+        "own hotkeys fire while capturing",
+        sink.hotkeys.load(Ordering::Relaxed) == before + 2,
+    );
+    host.hotkey_press(0x58, KeyModifiers(KeyModifiers::CTRL));
+    c.check(
+        "modifiers must match",
+        sink.hotkeys.load(Ordering::Relaxed) == before + 2,
     );
     let names = host.console_names();
     c.check(

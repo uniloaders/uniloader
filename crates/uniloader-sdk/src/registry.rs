@@ -8,8 +8,8 @@ use core::ffi::c_void;
 use core::marker::PhantomData;
 
 use uniloader_api::{
-    ConsoleKind, ConsoleLine, HotkeyInfo, LogLevel, ModuleKind, PluginEntry, PluginHandle,
-    PluginState, ServiceInfo, SettingInfo, Status, Str,
+    ConsoleKind, ConsoleLine, HotkeyInfo, KeyModifiers, LogLevel, ModuleKind, PluginEntry,
+    PluginHandle, PluginState, ServiceInfo, SettingInfo, Status, Str,
 };
 
 use crate::host::{check, str_from, Host, PluginError, PluginRef};
@@ -402,6 +402,19 @@ impl Host {
             )
         };
         (lines, next)
+    }
+
+    /// Report a key press seen in the game window's messages, so hotkeys bound by scan code
+    /// (`sc29`) fire. `modifiers` is a [`KeyModifiers`] bit set.
+    pub fn hotkey_press(&self, scancode: u16, modifiers: KeyModifiers) {
+        // SAFETY: plain values; the loader validates nothing it could misread.
+        let _ = unsafe { (self.api.hotkey_press)(self.api.host, self.handle, scancode, modifiers) };
+    }
+
+    /// Claim the keyboard, so only this plugin's own hotkeys fire, or give it back.
+    pub fn capture_input(&self, capture: bool) {
+        // SAFETY: plain values.
+        let _ = unsafe { (self.api.input_capture)(self.api.host, self.handle, capture) };
     }
 
     /// Every name the console completes, sorted.

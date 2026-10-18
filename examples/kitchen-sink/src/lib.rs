@@ -35,6 +35,7 @@ pub struct KitchenSink {
     setting_changes: AtomicU32,
     commands: AtomicU32,
     events: AtomicU32,
+    hotkeys: AtomicU32,
     ran: AtomicBool,
 }
 
@@ -56,6 +57,8 @@ impl Plugin for KitchenSink {
         host.setting(&Setting::text("motto", "Motto", "everything").advanced())?;
         host.setting(&Setting::int("counter", "Counter", 0, 0, 0).transient())?;
         host.hotkey("poke", "Poke the kitchen sink", "ctrl+f8")?;
+        // Bound by position, so it only fires from a reported press; the self-test reports one.
+        host.hotkey("scan", "Scan code binding", "sc58")?;
         host.command("selftest", "Run the self-test again.", "")?;
         host.command("echo", "Count and print the arguments.", "<text>")?;
         host.subscribe(topics::PLUGIN_STATE)?;
@@ -67,11 +70,13 @@ impl Plugin for KitchenSink {
             setting_changes: AtomicU32::new(0),
             commands: AtomicU32::new(0),
             events: AtomicU32::new(0),
+            hotkeys: AtomicU32::new(0),
             ran: AtomicBool::new(false),
         })
     }
 
     fn on_hotkey(&self, host: &Host, action: &str) {
+        self.hotkeys.fetch_add(1, Ordering::Relaxed);
         host.console_print(&format!("kitchen: {action} pressed"));
     }
 

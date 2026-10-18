@@ -205,7 +205,8 @@ pub(crate) fn tick() {
         // moment ago is in the scrollback when someone asks.
         guard.console_drain();
         if focused {
-            guard.hotkeys.poll(&input::AsyncKeys)
+            let polled = guard.hotkeys.poll(&input::AsyncKeys);
+            guard.allowed_hotkeys(polled)
         } else {
             // Released while away, so a key held when focus left does not fire on return.
             guard.hotkeys.reset();

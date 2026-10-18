@@ -124,6 +124,20 @@ pub struct ServiceInfo {
 /// Function run by [`crate::HostApi::guarded_call`].
 pub type GuardedFn = unsafe extern "C" fn(ctx: *mut c_void);
 
+/// Modifier keys held with a key press, as bits.
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct KeyModifiers(pub u32);
+
+impl KeyModifiers {
+    /// Either Control key.
+    pub const CTRL: u32 = 1;
+    /// Either Alt key.
+    pub const ALT: u32 = 2;
+    /// Either Shift key.
+    pub const SHIFT: u32 = 4;
+}
+
 /// Where a console line came from.
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
