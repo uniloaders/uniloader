@@ -532,6 +532,7 @@ impl State {
         self.console.push_back(scrollback::Line {
             seq: self.console_printed,
             kind,
+            clock: scrollback::clock(),
             target,
             text,
         });
@@ -559,14 +560,37 @@ impl State {
     }
 
     /// Every line since `mark`, log records included, oldest first: the whole scrollback a
-    /// console view shows. Log records carry their level as a `[LEVEL]` prefix.
+    /// console view shows.
     #[must_use]
-    pub fn console_all_since(&self, mark: u64) -> Vec<String> {
+    pub fn console_all_since(&self, mark: u64) -> Vec<scrollback::Line> {
         self.console
             .iter()
             .filter(|line| line.seq > mark)
-            .map(scrollback::Line::flat)
+            .cloned()
             .collect()
+    }
+
+    /// Every name the console completes: built-ins, plugin commands, qualified settings,
+    /// hotkey actions and plugin names, sorted and without repeats.
+    #[must_use]
+    pub fn completion_names(&self) -> Vec<String> {
+        let mut names: BTreeSet<String> = uniloader_core::console::BUILTIN_NAMES
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect();
+        for plugin in &self.plugins {
+            let owner = plugin.name();
+            names.insert(owner.to_owned());
+            names.extend(plugin.commands.keys().map(|c| format!("{owner}.{c}")));
+            names.extend(
+                plugin
+                    .settings
+                    .iter()
+                    .map(|(desc, _)| format!("{owner}.{}", desc.key)),
+            );
+        }
+        names.extend(self.hotkeys.iter().map(|entry| entry.name.clone()));
+        names.into_iter().collect()
     }
 }
 
@@ -798,8 +822,22 @@ pub(crate) mod tests {
         );
         s.console_print("out".to_owned());
         assert_eq!(s.console_since(mark), vec!["out".to_owned()]);
-        assert_eq!(s.console_all_since(mark).len(), 2);
-        assert!(s.console_all_since(mark)[0].ends_with("t: careful"));
+        let all = s.console_all_since(mark);
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].kind, scrollback::Kind::Log(log::Level::Warn));
+        assert_eq!(
+            (all[0].target.as_str(), all[0].text.as_str()),
+            ("t", "careful")
+        );
+        assert_eq!(all[0].clock.len(), "HH:MM:SS".len());
+    }
+
+    #[test]
+    fn completion_names_include_builtins() {
+        let s = state();
+        let names = s.completion_names();
+        assert!(names.iter().any(|n| n == "plugin load"));
+        assert!(names.windows(2).all(|w| w[0] < w[1]), "sorted, no repeats");
     }
 
     #[test]

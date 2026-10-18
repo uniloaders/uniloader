@@ -6,7 +6,7 @@
 
 use core::ffi::c_void;
 
-use crate::types::{PluginHandle, PluginState, SettingFlags, SettingKind, Str};
+use crate::types::{LogLevel, PluginHandle, PluginState, SettingFlags, SettingKind, Str};
 
 /// What kind of module a [`PluginEntry`] describes.
 #[repr(transparent)]
@@ -123,3 +123,40 @@ pub struct ServiceInfo {
 
 /// Function run by [`crate::HostApi::guarded_call`].
 pub type GuardedFn = unsafe extern "C" fn(ctx: *mut c_void);
+
+/// Where a console line came from.
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConsoleKind(pub u32);
+
+impl ConsoleKind {
+    /// Output of a command.
+    pub const OUTPUT: ConsoleKind = ConsoleKind(0);
+    /// A line the user typed, echoed back.
+    pub const ECHO: ConsoleKind = ConsoleKind(1);
+    /// A log record; [`ConsoleLine::level`] says which level.
+    pub const LOG: ConsoleKind = ConsoleKind(2);
+}
+
+/// One line of console scrollback, as [`crate::HostApi::console_read`] hands it out.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct ConsoleLine {
+    /// `size_of::<ConsoleLine>()` as compiled into the loader.
+    pub struct_size: usize,
+    /// Position in everything ever printed; strictly increasing.
+    pub seq: u64,
+    /// Output, echo or log record.
+    pub kind: ConsoleKind,
+    /// Level of a log record; [`LogLevel::INFO`] otherwise.
+    pub level: LogLevel,
+    /// Local wall clock when the line was printed, `HH:MM:SS`.
+    pub clock: Str,
+    /// Module that logged it, empty for command output.
+    pub target: Str,
+    /// The text, without any prefix.
+    pub text: Str,
+}
+
+/// Receives one [`ConsoleLine`]. The line and its strings live until the sink returns.
+pub type ConsoleLineFn = unsafe extern "C" fn(ctx: *mut c_void, line: *const ConsoleLine);

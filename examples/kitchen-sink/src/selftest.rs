@@ -2,8 +2,7 @@
 
 use std::sync::atomic::Ordering;
 
-use uniloader_sdk::api::LogLevel;
-use uniloader_sdk::{Host, ModuleKind, PluginState, SettingKind};
+use uniloader_sdk::{ConsoleKind, Host, LogLevel, ModuleKind, PluginState, SettingKind};
 
 use crate::{KitchenSink, MathService};
 
@@ -180,10 +179,26 @@ fn console(c: &mut Checks, sink: &KitchenSink, host: &Host) {
     c.check(
         "console read sees log and output",
         next > mark
-            && fresh.iter().any(|l| l.ends_with("console read marker"))
-            && fresh
-                .iter()
-                .any(|l| l.ends_with("[kitchen] console read output")),
+            && fresh.iter().any(|l| {
+                l.kind == ConsoleKind::LOG
+                    && l.level == LogLevel::INFO
+                    && l.text.ends_with("console read marker")
+            })
+            && fresh.iter().any(|l| {
+                l.kind == ConsoleKind::OUTPUT && l.text.ends_with("[kitchen] console read output")
+            }),
+    );
+    let names = host.console_names();
+    c.check(
+        "console names",
+        [
+            "plugin load",
+            "kitchen.echo",
+            "kitchen.level",
+            "kitchen.poke",
+        ]
+        .iter()
+        .all(|n| names.iter().any(|have| have == n)),
     );
 }
 

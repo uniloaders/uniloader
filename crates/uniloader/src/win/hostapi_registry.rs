@@ -10,14 +10,15 @@
 use core::ffi::c_void;
 
 use uniloader_api::{
-    GuardedFn, HotkeyInfo, HotkeyInfoFn, LineFn, ModuleKind, PluginEntry, PluginEntryFn,
-    PluginHandle, PluginState, ServiceInfo, SettingFlags, SettingInfo, SettingInfoFn, SettingKind,
-    Status, Str,
+    ConsoleKind, ConsoleLine, ConsoleLineFn, GuardedFn, HotkeyInfo, HotkeyInfoFn, LineFn, LogLevel,
+    ModuleKind, PluginEntry, PluginEntryFn, PluginHandle, PluginState, ServiceInfo, SettingFlags,
+    SettingInfo, SettingInfoFn, SettingKind, Status, Str,
 };
 use uniloader_core::settings;
 
 use super::hostapi::text;
 use super::{plugins, state};
+use crate::scrollback;
 
 /// An owned [`PluginEntry`].
 struct Entry {
@@ -279,10 +280,27 @@ pub(super) unsafe extern "C" fn service_get(
     Status::OK
 }
 
+fn console_kind(kind: scrollback::Kind) -> (ConsoleKind, LogLevel) {
+    match kind {
+        scrollback::Kind::Output => (ConsoleKind::OUTPUT, LogLevel::INFO),
+        scrollback::Kind::Echo => (ConsoleKind::ECHO, LogLevel::INFO),
+        scrollback::Kind::Log(level) => (
+            ConsoleKind::LOG,
+            match level {
+                log::Level::Error => LogLevel::ERROR,
+                log::Level::Warn => LogLevel::WARN,
+                log::Level::Info => LogLevel::INFO,
+                log::Level::Debug => LogLevel::DEBUG,
+                log::Level::Trace => LogLevel::TRACE,
+            },
+        ),
+    }
+}
+
 pub(super) unsafe extern "C" fn console_read(
     _host: *mut c_void,
     since: u64,
-    sink: Option<LineFn>,
+    sink: Option<ConsoleLineFn>,
     ctx: *mut c_void,
     out_next: *mut u64,
 ) -> Status {
@@ -298,9 +316,35 @@ pub(super) unsafe extern "C" fn console_read(
     }
     if let Some(sink) = sink {
         for line in &lines {
-            // SAFETY: `line` lives until the sink returns, as documented.
-            unsafe { sink(ctx, Str::new(line)) };
+            let (kind, level) = console_kind(line.kind);
+            let entry = ConsoleLine {
+                struct_size: core::mem::size_of::<ConsoleLine>(),
+                seq: line.seq,
+                kind,
+                level,
+                clock: Str::new(&line.clock),
+                target: Str::new(&line.target),
+                text: Str::new(&line.text),
+            };
+            // SAFETY: `entry` and its strings live until the sink returns, as documented.
+            unsafe { sink(ctx, &raw const entry) };
         }
+    }
+    Status::OK
+}
+
+pub(super) unsafe extern "C" fn console_names(
+    _host: *mut c_void,
+    sink: Option<LineFn>,
+    ctx: *mut c_void,
+) -> Status {
+    let Some(sink) = sink else {
+        return Status::INVALID_ARGUMENT;
+    };
+    let names = state().completion_names();
+    for name in &names {
+        // SAFETY: `name` lives until the sink returns, as documented.
+        unsafe { sink(ctx, Str::new(name)) };
     }
     Status::OK
 }

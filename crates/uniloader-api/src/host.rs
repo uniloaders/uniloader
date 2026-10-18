@@ -2,7 +2,9 @@
 
 use core::ffi::c_void;
 
-use crate::registry::{GuardedFn, HotkeyInfoFn, PluginEntryFn, ServiceInfo, SettingInfoFn};
+use crate::registry::{
+    ConsoleLineFn, GuardedFn, HotkeyInfoFn, PluginEntryFn, ServiceInfo, SettingInfoFn,
+};
 use crate::types::{
     ArgEntry, Bytes, CommandDesc, EnvEntry, HotkeyDesc, LogLevel, PluginHandle, PluginState,
     SettingDesc, Status, Str,
@@ -252,15 +254,19 @@ pub struct HostApi {
         f: Option<GuardedFn>,
         ctx: *mut c_void,
     ) -> Status,
-    /// Read the console scrollback (command output and log records, oldest first) printed
-    /// after position `since`, each line handed to `sink`. Writes the position to pass next
-    /// time to `out_next`. Start with 0; lines that fell out of the bounded history are gone.
-    /// For a plugin that shows the console, such as an overlay.
+    /// Read the console scrollback (command output, echoed input and log records, oldest
+    /// first) printed after position `since`, each line handed to `sink`. Writes the position
+    /// to pass next time to `out_next`. Start with 0; lines that fell out of the bounded
+    /// history are gone. For a plugin that shows the console, such as an overlay.
     pub console_read: unsafe extern "C" fn(
         host: *mut c_void,
         since: u64,
-        sink: Option<LineFn>,
+        sink: Option<ConsoleLineFn>,
         ctx: *mut c_void,
         out_next: *mut u64,
     ) -> Status,
+    /// Every name the console completes: built-in commands, plugin commands, settings
+    /// (qualified), hotkey actions and plugin names, each handed to `sink` once.
+    pub console_names:
+        unsafe extern "C" fn(host: *mut c_void, sink: Option<LineFn>, ctx: *mut c_void) -> Status,
 }

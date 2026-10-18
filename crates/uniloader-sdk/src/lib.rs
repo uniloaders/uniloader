@@ -40,10 +40,12 @@ mod settings;
 pub use deps::Dependency;
 pub use host::{Arg, CommandLine, Hook, Host, PluginError, PluginRef};
 pub use plugin::Plugin;
-pub use registry::{HotkeyEntry, ModuleEntry, PluginStateEvent, Service, SettingEntry};
+pub use registry::{
+    ConsoleEntry, HotkeyEntry, ModuleEntry, PluginStateEvent, Service, SettingEntry,
+};
 pub use settings::{Setting, SettingKind};
 pub use uniloader_api as api;
-pub use uniloader_api::{topics, ModuleKind, PluginState, StopReason};
+pub use uniloader_api::{topics, ConsoleKind, LogLevel, ModuleKind, PluginState, StopReason};
 
 // Used by the macro expansion; not part of the public surface.
 #[doc(hidden)]

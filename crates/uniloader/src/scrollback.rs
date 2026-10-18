@@ -61,6 +61,8 @@ pub struct Line {
     pub seq: u64,
     /// Where the line came from.
     pub kind: Kind,
+    /// Local `HH:MM:SS` when it was printed; see [`clock`].
+    pub clock: String,
     /// Module that logged it, empty for command output.
     pub target: String,
     /// The text itself, with no prefix.
@@ -140,6 +142,7 @@ mod tests {
         let line = Line {
             seq: 1,
             kind: Kind::Log(log::Level::Warn),
+            clock: "12:00:00".to_owned(),
             target: "uniloader::win".to_owned(),
             text: "no plugins directory".to_owned(),
         };
