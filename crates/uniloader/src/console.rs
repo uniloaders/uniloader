@@ -119,6 +119,15 @@ fn list_plugins(state: &mut State) -> Outcome {
             .iter()
             .map(|(name, reason)| format!("{name} waiting: {reason}")),
     );
+    // Not plugins, but loaded by the loader and part of what is running in the game.
+    lines.extend(state.foreign.iter().map(|f| {
+        let version = if f.version.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", f.version)
+        };
+        format!("  {}{version} ({}) {}", f.name, f.file, f.kind)
+    }));
     print_all(state, lines, "no plugins loaded")
 }
 
@@ -395,6 +404,20 @@ mod tests {
             execute(&mut s, None, "plugin stop").status,
             Status::INVALID_ARGUMENT
         );
+        let _ = std::fs::remove_dir_all(&s.paths.game_dir);
+    }
+
+    #[test]
+    fn foreign_modules_are_listed_after_the_plugins() {
+        let (mut s, _) = fixture();
+        s.foreign.push(crate::state::Foreign {
+            name: "UE4SS".into(),
+            file: "ue4ss/UE4SS.dll".into(),
+            version: "3.0.1".into(),
+            kind: "library",
+        });
+        execute(&mut s, None, "plugins");
+        assert_eq!(last(&s), "  UE4SS 3.0.1 (ue4ss/UE4SS.dll) library");
         let _ = std::fs::remove_dir_all(&s.paths.game_dir);
     }
 

@@ -36,11 +36,15 @@ if [[ ! -x "$WINE" ]]; then
 fi
 WINESERVER="$(dirname "$WINE")/wineserver"
 
-mkdir -p "$STAGE/plugins"
+mkdir -p "$STAGE/plugins" "$STAGE/extra" "$STAGE/uniloader/config"
 rm -rf "$STAGE/uniloader/logs"
 cp "$OUT/smoke-host.exe" "$STAGE/"
 cp "$OUT/uniloader.dll" "$STAGE/version.dll"
 cp "$OUT/hello.dll" "$STAGE/plugins/"
+# Stand-ins for an .asi mod and a chain-loaded library such as UE4SS: any DLL will do.
+cp "$OUT/hello.dll" "$STAGE/plugins/standin.asi"
+cp "$OUT/hello.dll" "$STAGE/extra/chained.dll"
+printf 'load = ["extra/chained.dll"]\n' > "$STAGE/uniloader/config/loader.toml"
 
 echo "== running under $WINE"
 status=0
@@ -59,6 +63,8 @@ grep -q '^forwarded' "$STAGE/run.log" || { echo "FAIL: version.dll call was not 
 if [[ -n "$log" ]]; then
     grep -q 'proxy for version.dll' "$log" || { echo "FAIL: proxy summary missing"; fail=1; }
     grep -q '1 of 1 plugins running' "$log" || { echo "FAIL: hello did not start"; fail=1; }
+    grep -q 'loaded asi plugins/standin.asi' "$log" || { echo "FAIL: .asi not loaded"; fail=1; }
+    grep -q 'loaded library extra/chained.dll' "$log" || { echo "FAIL: load list not loaded"; fail=1; }
 fi
 if (( status != 0 )) && (( fail == 0 )); then
     echo "FAIL: smoke-host exited with $status"

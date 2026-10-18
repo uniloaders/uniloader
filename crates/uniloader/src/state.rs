@@ -67,6 +67,20 @@ impl PluginRecord {
     }
 }
 
+/// A DLL the loader loaded that is not a uniloader plugin: an `.asi` file, or a library listed
+/// under `load` in `loader.toml` such as UE4SS. Listed with the plugins, never called.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Foreign {
+    /// File stem, for display.
+    pub name: String,
+    /// Path relative to the game directory.
+    pub file: String,
+    /// Product version from the file's version resource, or empty.
+    pub version: String,
+    /// `asi` or `library`.
+    pub kind: &'static str,
+}
+
 /// A plugin call the Windows side must make once the state lock is released.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Notify {
@@ -112,6 +126,8 @@ pub struct State {
     /// They are not rejected, only not started yet. `plugin load <name>` starts one, and so
     /// does the dependency it waits for becoming available.
     pub pending: Vec<(String, String)>,
+    /// Loaded DLLs that are not plugins, in load order.
+    pub foreign: Vec<Foreign>,
     /// Recent console output and log records, oldest first.
     pub console: VecDeque<scrollback::Line>,
     /// How many lines the console has ever held.
@@ -153,6 +169,7 @@ impl State {
             hotkey_overrides,
             phase: Phase::Idle,
             pending: Vec::new(),
+            foreign: Vec::new(),
             console: VecDeque::new(),
             console_printed: 0,
             hook_lines: no_hooks,

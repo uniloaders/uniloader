@@ -12,5 +12,6 @@ pub mod deps;
 pub mod hotkeys;
 pub mod keys;
 pub mod names;
+pub mod pe;
 pub mod settings;
 pub mod store;

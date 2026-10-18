@@ -11,6 +11,7 @@ mod console;
 mod deps;
 mod detour;
 mod dispatch;
+mod foreign;
 mod guard;
 mod hostapi;
 mod input;
@@ -129,20 +130,18 @@ fn init() -> bool {
     }
 
     // `--noplugins` overrides the config file, so a broken plugin never blocks a launch.
-    let (paths, off, disabled) = {
+    let (paths, off, config) = {
         let guard = state();
         let off = !guard.config.enabled || process.flag(flags::NO_PLUGINS);
-        (
-            guard.paths.clone(),
-            off,
-            guard.config.disabled_plugins.clone(),
-        )
+        (guard.paths.clone(), off, guard.config.clone())
     };
     if off {
         log::info!("plugins disabled; forwarding only");
         return false;
     }
-    plugins::load_all(&paths, &disabled);
+    plugins::load_all(&paths, &config.disabled_plugins);
+    // After the plugins, so a plugin's hooks are in place before anything else runs code.
+    foreign::load_all(&paths, config.asi, &config.load);
     let mut guard = state();
     guard.phase = Phase::Running;
     guard.hook_lines = plugin_hooks::console_lines;

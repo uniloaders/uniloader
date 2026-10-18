@@ -74,6 +74,9 @@ pub struct LoaderConfig {
     pub log_level: String,
     /// Load `.asi` files from the plugin directory, the way the Ultimate ASI Loader does.
     pub asi: bool,
+    /// Other DLLs to load after the plugins, relative to the game directory, for example
+    /// `ue4ss/UE4SS.dll` when the loader took the place of UE4SS's own proxy.
+    pub load: Vec<String>,
 }
 
 impl Default for LoaderConfig {
@@ -83,6 +86,7 @@ impl Default for LoaderConfig {
             disabled_plugins: Vec::new(),
             log_level: "info".to_owned(),
             asi: true,
+            load: Vec::new(),
         }
     }
 }
@@ -156,13 +160,14 @@ mod tests {
         assert_eq!(LoaderConfig::load(&path), (LoaderConfig::default(), None));
         std::fs::write(
             &path,
-            "enabled = false\nlog_level = \"debug\"\nasi = false\n",
+            "enabled = false\nlog_level = \"debug\"\nasi = false\nload = [\"ue4ss/UE4SS.dll\"]\n",
         )
         .unwrap_or_else(|e| panic!("{e}"));
         let (cfg, err) = LoaderConfig::load(&path);
         assert!(err.is_none());
         assert!(!cfg.enabled);
         assert!(!cfg.asi);
+        assert_eq!(cfg.load, ["ue4ss/UE4SS.dll"]);
         assert_eq!(cfg.level(), LevelFilter::Debug);
         std::fs::write(&path, "typo = 1\n").unwrap_or_else(|e| panic!("{e}"));
         let (cfg, err) = LoaderConfig::load(&path);
