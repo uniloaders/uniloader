@@ -62,6 +62,9 @@ pub(crate) struct Forwarding {
     pub(crate) proxy: String,
     /// Whether that name is one of the lists in `exports/`.
     pub(crate) known: bool,
+    /// Whether the file is named like a system DLL at all, rather than `uniloader.dll` or an
+    /// `.asi`, which forward nothing.
+    pub(crate) wanted: bool,
     /// The system DLL could be loaded.
     pub(crate) loaded: bool,
     /// Table slots that resolved.
@@ -113,9 +116,13 @@ pub(crate) unsafe fn load_forwards(own: HMODULE) {
         .unwrap_or_default();
     let known = KNOWN.iter().any(|(dll, _)| *dll == proxy);
     let fallback = not_implemented as *const () as usize;
-    // Not under a system DLL's name (injected, or loaded as `uniloader.dll` by another
-    // loader): nothing to forward to, and loading `uniloader.dll` from System32 would fail.
-    let system = if known || !proxy.starts_with("uniloader") {
+    // Not under a system DLL's name (injected, loaded as `uniloader.dll`, or as an `.asi` by
+    // another loader): nothing to forward to, and asking System32 for it would only fail.
+    let is_dll = own_path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("dll"));
+    let wanted = known || (is_dll && !proxy.starts_with("uniloader"));
+    let system = if wanted {
         let path = system_path(&format!("{proxy}.dll"));
         // SAFETY: `path` is NUL-terminated and outlives the call.
         unsafe { LoadLibraryW(PCWSTR(path.as_ptr())) }.ok()
@@ -135,6 +142,7 @@ pub(crate) unsafe fn load_forwards(own: HMODULE) {
         own_path,
         proxy,
         known,
+        wanted,
         loaded: system.is_some(),
         resolved,
     });
@@ -166,7 +174,7 @@ pub(crate) fn log_summary() {
             f.proxy,
             f.resolved
         ),
-        (false, _) if f.proxy.starts_with("uniloader") => {
+        (false, _) if !f.wanted => {
             log::info!("loaded as {}, not forwarding", f.own_path.display());
         }
         (false, _) => log::error!(
