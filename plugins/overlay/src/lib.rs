@@ -27,6 +27,7 @@
     allow(dead_code, reason = "driven by the Windows renderer only")
 )]
 
+mod cards;
 mod layout;
 mod notices;
 mod registry;
@@ -135,6 +136,7 @@ impl Plugin for OverlayPlugin {
         if event.state == PluginState::STOPPED || event.state == PluginState::FAULTED {
             registry::remove_owner(event.plugin.raw());
             notices::take_all(event.plugin.raw());
+            cards::forget(event.plugin.raw());
             shared::refresh();
         }
     }

@@ -9,13 +9,15 @@
 
 use core::ffi::c_void;
 
+use uniloader_overlay::showcase::ShownCard;
 use uniloader_overlay::{
-    DialogDesc, DialogFn, NoticeDesc, OverlayApi, PanelDesc, PanelFn, PresentFn, UiValue, UiWidget,
+    CardDesc, DialogDesc, DialogFn, NoticeDesc, OverlayApi, PanelDesc, PanelFn, PresentFn, UiValue,
+    UiWidget,
 };
 use uniloader_sdk::api::{PluginHandle, Status, Str};
 use uniloader_sdk::{read_str, PluginRef};
 
-use crate::{notices, registry, shared, ui};
+use crate::{cards, notices, registry, shared, ui};
 
 /// The table registered as the service.
 pub(crate) static TABLE: OverlayApi = OverlayApi {
@@ -31,6 +33,8 @@ pub(crate) static TABLE: OverlayApi = OverlayApi {
     close,
     present_subscribe,
     is_capturing,
+    card_set,
+    card_remove,
 };
 
 /// Read a struct a consumer passed, checking it is at least as large as ours.
@@ -272,4 +276,38 @@ unsafe extern "C" fn present_subscribe(
 
 unsafe extern "C" fn is_capturing() -> bool {
     shared::is_capturing()
+}
+
+unsafe extern "C" fn card_set(owner: PluginHandle, name: Str, desc: *const CardDesc) -> Status {
+    // SAFETY: the ABI requires a valid descriptor or null, and a valid name.
+    let (Some(desc), name) = (unsafe { read_desc(desc) }, unsafe { read_str(name) }) else {
+        return Status::INVALID_ARGUMENT;
+    };
+    if !registry::valid_name(&name) {
+        return Status::INVALID_ARGUMENT;
+    }
+    // SAFETY: the descriptor's strings are valid for the call.
+    let card = unsafe {
+        ShownCard {
+            owner,
+            name,
+            badge: read_str(desc.badge),
+            title: read_str(desc.title),
+            text: read_str(desc.text),
+            icon: read_str(desc.icon),
+            level: desc.level,
+        }
+    };
+    cards::set(card);
+    Status::OK
+}
+
+unsafe extern "C" fn card_remove(owner: PluginHandle, name: Str) -> Status {
+    // SAFETY: the ABI requires a valid name.
+    let name = unsafe { read_str(name) };
+    if cards::remove(owner, &name) {
+        Status::OK
+    } else {
+        Status::NOT_FOUND
+    }
 }

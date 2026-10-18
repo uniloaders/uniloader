@@ -16,8 +16,8 @@ use uniloader_sdk::api::{PluginHandle, Status, Str};
 use uniloader_sdk::{read_str, Host, PluginError, PluginRef};
 
 use crate::abi::{
-    DialogDesc, NoticeDesc, OverlayApi, PanelDesc, PresentInfo, UiAnswer, UiDialog, UiLevel,
-    UiNotice, UiValue, UiWidget,
+    CardDesc, DialogDesc, NoticeDesc, OverlayApi, PanelDesc, PresentInfo, UiAnswer, UiDialog,
+    UiLevel, UiNotice, UiValue, UiWidget,
 };
 
 fn check(status: Status) -> Result<(), PluginError> {
@@ -33,6 +33,21 @@ fn contained(what: &str, f: impl FnOnce()) {
     if catch_unwind(AssertUnwindSafe(f)).is_err() {
         log::error!("overlay {what} callback panicked");
     }
+}
+
+/// One card for [`Overlay::card`].
+#[derive(Debug, Clone, Copy)]
+pub struct Card<'a> {
+    /// A short tag on a coloured square (`MP`), or empty.
+    pub badge: &'a str,
+    /// Bold first line, usually the plugin's name.
+    pub title: &'a str,
+    /// The line under it.
+    pub text: &'a str,
+    /// An image file (PNG) shown instead of the badge square, or empty.
+    pub icon: &'a str,
+    /// Colour of the badge square and the text line.
+    pub level: UiLevel,
 }
 
 /// The overlay, as one plugin sees it. Cheap to copy and usable from any thread.
@@ -237,6 +252,33 @@ impl Overlay {
         seconds: f32,
     ) -> Result<u64, PluginError> {
         self.notice_of(UiNotice::NOTICE, level, title, text, seconds)
+    }
+
+    /// Set (add or replace) this plugin's card `name` in the overlay's showcase, which cycles
+    /// through the cards of every plugin (in TSW: the main menu's bottom centre).
+    ///
+    /// # Errors
+    /// The overlay has no showcase ([`Status::UNSUPPORTED`]) or refused the card.
+    pub fn card(&self, name: &str, card: &Card<'_>) -> Result<(), PluginError> {
+        let desc = CardDesc {
+            struct_size: core::mem::size_of::<CardDesc>(),
+            badge: Str::new(card.badge),
+            title: Str::new(card.title),
+            text: Str::new(card.text),
+            icon: Str::new(card.icon),
+            level: card.level,
+        };
+        // SAFETY: `desc` and the strings it points to outlive the call.
+        check(unsafe { (self.api.card_set)(self.owner, Str::new(name), &raw const desc) })
+    }
+
+    /// Take this plugin's card `name` out of the showcase.
+    ///
+    /// # Errors
+    /// No such card, or no showcase.
+    pub fn remove_card(&self, name: &str) -> Result<(), PluginError> {
+        // SAFETY: `name` outlives the call.
+        check(unsafe { (self.api.card_remove)(self.owner, Str::new(name)) })
     }
 
     fn notice_of(

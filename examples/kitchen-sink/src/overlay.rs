@@ -7,7 +7,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use uniloader_overlay::{Overlay, Ui, UiDialog, UiLevel};
+use uniloader_overlay::{Card, Overlay, Ui, UiDialog, UiLevel};
 use uniloader_sdk::api::Status;
 use uniloader_sdk::{Host, PluginError};
 
@@ -35,6 +35,17 @@ pub(crate) fn attach(host: &Host) -> Option<Overlay> {
         "Connected to the overlay.",
     ) {
         log::error!("could not show a toast: {e}");
+    }
+    let card = Card {
+        badge: "KS",
+        title: "Kitchen sink",
+        text: "every plugin API, tried at start",
+        icon: "",
+        level: UiLevel::INFO,
+    };
+    match overlay.card("kitchen", &card) {
+        Ok(()) => log::info!("kitchen card in the showcase"),
+        Err(e) => log::info!("no showcase card: {e}"),
     }
     let presents = overlay.on_present(|info| {
         if PRESENTS.fetch_add(1, Ordering::Relaxed) == 0 {

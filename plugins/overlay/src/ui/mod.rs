@@ -140,6 +140,8 @@ impl Gui {
         };
         let advanced = layout::with(|l| l.advanced());
         let queued = notices::snapshot();
+        let windows_open = shared::console_open() || editor_open || panels.iter().any(|p| p.open);
+        let card = crate::cards::current();
         let hint = self.hint(host);
         let ctx = self.ctx.clone();
         let FrameInput {
@@ -186,6 +188,11 @@ impl Gui {
                 }
             }
             after.painted = paint::draw(&ctx, &queued);
+            if windows_open {
+                if let Some(card) = &card {
+                    paint::card(&ctx, card);
+                }
+            }
             if shared::is_capturing() {
                 cursor(&ctx, pointer);
             } else if shared::panels_open() {

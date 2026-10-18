@@ -161,6 +161,26 @@ pub struct NoticeDesc {
     pub seconds: f32,
 }
 
+/// A card in the overlay's shared showcase: a small, always-visible element (the main menu's
+/// bottom centre in TSW) that cycles through the cards of every plugin that set one. For
+/// "this mod is loaded", news, tips. It takes no input.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct CardDesc {
+    /// `size_of::<CardDesc>()`.
+    pub struct_size: usize,
+    /// A short tag on a coloured square (`MP`), or empty.
+    pub badge: Str,
+    /// Bold first line, usually the plugin's name.
+    pub title: Str,
+    /// The line under it.
+    pub text: Str,
+    /// An image file (PNG) shown instead of the badge square, or empty.
+    pub icon: Str,
+    /// Colour of the badge square and the text line.
+    pub level: UiLevel,
+}
+
 /// A modal dialog.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -283,4 +303,12 @@ pub struct OverlayApi {
     ) -> Status,
     /// Whether the overlay has the keyboard and mouse right now.
     pub is_capturing: unsafe extern "C" fn() -> bool,
+    // Appended later: a plugin built before they existed still works with a provider that
+    // has them; one built with them needs a provider that has them (the size check).
+    /// Set (add or replace) the owner's card `name` in the showcase. A provider without a
+    /// showcase answers [`Status::UNSUPPORTED`].
+    pub card_set:
+        unsafe extern "C" fn(owner: PluginHandle, name: Str, desc: *const CardDesc) -> Status,
+    /// Take the owner's card `name` out of the showcase.
+    pub card_remove: unsafe extern "C" fn(owner: PluginHandle, name: Str) -> Status,
 }

@@ -1,6 +1,7 @@
 //! Drawing the toasts, notices and dialogs [`crate::notices`] holds.
 
 use egui::{Align2, Color32, Context, Frame, Id, Key, RichText, Vec2};
+use uniloader_overlay::showcase::ShownCard;
 use uniloader_overlay::{UiAnswer, UiDialog, UiLevel, UiNotice};
 
 use crate::notices::{Entry, Kind};
@@ -71,6 +72,37 @@ fn toast(ctx: &Context, entry: &Entry, offset: &mut f32) {
             });
     });
     *offset += response.response.rect.height() + 8.0;
+}
+
+/// The showcase card at the bottom centre: a badge square, a bold title and a coloured line.
+/// An icon file is not drawn here (egui would need it as a texture); the badge stands in.
+pub(crate) fn card(ctx: &Context, card: &ShownCard) {
+    let accent = colour(card.level);
+    egui::Area::new(Id::new("overlay-card"))
+        .anchor(Align2::CENTER_BOTTOM, Vec2::new(0.0, -MARGIN * 2.0))
+        .order(egui::Order::Foreground)
+        .interactable(false)
+        .show(ctx, |ui| {
+            Frame::popup(ui.style()).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    if !card.badge.is_empty() {
+                        Frame::new()
+                            .fill(accent)
+                            .corner_radius(4.0)
+                            .inner_margin(Vec2::new(8.0, 6.0))
+                            .show(ui, |ui| {
+                                ui.label(RichText::new(&card.badge).strong().color(Color32::BLACK));
+                            });
+                    }
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new(&card.title).strong().size(18.0));
+                        if !card.text.is_empty() {
+                            ui.label(RichText::new(&card.text).color(accent));
+                        }
+                    });
+                });
+            });
+        });
 }
 
 /// Large text in the middle, for the few things that must be read.

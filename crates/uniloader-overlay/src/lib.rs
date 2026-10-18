@@ -15,12 +15,13 @@
 
 mod abi;
 mod client;
+pub mod showcase;
 
 pub use abi::{
-    DialogDesc, DialogFn, GraphicsApi, NoticeDesc, OverlayApi, PanelDesc, PanelFn, PresentFn,
-    PresentInfo, UiAnswer, UiDialog, UiLevel, UiNotice, UiValue, UiWidget,
+    CardDesc, DialogDesc, DialogFn, GraphicsApi, NoticeDesc, OverlayApi, PanelDesc, PanelFn,
+    PresentFn, PresentInfo, UiAnswer, UiDialog, UiLevel, UiNotice, UiValue, UiWidget,
 };
-pub use client::{Overlay, Ui};
+pub use client::{Card, Overlay, Ui};
 
 /// Name the overlay registers its service under.
 pub const SERVICE: &str = "overlay";
