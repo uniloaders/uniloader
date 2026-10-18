@@ -62,7 +62,10 @@ printf 'load = ["extra/chained.dll"]\n' > "$STAGE/uniloader/config/loader.toml"
 echo "== running under $WINE"
 status=0
 # Native first for version.dll: Wine would otherwise use its builtin and skip the proxy.
-( cd "$STAGE" && WINEDEBUG=-all WINEDLLOVERRIDES="version=n,b;d3d11,dxgi=n" \
+# DXVK's VR bridges stay off: with them it opens whatever OpenXR or OpenVR runtime is active,
+# and a smoke test must never touch a VR session that is running.
+( cd "$STAGE" && WINEDEBUG=-all \
+    WINEDLLOVERRIDES="version=n,b;d3d11,dxgi=n;wineopenxr,openvr_api_dxvk=d" \
     DXVK_LOG_LEVEL=none DXVK_STATE_CACHE=0 timeout 120 "$WINE" smoke-host.exe ) \
     | tee "$STAGE/run.log" || status=$?
 timeout 30 "$WINESERVER" -k 2> /dev/null || true
