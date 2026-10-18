@@ -6,6 +6,7 @@ members = [
     "crates/uniloader-sdk",
     "crates/uniloader",
     "examples/hello-plugin",
+    "examples/smoke-host",
 ]
 
 [workspace.package]

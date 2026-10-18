@@ -1,0 +1,14 @@
+[package]
+name = "smoke-host"
+description = "A stand-in game for the smoke test: imports version.dll, so the proxy loads at startup."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Storage_FileSystem"] }
+
+[lints]
+workspace = true
