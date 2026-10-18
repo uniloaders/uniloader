@@ -267,7 +267,7 @@ unsafe extern "system" fn present(this: *mut c_void, sync_interval: u32, flags: 
     let Some(real) = (unsafe { original::<PresentFn>(&REAL_PRESENT) }) else {
         return HRESULT(0);
     };
-    super::frame(this, flags);
+    super::frame(this, sync_interval, flags);
     // SAFETY: forwarding the caller's arguments to the original.
     unsafe { real(this, sync_interval, flags) }
 }
@@ -282,7 +282,7 @@ unsafe extern "system" fn present1(
     let Some(real) = (unsafe { original::<Present1Fn>(&REAL_PRESENT1) }) else {
         return HRESULT(0);
     };
-    super::frame(this, flags);
+    super::frame(this, sync_interval, flags);
     // SAFETY: forwarding the caller's arguments to the original.
     unsafe { real(this, sync_interval, flags, parameters) }
 }

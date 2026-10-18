@@ -55,7 +55,7 @@ pub(crate) fn uninstall() {
 }
 
 /// One `Present`, before it reaches DXGI: present subscribers, then the overlay on top.
-pub(crate) fn frame(swapchain: *mut c_void, flags: u32) {
+pub(crate) fn frame(swapchain: *mut c_void, sync_interval: u32, flags: u32) {
     // A test present draws nothing, so neither do we.
     if flags & DXGI_PRESENT_TEST.0 != 0 || IN_FRAME.with(Cell::get) {
         return;
@@ -69,7 +69,7 @@ pub(crate) fn frame(swapchain: *mut c_void, flags: u32) {
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let desc = describe(&chain);
         wnd::subclass(desc.OutputWindow.0);
-        subscribers(host, &chain, &desc);
+        subscribers(host, &chain, &desc, (sync_interval, flags));
         if shared::is_visible() {
             OVERLAY.with_borrow_mut(|slot| draw(host, slot, &chain));
         }
@@ -90,8 +90,9 @@ fn describe(chain: &IDXGISwapChain) -> DXGI_SWAP_CHAIN_DESC {
     })
 }
 
-/// Run the present subscribers, under the fault guard of each.
-fn subscribers(host: &Host, chain: &IDXGISwapChain, desc: &DXGI_SWAP_CHAIN_DESC) {
+/// Run the present subscribers, under the fault guard of each. `call` is the sync interval
+/// and flags the game passed to `Present`.
+fn subscribers(host: &Host, chain: &IDXGISwapChain, desc: &DXGI_SWAP_CHAIN_DESC, call: (u32, u32)) {
     let list = registry::present_subscribers();
     if list.is_empty() {
         return;
@@ -107,6 +108,8 @@ fn subscribers(host: &Host, chain: &IDXGISwapChain, desc: &DXGI_SWAP_CHAIN_DESC)
         hwnd: desc.OutputWindow.0,
         width: desc.BufferDesc.Width,
         height: desc.BufferDesc.Height,
+        sync_interval: call.0,
+        flags: call.1,
     };
     for subscriber in &list {
         calls::present(host, subscriber, &info);

@@ -211,6 +211,10 @@ pub struct PresentInfo {
     pub width: u32,
     /// Backbuffer height in pixels.
     pub height: u32,
+    /// For DXGI, the sync interval the game passed to `Present`.
+    pub sync_interval: u32,
+    /// For DXGI, the `DXGI_PRESENT_*` flags the game passed to `Present`.
+    pub flags: u32,
 }
 
 /// Fills a panel body: call [`OverlayApi::widget`] with `frame` for each widget.
