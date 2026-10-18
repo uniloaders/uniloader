@@ -307,9 +307,10 @@ unsafe extern "C" fn console_print(_host: *mut c_void, plugin: PluginHandle, lin
         .plugin(plugin)
         .map_or_else(|| "?".to_owned(), |p| p.name().to_owned());
     // Same shape as a log line, because a plugin printing to the console is the same kind of
-    // event as a plugin logging, and interleaved output is unreadable without a clock.
-    let line = format!("{} [INFO ] [{name}] {}", console::clock(), text(line));
-    console::print(&line);
+    // event as a plugin logging. The scrollback keeps its own clock per line, so only the
+    // external window, which prints raw text, gets one written in.
+    let line = format!("[INFO ] [{name}] {}", text(line));
+    console::print(&format!("{} {line}", console::clock()));
     guard.console_print(line);
 }
 

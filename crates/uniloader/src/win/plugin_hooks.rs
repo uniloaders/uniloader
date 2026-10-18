@@ -287,7 +287,12 @@ pub(crate) fn remove_all(plugin: PluginHandle, name: &str) {
         while index > 0 {
             index -= 1;
             if hooks[index].plugin == plugin {
-                mine.push(hooks.remove(index));
+                let mut entry = hooks.remove(index);
+                // Recorded during `start`, before the plugin had a published name.
+                if entry.name.is_empty() {
+                    name.clone_into(&mut entry.name);
+                }
+                mine.push(entry);
             }
         }
         mine
@@ -355,7 +360,14 @@ pub(crate) fn console_lines() -> Vec<String> {
                 Installed::Vtable { slot, .. } => format!("vtable slot at {slot:#X}"),
                 Installed::Detour { ref detour } => format!("detour at {:#X}", detour.target),
             };
-            format!("{} [{}] {what}: {}", entry.id, entry.name, entry.note)
+            // A hook installed during `start` is recorded before the plugin is published, so
+            // its name may only be known now.
+            let name = if entry.name.is_empty() {
+                super::plugins::find(entry.plugin).map_or_else(String::new, |p| p.name.clone())
+            } else {
+                entry.name.clone()
+            };
+            format!("{} [{name}] {what}: {}", entry.id, entry.note)
         })
         .collect()
 }
