@@ -42,7 +42,7 @@ pub(crate) fn attach(host: &Host) -> Option<Overlay> {
         }
     });
     match presents {
-        Ok(_) => {}
+        Ok(()) => {}
         // An overlay without a frame hook (tsw_ui draws with the game's own menus).
         Err(PluginError::Status(Status::UNSUPPORTED)) => {
             log::info!("this overlay has no presents; that check is skipped");
