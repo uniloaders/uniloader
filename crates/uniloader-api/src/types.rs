@@ -219,6 +219,23 @@ impl SettingKind {
     pub const ENUM: SettingKind = SettingKind(3);
     /// Free text.
     pub const STRING: SettingKind = SettingKind(4);
+    /// A file path; `choices` are the `|`-separated extensions a file picker offers.
+    pub const FILE: SettingKind = SettingKind(5);
+    /// A folder path.
+    pub const DIRECTORY: SettingKind = SettingKind(6);
+    /// A colour, `#rrggbb` or `#rrggbbaa`.
+    pub const COLOUR: SettingKind = SettingKind(7);
+    /// A date, `YYYY-MM-DD`.
+    pub const DATE: SettingKind = SettingKind(8);
+    /// A time of day, `HH:MM` or `HH:MM:SS`.
+    pub const TIME: SettingKind = SettingKind(9);
+    /// A date and time, `YYYY-MM-DD HH:MM[:SS]`.
+    pub const DATETIME: SettingKind = SettingKind(10);
+    /// Any set of the `|`-separated `choices`; the value lists them separated by `,`.
+    pub const FLAGS: SettingKind = SettingKind(11);
+    /// A key binding list in the hotkey grammar (`f8`, `ctrl+shift+c, sc29`), `none` when
+    /// unbound.
+    pub const KEY: SettingKind = SettingKind(12);
 }
 
 /// Bit flags for [`SettingDesc::flags`].

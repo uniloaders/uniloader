@@ -214,14 +214,7 @@ impl From<&SettingInfo> for SettingEntry {
             .filter(|c| !c.is_empty())
             .map(str::to_owned)
             .collect();
-        let kind = match s.kind {
-            uniloader_api::SettingKind::BOOL => SettingKind::Bool,
-            uniloader_api::SettingKind::INT => SettingKind::Int,
-            uniloader_api::SettingKind::FLOAT => SettingKind::Float,
-            uniloader_api::SettingKind::ENUM => SettingKind::Enum,
-            // Text, and any kind a newer loader adds: text is the one every value has.
-            _ => SettingKind::String,
-        };
+        let kind = SettingKind::from_abi(s.kind);
         SettingEntry {
             plugin: str_from(s.plugin),
             key: str_from(s.key),

@@ -15,7 +15,7 @@ use uniloader_api::{
 };
 pub use uniloader_core::cmdline::{Arg, CommandLine};
 
-use crate::settings::{Setting, SettingKind};
+use crate::settings::Setting;
 
 /// Error type for plugin code. Carries a loader status or a message.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -251,13 +251,7 @@ impl Host {
             key: Str::new(&setting.key),
             title: Str::new(&setting.title),
             description: Str::new(&setting.description),
-            kind: match setting.kind {
-                SettingKind::Bool => uniloader_api::SettingKind::BOOL,
-                SettingKind::Int => uniloader_api::SettingKind::INT,
-                SettingKind::Float => uniloader_api::SettingKind::FLOAT,
-                SettingKind::Enum => uniloader_api::SettingKind::ENUM,
-                SettingKind::String => uniloader_api::SettingKind::STRING,
-            },
+            kind: setting.kind.to_abi(),
             default: Str::new(&setting.default),
             min: setting.min,
             max: setting.max,

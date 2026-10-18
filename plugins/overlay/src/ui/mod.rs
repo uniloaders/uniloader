@@ -5,12 +5,15 @@
 //! a setting written from a widget, a dialog answer — waits until the egui pass is over, so
 //! no plugin is ever called while another plugin's panel body is on the stack.
 
+mod browser;
 pub(crate) mod calls;
 mod chrome;
 mod console;
+mod controls;
 pub(crate) mod frame;
 mod icons;
 mod paint;
+mod recorder;
 mod settings_panel;
 
 use std::sync::{Mutex, MutexGuard};
@@ -62,6 +65,8 @@ struct After {
     closed_panels: Vec<String>,
     placements: Vec<(String, Geometry)>,
     edits: settings_panel::Edits,
+    /// A hotkey binding the recorder finished: action and binding.
+    recorded: Option<(String, String)>,
     painted: paint::Outcome,
 }
 
@@ -69,7 +74,6 @@ struct After {
 pub(crate) struct Gui {
     ctx: Context,
     console: console::ConsolePanel,
-    editor: settings_panel::SettingsPanel,
     /// Whether the console was drawn last frame, so opening it can take the keyboard.
     console_shown: bool,
     scale: f32,
@@ -87,7 +91,6 @@ impl Gui {
         Gui {
             ctx,
             console: console::ConsolePanel::default(),
-            editor: settings_panel::SettingsPanel::default(),
             console_shown: false,
             scale: 1.0,
             next_token: 1,
@@ -100,9 +103,10 @@ impl Gui {
         &self.ctx
     }
 
-    /// Whether the settings editor wants the next key press.
+    /// Whether a binding wants the next key press.
+    #[allow(clippy::unused_self, reason = "the renderer asks the GUI it owns")]
     pub(crate) fn recording(&self) -> bool {
-        self.editor.is_recording()
+        recorder::is_recording()
     }
 
     /// Match egui's scale to the backbuffer, so a 4K window does not get a 1080p-sized UI.
@@ -149,6 +153,22 @@ impl Gui {
             pointer,
             pressed,
         } = input;
+        if let Some((vk, scancode, modifiers)) = pressed {
+            match recorder::press(vk, scancode, modifiers) {
+                Some((recorder::Target::Hotkey(action), binding)) => {
+                    after.recorded = Some((action, binding));
+                }
+                Some((recorder::Target::Setting(name), binding)) => {
+                    frame::queue_set(name, binding);
+                }
+                None => {}
+            }
+        }
+        if !windows_open {
+            // Nothing to record into or browse for.
+            recorder::stop();
+            browser::close();
+        }
         ctx.run_ui(raw, |ui| {
             let ctx = ui.ctx().clone();
             if shared::console_open() {
@@ -177,16 +197,16 @@ impl Gui {
                 };
                 let view = settings_panel::View {
                     sections: &sections,
-                    pressed,
                     advanced,
                 };
-                let (edits, placed) = self.editor.show(&ctx, &view, &chrome);
+                let (edits, placed) = settings_panel::show(&ctx, &view, &chrome);
                 after.edits = edits;
                 place(&mut after.placements, EDITOR_ID, &placed);
                 if !placed.open {
                     shared::close_editor();
                 }
             }
+            browser::show(&ctx);
             after.painted = paint::draw(&ctx, &queued);
             if windows_open {
                 if let Some(card) = &card {
@@ -268,7 +288,7 @@ impl Gui {
                 log::warn!("could not set {name} = {value}: {e}");
             }
         }
-        for (action, binding) in &after.edits.bindings {
+        for (action, binding) in after.edits.bindings.iter().chain(&after.recorded) {
             match host.rebind(action, binding) {
                 Ok(()) => log::info!("rebound {action} to {binding:?}"),
                 Err(e) => log::warn!("could not rebind {action}: {e}"),

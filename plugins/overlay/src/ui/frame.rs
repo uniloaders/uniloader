@@ -299,7 +299,15 @@ fn control(ui: &mut egui::Ui, entry: &SettingEntry, label: &str) -> Option<Strin
                 });
             picked
         }
-        SettingKind::String => {
+        SettingKind::File | SettingKind::Directory => super::controls::path(ui, entry, label),
+        SettingKind::Colour => super::controls::colour(ui, entry, label),
+        SettingKind::Date | SettingKind::Time | SettingKind::DateTime => {
+            super::controls::when(ui, entry, label)
+        }
+        SettingKind::Flags => super::controls::flags(ui, entry, label),
+        SettingKind::Key => super::controls::key(ui, entry, label),
+        // Text, and any kind a newer loader adds: every value is text.
+        _ => {
             let mut text = current.to_owned();
             ui.horizontal(|ui| {
                 let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(140.0));

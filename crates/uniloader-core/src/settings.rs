@@ -4,6 +4,8 @@ use std::collections::BTreeMap;
 
 use thiserror::Error;
 
+use crate::values;
+
 /// Value type of a setting. Mirrors `uniloader_api::SettingKind`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -17,6 +19,22 @@ pub enum Kind {
     Enum,
     /// Free text.
     String,
+    /// A file path; `choices` are the file name extensions a picker offers.
+    File,
+    /// A folder path.
+    Directory,
+    /// `#rrggbb` or `#rrggbbaa` ([`values::colour`]).
+    Colour,
+    /// `YYYY-MM-DD`.
+    Date,
+    /// `HH:MM` or `HH:MM:SS`.
+    Time,
+    /// `YYYY-MM-DD HH:MM[:SS]`.
+    DateTime,
+    /// Any set of `choices`, comma separated.
+    Flags,
+    /// A key binding list in the hotkey grammar, `none` when unbound.
+    Key,
 }
 
 /// Everything the loader knows about one setting.
@@ -91,6 +109,16 @@ pub enum SettingError {
         /// Allowed values.
         choices: Vec<String>,
     },
+    /// Not in the kind's text form (a colour, a date, a key binding).
+    #[error("{key}: {value:?} is not {expected}")]
+    BadFormat {
+        /// Setting key.
+        key: String,
+        /// Offending text.
+        value: String,
+        /// What was expected, for the message.
+        expected: &'static str,
+    },
     /// Key already registered.
     #[error("setting {0:?} is already registered")]
     Duplicate(String),
@@ -153,7 +181,29 @@ pub fn validate(desc: &Desc, value: &str) -> Result<String, SettingError> {
                 value: value.to_owned(),
                 choices: desc.choices.clone(),
             }),
-        Kind::String => Ok(text.to_owned()),
+        Kind::String | Kind::File | Kind::Directory => Ok(text.to_owned()),
+        Kind::Flags => values::flags(text, &desc.choices).map_err(|bad| SettingError::NotAChoice {
+            key: key.clone(),
+            value: bad,
+            choices: desc.choices.clone(),
+        }),
+        Kind::Colour | Kind::Date | Kind::Time | Kind::DateTime | Kind::Key => {
+            let (parsed, expected) = match desc.kind {
+                Kind::Colour => (values::colour(text), "a colour like #ff8000"),
+                Kind::Date => (values::date(text), "a date like 2026-10-19"),
+                Kind::Time => (values::time(text), "a time like 08:30"),
+                Kind::DateTime => (
+                    values::date_time(text),
+                    "a date and time like 2026-10-19 08:30",
+                ),
+                _ => (values::key(text), "a key binding like f8 or ctrl+shift+c"),
+            };
+            parsed.ok_or_else(|| SettingError::BadFormat {
+                key: key.clone(),
+                value: value.to_owned(),
+                expected,
+            })
+        }
     }
 }
 
@@ -322,6 +372,31 @@ mod tests {
         assert_eq!(validate(&d, "right").as_deref(), Ok("Right"));
         assert!(matches!(
             validate(&d, "up"),
+            Err(SettingError::NotAChoice { .. })
+        ));
+    }
+
+    #[test]
+    fn rich_kinds_store_their_canonical_form() {
+        assert_eq!(
+            validate(&desc("tint", Kind::Colour, "#fff"), "F80").as_deref(),
+            Ok("#ff8800")
+        );
+        assert!(matches!(
+            validate(&desc("day", Kind::Date, "2026-01-01"), "2026-02-30"),
+            Err(SettingError::BadFormat { .. })
+        ));
+        assert_eq!(
+            validate(&desc("key", Kind::Key, "f8"), "Ctrl+F9").as_deref(),
+            Ok("ctrl+f9")
+        );
+        let shown = Desc {
+            choices: vec!["Map".into(), "Chat".into()],
+            ..desc("shown", Kind::Flags, "")
+        };
+        assert_eq!(validate(&shown, "chat,map").as_deref(), Ok("Map,Chat"));
+        assert!(matches!(
+            validate(&shown, "radio"),
             Err(SettingError::NotAChoice { .. })
         ));
     }

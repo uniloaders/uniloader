@@ -1,7 +1,11 @@
 //! Builder for setting descriptors.
 
-/// Value type of a setting.
+use uniloader_api::SettingKind as Abi;
+
+/// Value type of a setting. More may come: a kind a UI does not know is edited as text,
+/// which every value is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SettingKind {
     /// `true` / `false`.
     Bool,
@@ -13,6 +17,56 @@ pub enum SettingKind {
     Enum,
     /// Free text.
     String,
+    /// A file path; the choices are the extensions a file picker offers.
+    File,
+    /// A folder path.
+    Directory,
+    /// `#rrggbb` or `#rrggbbaa`.
+    Colour,
+    /// `YYYY-MM-DD`.
+    Date,
+    /// `HH:MM` or `HH:MM:SS`.
+    Time,
+    /// `YYYY-MM-DD HH:MM[:SS]`.
+    DateTime,
+    /// Any set of the choices, comma separated.
+    Flags,
+    /// A key binding list in the hotkey grammar, `none` when unbound.
+    Key,
+}
+
+const KINDS: [(SettingKind, Abi); 13] = [
+    (SettingKind::Bool, Abi::BOOL),
+    (SettingKind::Int, Abi::INT),
+    (SettingKind::Float, Abi::FLOAT),
+    (SettingKind::Enum, Abi::ENUM),
+    (SettingKind::String, Abi::STRING),
+    (SettingKind::File, Abi::FILE),
+    (SettingKind::Directory, Abi::DIRECTORY),
+    (SettingKind::Colour, Abi::COLOUR),
+    (SettingKind::Date, Abi::DATE),
+    (SettingKind::Time, Abi::TIME),
+    (SettingKind::DateTime, Abi::DATETIME),
+    (SettingKind::Flags, Abi::FLAGS),
+    (SettingKind::Key, Abi::KEY),
+];
+
+impl SettingKind {
+    /// The ABI value.
+    pub(crate) fn to_abi(self) -> Abi {
+        KINDS
+            .iter()
+            .find(|(k, _)| *k == self)
+            .map_or(Abi::STRING, |(_, a)| *a)
+    }
+
+    /// From the ABI value; text for a kind a newer loader adds, as every value is text.
+    pub(crate) fn from_abi(abi: Abi) -> Self {
+        KINDS
+            .iter()
+            .find(|(_, a)| *a == abi)
+            .map_or(SettingKind::String, |(k, _)| *k)
+    }
 }
 
 /// A setting a plugin registers. Build with the constructors, tweak with the `with_*` methods.
@@ -90,6 +144,64 @@ impl Setting {
     #[must_use]
     pub fn text(key: &str, title: &str, default: &str) -> Self {
         Self::new(key, title, SettingKind::String, default.to_owned())
+    }
+
+    /// A file path; a picker offers files with one of `extensions` (without the dot), or
+    /// any file when it is empty.
+    #[must_use]
+    pub fn file(key: &str, title: &str, default: &str, extensions: &[&str]) -> Self {
+        Self {
+            choices: extensions.iter().map(|&e| e.to_owned()).collect(),
+            ..Self::new(key, title, SettingKind::File, default.to_owned())
+        }
+    }
+
+    /// A folder path.
+    #[must_use]
+    pub fn directory(key: &str, title: &str, default: &str) -> Self {
+        Self::new(key, title, SettingKind::Directory, default.to_owned())
+    }
+
+    /// A colour, `#rrggbb` or `#rrggbbaa`.
+    #[must_use]
+    pub fn colour(key: &str, title: &str, default: &str) -> Self {
+        Self::new(key, title, SettingKind::Colour, default.to_owned())
+    }
+
+    /// A date, `YYYY-MM-DD`.
+    #[must_use]
+    pub fn date(key: &str, title: &str, default: &str) -> Self {
+        Self::new(key, title, SettingKind::Date, default.to_owned())
+    }
+
+    /// A time of day, `HH:MM` or `HH:MM:SS`.
+    #[must_use]
+    pub fn time(key: &str, title: &str, default: &str) -> Self {
+        Self::new(key, title, SettingKind::Time, default.to_owned())
+    }
+
+    /// A date and time, `YYYY-MM-DD HH:MM[:SS]`.
+    #[must_use]
+    pub fn date_time(key: &str, title: &str, default: &str) -> Self {
+        Self::new(key, title, SettingKind::DateTime, default.to_owned())
+    }
+
+    /// Any set of `choices`; `default` lists the ones on at first.
+    #[must_use]
+    pub fn flags(key: &str, title: &str, default: &[&str], choices: &[&str]) -> Self {
+        Self {
+            choices: choices.iter().map(|&c| c.to_owned()).collect(),
+            ..Self::new(key, title, SettingKind::Flags, default.join(","))
+        }
+    }
+
+    /// A key binding in the hotkey grammar (`f8`, `ctrl+shift+c`); `none` for unbound.
+    ///
+    /// For a key the plugin reads itself. An action that should simply fire on a key is a
+    /// hotkey (`Host::hotkey`), which the loader watches and the settings UIs rebind too.
+    #[must_use]
+    pub fn key(key: &str, title: &str, default: &str) -> Self {
+        Self::new(key, title, SettingKind::Key, default.to_owned())
     }
 
     /// Longer help text shown in UI and `help`.

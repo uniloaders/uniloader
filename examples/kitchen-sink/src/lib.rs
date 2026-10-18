@@ -65,6 +65,20 @@ impl Plugin for KitchenSink {
         host.setting(&Setting::choice("mode", "Mode", "fast", &["fast", "safe"]))?;
         host.setting(&Setting::text("motto", "Motto", "everything").advanced())?;
         host.setting(&Setting::int("counter", "Counter", 0, 0, 0).transient())?;
+        // One of each richer kind, for the settings UIs to show.
+        host.setting(&Setting::file("image", "Image", "", &["png", "jpg"]))?;
+        host.setting(&Setting::directory("folder", "Folder", ""))?;
+        host.setting(&Setting::colour("tint", "Tint", "#ff8000"))?;
+        host.setting(&Setting::date("day", "Day", "2026-10-19"))?;
+        host.setting(&Setting::time("alarm", "Alarm", "08:30"))?;
+        host.setting(&Setting::date_time("when", "When", "2026-10-19 08:30"))?;
+        host.setting(&Setting::flags(
+            "shown",
+            "Shown",
+            &["map", "chat"],
+            &["map", "chat", "names"],
+        ))?;
+        host.setting(&Setting::key("peek", "Peek key", "f8"))?;
         host.hotkey("poke", "Poke the kitchen sink", "ctrl+f8")?;
         // Bound by position, so it only fires from a reported press; the self-test reports one.
         host.hotkey("scan", "Scan code binding", "sc58")?;

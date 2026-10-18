@@ -44,6 +44,28 @@ fn settings(c: &mut Checks, sink: &KitchenSink, host: &Host) {
     c.check("bad choice refused", host.set("mode", "turbo").is_err());
     c.check("restored", host.set("level", "3").is_ok());
     c.check(
+        "colour canonicalised",
+        host.set("tint", "F80").is_ok() && host.get("tint").as_deref() == Ok("#ff8800"),
+    );
+    c.check("bad date refused", host.set("day", "2026-02-30").is_err());
+    c.check(
+        "flags in choice order",
+        host.set("shown", "names,map").is_ok() && host.get("shown").as_deref() == Ok("map,names"),
+    );
+    c.check(
+        "key binding cleared",
+        host.set("peek", "none").is_ok() && host.get("peek").as_deref() == Ok("none"),
+    );
+    c.check(
+        "rich kinds restored",
+        ["tint=#ff8000", "shown=map,chat", "peek=f8"]
+            .iter()
+            .all(|kv| {
+                kv.split_once('=')
+                    .is_some_and(|(k, v)| host.set(k, v).is_ok())
+            }),
+    );
+    c.check(
         "transient setting writes",
         host.set("counter", "42").is_ok() && host.get("counter").as_deref() == Ok("42"),
     );
@@ -67,7 +89,16 @@ fn registries(c: &mut Checks, host: &Host) {
         me.is_some_and(|m| m.title == "Kitchen sink" && m.version == env!("CARGO_PKG_VERSION")),
     );
     let settings = host.settings(Some("kitchen"));
-    c.check("six settings enumerated", settings.len() == 6);
+    c.check("fourteen settings enumerated", settings.len() == 14);
+    c.check(
+        "rich kinds survive enumeration",
+        settings
+            .iter()
+            .any(|s| s.key == "tint" && s.kind == SettingKind::Colour)
+            && settings
+                .iter()
+                .any(|s| s.key == "shown" && s.kind == SettingKind::Flags && s.choices.len() == 3),
+    );
     c.check(
         "enum setting carries its choices",
         settings

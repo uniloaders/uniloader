@@ -121,6 +121,14 @@ fn kind_of(kind: settings::Kind) -> SettingKind {
         settings::Kind::Float => SettingKind::FLOAT,
         settings::Kind::Enum => SettingKind::ENUM,
         settings::Kind::String => SettingKind::STRING,
+        settings::Kind::File => SettingKind::FILE,
+        settings::Kind::Directory => SettingKind::DIRECTORY,
+        settings::Kind::Colour => SettingKind::COLOUR,
+        settings::Kind::Date => SettingKind::DATE,
+        settings::Kind::Time => SettingKind::TIME,
+        settings::Kind::DateTime => SettingKind::DATETIME,
+        settings::Kind::Flags => SettingKind::FLAGS,
+        settings::Kind::Key => SettingKind::KEY,
     }
 }
 
