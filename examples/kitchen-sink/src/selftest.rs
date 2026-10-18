@@ -28,7 +28,12 @@ impl Checks {
 
 fn settings(c: &mut Checks, sink: &KitchenSink, host: &Host) {
     c.check("own setting reads", host.get("level").as_deref() == Ok("3"));
-    c.check("typed read", host.get_as::<f64>("scale") == Ok(1.5));
+    // Any value in its range: the scale is the player's to change in the settings page.
+    c.check(
+        "typed read",
+        host.get_as::<f64>("scale")
+            .is_ok_and(|s| (0.1..=4.0).contains(&s)),
+    );
     let before = sink.setting_changes.load(Ordering::Relaxed);
     c.check("own setting writes", host.set("level", "7").is_ok());
     c.check(

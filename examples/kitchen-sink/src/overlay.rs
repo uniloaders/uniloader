@@ -8,7 +8,8 @@
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use uniloader_overlay::{Overlay, Ui, UiDialog, UiLevel};
-use uniloader_sdk::Host;
+use uniloader_sdk::api::Status;
+use uniloader_sdk::{Host, PluginError};
 
 /// Frames the panel body was filled in.
 static FRAMES: AtomicU32 = AtomicU32::new(0);
@@ -40,8 +41,13 @@ pub(crate) fn attach(host: &Host) -> Option<Overlay> {
             log::info!("kitchen saw a present {}x{}", info.width, info.height);
         }
     });
-    if let Err(e) = presents {
-        log::error!("could not subscribe to presents: {e}");
+    match presents {
+        Ok(_) => {}
+        // An overlay without a frame hook (tsw_ui draws with the game's own menus).
+        Err(PluginError::Status(Status::UNSUPPORTED)) => {
+            log::info!("this overlay has no presents; that check is skipped");
+        }
+        Err(e) => log::error!("could not subscribe to presents: {e}"),
     }
     // Opened and closed straight away: the answer arrives on the next frame, as `CLOSED`.
     let dialog = overlay.dialog(
