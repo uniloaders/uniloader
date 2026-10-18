@@ -557,6 +557,17 @@ impl State {
             .map(scrollback::Line::flat)
             .collect()
     }
+
+    /// Every line since `mark`, log records included, oldest first: the whole scrollback a
+    /// console view shows. Log records carry their level as a `[LEVEL]` prefix.
+    #[must_use]
+    pub fn console_all_since(&self, mark: u64) -> Vec<String> {
+        self.console
+            .iter()
+            .filter(|line| line.seq > mark)
+            .map(scrollback::Line::flat)
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -774,6 +785,21 @@ pub(crate) mod tests {
         let captured = s.console_since(mark);
         assert_eq!(captured.len(), CONSOLE_HISTORY);
         assert_eq!(captured.first().map(String::as_str), Some("5"));
+    }
+
+    #[test]
+    fn console_view_includes_log_records() {
+        let mut s = state();
+        let mark = s.console_mark();
+        s.console_push(
+            scrollback::Kind::Log(log::Level::Warn),
+            "t".to_owned(),
+            "careful".to_owned(),
+        );
+        s.console_print("out".to_owned());
+        assert_eq!(s.console_since(mark), vec!["out".to_owned()]);
+        assert_eq!(s.console_all_since(mark).len(), 2);
+        assert!(s.console_all_since(mark)[0].ends_with("t: careful"));
     }
 
     #[test]

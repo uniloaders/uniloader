@@ -10,8 +10,9 @@
 use core::ffi::c_void;
 
 use uniloader_api::{
-    GuardedFn, HotkeyInfo, HotkeyInfoFn, ModuleKind, PluginEntry, PluginEntryFn, PluginHandle,
-    PluginState, ServiceInfo, SettingFlags, SettingInfo, SettingInfoFn, SettingKind, Status, Str,
+    GuardedFn, HotkeyInfo, HotkeyInfoFn, LineFn, ModuleKind, PluginEntry, PluginEntryFn,
+    PluginHandle, PluginState, ServiceInfo, SettingFlags, SettingInfo, SettingInfoFn, SettingKind,
+    Status, Str,
 };
 use uniloader_core::settings;
 
@@ -274,6 +275,32 @@ pub(super) unsafe extern "C" fn service_get(
             version: service.version,
             provider: service.provider,
         });
+    }
+    Status::OK
+}
+
+pub(super) unsafe extern "C" fn console_read(
+    _host: *mut c_void,
+    since: u64,
+    sink: Option<LineFn>,
+    ctx: *mut c_void,
+    out_next: *mut u64,
+) -> Status {
+    let (lines, next) = {
+        let mut guard = state();
+        // Whatever the logger queued belongs in the scrollback before anyone reads it.
+        guard.console_drain();
+        (guard.console_all_since(since), guard.console_mark())
+    };
+    if !out_next.is_null() {
+        // SAFETY: checked non-null; the ABI requires a writable `u64`.
+        unsafe { out_next.write(next) };
+    }
+    if let Some(sink) = sink {
+        for line in &lines {
+            // SAFETY: `line` lives until the sink returns, as documented.
+            unsafe { sink(ctx, Str::new(line)) };
+        }
     }
     Status::OK
 }

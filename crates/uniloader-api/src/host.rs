@@ -252,4 +252,15 @@ pub struct HostApi {
         f: Option<GuardedFn>,
         ctx: *mut c_void,
     ) -> Status,
+    /// Read the console scrollback (command output and log records, oldest first) printed
+    /// after position `since`, each line handed to `sink`. Writes the position to pass next
+    /// time to `out_next`. Start with 0; lines that fell out of the bounded history are gone.
+    /// For a plugin that shows the console, such as an overlay.
+    pub console_read: unsafe extern "C" fn(
+        host: *mut c_void,
+        since: u64,
+        sink: Option<LineFn>,
+        ctx: *mut c_void,
+        out_next: *mut u64,
+    ) -> Status,
 }

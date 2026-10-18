@@ -346,6 +346,25 @@ impl Host {
         })
     }
 
+    /// Console lines (command output and log records) printed after position `since`, and
+    /// the position to pass next time. Start with 0.
+    #[must_use]
+    pub fn console_read(&self, since: u64) -> (Vec<String>, u64) {
+        let mut lines: Vec<String> = Vec::new();
+        let mut next = since;
+        // SAFETY: `lines` and `next` outlive the call; the sink only receives `lines`.
+        let _ = unsafe {
+            (self.api.console_read)(
+                self.api.host,
+                since,
+                Some(crate::host::collect_line),
+                core::ptr::from_mut(&mut lines).cast(),
+                &raw mut next,
+            )
+        };
+        (lines, next)
+    }
+
     /// Run `f` on behalf of plugin `target` under the loader's fault guard: a hardware fault
     /// inside disables `target`, not the caller. For services calling into consumers.
     ///

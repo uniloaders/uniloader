@@ -547,7 +547,7 @@ impl Host {
 /// # Safety
 /// `ctx` must be the `Vec<String>` pointer `console_capture` passed, and `line` must be
 /// readable for the duration of the call, which the ABI requires.
-unsafe extern "C" fn collect_line(ctx: *mut c_void, line: Str) {
+pub(crate) unsafe extern "C" fn collect_line(ctx: *mut c_void, line: Str) {
     if ctx.is_null() {
         return;
     }

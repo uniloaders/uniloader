@@ -2,6 +2,7 @@
 
 use std::sync::atomic::Ordering;
 
+use uniloader_sdk::api::LogLevel;
 use uniloader_sdk::{Host, ModuleKind, PluginState, SettingKind};
 
 use crate::{KitchenSink, MathService};
@@ -171,6 +172,18 @@ fn console(c: &mut Checks, sink: &KitchenSink, host: &Host) {
         plugins
             .iter()
             .any(|l| l == "service kitchen.math v1 from kitchen"),
+    );
+    let (_, mark) = host.console_read(0);
+    host.log(LogLevel::INFO, "console read marker");
+    host.console_print("console read output");
+    let (fresh, next) = host.console_read(mark);
+    c.check(
+        "console read sees log and output",
+        next > mark
+            && fresh.iter().any(|l| l.ends_with("console read marker"))
+            && fresh
+                .iter()
+                .any(|l| l.ends_with("[kitchen] console read output")),
     );
 }
 
