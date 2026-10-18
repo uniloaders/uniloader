@@ -13,7 +13,7 @@ use core::marker::PhantomData;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use uniloader_sdk::api::{PluginHandle, Status, Str};
-use uniloader_sdk::{read_str, Host, PluginError};
+use uniloader_sdk::{read_str, Host, PluginError, PluginRef};
 
 use crate::abi::{
     DialogDesc, NoticeDesc, OverlayApi, PanelDesc, PresentInfo, UiAnswer, UiDialog, UiLevel,
@@ -40,6 +40,7 @@ fn contained(what: &str, f: impl FnOnce()) {
 pub struct Overlay {
     api: &'static OverlayApi,
     owner: PluginHandle,
+    provider: PluginRef,
 }
 
 impl core::fmt::Debug for Overlay {
@@ -109,7 +110,7 @@ where
 
 impl Overlay {
     /// Find the overlay. `None` when no plugin provides it, or one with an incompatible
-    /// layout does. Declare a dependency on [`crate::PLUGIN`] so it is running by `start`.
+    /// layout does. Declare `Dependency::service(SERVICE)` so it is running by `start`.
     #[must_use]
     pub fn connect(host: &Host) -> Option<Overlay> {
         // SAFETY: `OverlayApi` is the layout the service `overlay` promises at this version;
@@ -128,7 +129,15 @@ impl Overlay {
         Some(Overlay {
             api: service.table,
             owner: host.me().raw(),
+            provider: service.provider,
         })
+    }
+
+    /// The plugin providing the service: the egui `overlay`, or a game's own UI such as
+    /// TSW's `tsw_ui`.
+    #[must_use]
+    pub fn provider(&self) -> PluginRef {
+        self.provider
     }
 
     /// Add a panel, filled by `draw` each frame it is open.

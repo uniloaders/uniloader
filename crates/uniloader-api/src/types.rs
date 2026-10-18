@@ -146,6 +146,11 @@ impl DependencyKind {
     pub const LIBRARY: DependencyKind = DependencyKind(1);
     /// A file that must exist, relative to the game directory or absolute.
     pub const FILE: DependencyKind = DependencyKind(2);
+    /// A service, by name, provided by whichever plugin lists it in
+    /// [`PluginInfo::provides`]. Every provider starts first; with exactly one provider the
+    /// dependency behaves like [`DependencyKind::PLUGIN`] on it, with several each one only
+    /// decides order, because any of them is enough.
+    pub const SERVICE: DependencyKind = DependencyKind(3);
 }
 
 /// One requirement the loader checks before starting a plugin.
@@ -190,6 +195,12 @@ pub struct PluginInfo {
     pub dependencies: *const Dependency,
     /// Number of entries in `dependencies`.
     pub dependency_count: usize,
+    /// Names of the services this plugin provides once started, or null when
+    /// `provides_count` is 0. Lets [`DependencyKind::SERVICE`] dependants start after it.
+    /// Must stay valid while loaded. Appended: check `struct_size` before reading.
+    pub provides: *const Str,
+    /// Number of entries in `provides`.
+    pub provides_count: usize,
 }
 
 /// Value type of a setting.

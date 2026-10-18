@@ -30,6 +30,10 @@ pub trait Plugin: Sized + Send + Sync + 'static {
     /// The loader checks the list and logs why it skipped the plugin, rather than letting
     /// the plugin discover the problem at run time.
     const DEPENDENCIES: &'static [Dependency] = &[];
+    /// Services this plugin provides from `start`, so plugins declaring
+    /// [`Dependency::service`] start after it. Providing a service not listed here still
+    /// works, but nothing is ordered after it.
+    const PROVIDES: &'static [&'static str] = &[];
 
     /// Create the plugin. Register settings, hotkeys, commands and subscriptions here;
     /// registration is only allowed during this call.

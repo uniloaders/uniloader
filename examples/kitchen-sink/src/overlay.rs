@@ -99,17 +99,27 @@ fn draw(ui: &mut Ui<'_>) {
 /// console command. The console and the settings editor are left open, so the smoke test's
 /// captured frame shows them.
 pub(crate) fn checks(check: &mut dyn FnMut(&str, bool), overlay: &Overlay, host: &Host) {
+    // Whichever plugin provides the service: the egui `overlay`, or a game's own UI. Both
+    // have a `toggle` command for their console and settings screens.
+    let provider = host
+        .modules()
+        .into_iter()
+        .find(|m| m.plugin == Some(overlay.provider()))
+        .map_or_else(|| "overlay".to_owned(), |m| m.name);
     check(
         "overlay opens its console by command",
-        host.console_exec("overlay.toggle console").is_ok(),
+        host.console_exec(&format!("{provider}.toggle console"))
+            .is_ok(),
     );
     check(
         "overlay opens its settings editor by command",
-        host.console_exec("overlay.toggle settings").is_ok(),
+        host.console_exec(&format!("{provider}.toggle settings"))
+            .is_ok(),
     );
     check(
         "overlay refuses to toggle nonsense",
-        host.console_exec("overlay.toggle nonsense").is_err(),
+        host.console_exec(&format!("{provider}.toggle nonsense"))
+            .is_err(),
     );
     check("overlay panel starts open", overlay.is_open("panel"));
     check(

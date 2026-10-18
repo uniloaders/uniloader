@@ -334,6 +334,7 @@ pub(super) fn describe_one(file: &Path) -> Result<Described, String> {
     let text = super::hostapi::text;
     let name = text(info.name);
     let title = text(info.title);
+    external::register_provider(&name, &external::provided(info));
     Ok(Described {
         file: file.to_path_buf(),
         info: crate::state::Described {
@@ -447,6 +448,7 @@ pub(crate) fn load_all(paths: &Paths, disabled: &[String]) {
         |plugin| match external::unmet_external(&paths.game_dir, &plugin.declared) {
             Some(reason) => {
                 log::error!("[{}] not started: {reason}", plugin.name());
+                external::forget_provider(plugin.name());
                 false
             }
             None => true,
@@ -487,6 +489,7 @@ pub(crate) fn load_all(paths: &Paths, disabled: &[String]) {
             pending().push(plugin);
         } else {
             log::error!("[{}] not started: {reason}", plugin.name());
+            external::forget_provider(plugin.name());
         }
     }
     start_pending();

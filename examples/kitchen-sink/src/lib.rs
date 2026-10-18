@@ -53,7 +53,7 @@ impl Plugin for KitchenSink {
     const DESCRIPTION: &'static str = "Exercises every host function and checks the results.";
     const DEPENDENCIES: &'static [Dependency] = &[
         Dependency::plugin("hello", ">=0.1").optional(),
-        Dependency::plugin(uniloader_overlay::PLUGIN, ">=0.1").optional(),
+        Dependency::service(uniloader_overlay::SERVICE).optional(),
     ];
 
     // Providing a service is unsafe: the table's layout is a promise the compiler cannot check.

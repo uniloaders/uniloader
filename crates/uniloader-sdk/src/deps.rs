@@ -60,6 +60,19 @@ impl Dependency {
         }
     }
 
+    /// A service by name, whichever plugin provides it (see
+    /// [`Plugin::PROVIDES`](crate::Plugin::PROVIDES)). Every provider starts first, so
+    /// [`Host::service`](crate::Host::service) finds it during `start`.
+    #[must_use]
+    pub const fn service(name: &'static str) -> Self {
+        Dependency {
+            kind: DependencyKind::SERVICE,
+            name,
+            version: "",
+            optional: false,
+        }
+    }
+
     /// Carry on without it. A plugin dependency then only affects load order.
     #[must_use]
     pub const fn optional(mut self) -> Self {

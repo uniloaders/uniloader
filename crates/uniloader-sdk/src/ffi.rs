@@ -67,6 +67,15 @@ fn dependencies<P: Plugin>() -> (*const api::Dependency, usize) {
     (list.as_ptr(), list.len())
 }
 
+/// The provided service names in ABI form, leaked for the same reason as the dependencies.
+fn provides<P: Plugin>() -> (*const Str, usize) {
+    if P::PROVIDES.is_empty() {
+        return (core::ptr::null(), 0);
+    }
+    let list: &'static [Str] = Vec::leak(P::PROVIDES.iter().map(|s| Str::new(s)).collect());
+    (list.as_ptr(), list.len())
+}
+
 // SAFETY: every `Str` inside points at a `&'static str` compiled into the plugin and the
 // dependency array is leaked, so everything reachable is immutable and lives for the whole
 // process; reading it from any thread is safe.
@@ -80,6 +89,7 @@ static INFO: OnceLock<StaticInfo> = OnceLock::new();
 pub fn describe<P: Plugin>() -> *const PluginInfo {
     let info = INFO.get_or_init(|| {
         let (dependencies, dependency_count) = dependencies::<P>();
+        let (provides, provides_count) = provides::<P>();
         StaticInfo(PluginInfo {
             struct_size: core::mem::size_of::<PluginInfo>(),
             api_version: API_VERSION,
@@ -90,6 +100,8 @@ pub fn describe<P: Plugin>() -> *const PluginInfo {
             description: Str::new(P::DESCRIPTION),
             dependencies,
             dependency_count,
+            provides,
+            provides_count,
         })
     });
     core::ptr::from_ref(&info.0)

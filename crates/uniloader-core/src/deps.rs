@@ -332,9 +332,83 @@ fn toposort(
     order
 }
 
+/// Turn a dependency on a service into requirements on the plugins providing it.
+///
+/// `providers` are the plugins known to provide `service`, the dependant itself excluded.
+/// With one provider the requirement is as strong as the dependency; with several each is
+/// optional and only orders the start, because any one of them is enough. With none, a
+/// mandatory dependency becomes a requirement on a name no plugin can have
+/// (`service:<name>`), so the planner reports it missing and the dependant waits.
+#[must_use]
+pub fn service_requirements(service: &str, providers: &[String], optional: bool) -> Vec<PluginReq> {
+    let any = VersionReq {
+        parts: Vec::new(),
+        text: String::new(),
+    };
+    if providers.is_empty() {
+        return if optional {
+            Vec::new()
+        } else {
+            vec![PluginReq {
+                name: format!("service:{service}"),
+                version: any,
+                optional: false,
+            }]
+        };
+    }
+    let alone = providers.len() == 1;
+    providers
+        .iter()
+        .map(|name| PluginReq {
+            name: name.clone(),
+            version: any.clone(),
+            optional: optional || !alone,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn a_single_provider_is_required_like_a_plugin() {
+        let reqs = service_requirements("overlay", &names(&["overlay"]), false);
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].name, "overlay");
+        assert!(!reqs[0].optional);
+    }
+
+    #[test]
+    fn several_providers_only_order_the_start() {
+        let reqs = service_requirements("overlay", &names(&["overlay", "tsw-ui"]), false);
+        assert_eq!(reqs.len(), 2);
+        assert!(reqs.iter().all(|r| r.optional));
+    }
+
+    #[test]
+    fn a_missing_service_waits_unless_optional() {
+        let reqs = service_requirements("overlay", &[], false);
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].name, "service:overlay");
+        assert_eq!(service_requirements("overlay", &[], true), Vec::new());
+    }
+
+    #[test]
+    fn a_missing_service_is_planned_as_missing() {
+        let mut ui = candidate("ui", "1.0", &[]);
+        ui.requires = service_requirements("overlay", &[], false);
+        let plan = plan(&[ui]);
+        assert_eq!(plan.order, Vec::<usize>::new());
+        assert_eq!(
+            plan.rejected,
+            vec![(0, Rejection::Missing("service:overlay".to_owned()))]
+        );
+    }
 
     fn req(text: &str) -> VersionReq {
         VersionReq::parse(text).unwrap_or_else(|e| panic!("{e}"))

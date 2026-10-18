@@ -62,6 +62,7 @@ impl Plugin for OverlayPlugin {
     const AUTHORS: &'static str = "Bluscream";
     const DESCRIPTION: &'static str =
         "In-game console and settings editor, and the overlay service plugins draw through.";
+    const PROVIDES: &'static [&'static str] = &[uniloader_overlay::SERVICE];
 
     // Providing the service is unsafe: the table layout is a promise the compiler cannot check.
     #[allow(unsafe_code)]

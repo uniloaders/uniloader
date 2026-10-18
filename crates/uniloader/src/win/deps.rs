@@ -7,10 +7,12 @@
 // FFI module: reads the plugin's dependency array and asks Windows to find libraries.
 #![allow(unsafe_code)]
 
+use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use uniloader_api::{Dependency, DependencyKind, PluginInfo};
-use uniloader_core::deps::{PluginReq, VersionReq};
+use uniloader_api::{Dependency, DependencyKind, PluginInfo, Str};
+use uniloader_core::deps::{self, PluginReq, VersionReq};
 use windows::core::PCWSTR;
 use windows::Win32::Storage::FileSystem::SearchPathW;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -34,6 +36,7 @@ impl Declared {
             DependencyKind::PLUGIN => "plugin",
             DependencyKind::LIBRARY => "library",
             DependencyKind::FILE => "file",
+            DependencyKind::SERVICE => "service",
             // A plugin written against a newer ABI, or against none at all.
             _ => "unknown dependency",
         };
@@ -51,7 +54,8 @@ impl Declared {
 ///
 /// A plugin built against an older ABI has no such fields, which `struct_size` detects.
 pub(crate) fn declared(info: &PluginInfo) -> Vec<Declared> {
-    let has_field = info.struct_size >= core::mem::size_of::<PluginInfo>();
+    let has_field =
+        info.struct_size >= field_end(core::mem::offset_of!(PluginInfo, dependency_count));
     if !has_field || info.dependencies.is_null() || info.dependency_count == 0 {
         return Vec::new();
     }
@@ -71,27 +75,93 @@ pub(crate) fn declared(info: &PluginInfo) -> Vec<Declared> {
         .collect()
 }
 
+/// End offset of a `usize` field that starts at `offset`.
+const fn field_end(offset: usize) -> usize {
+    offset + core::mem::size_of::<usize>()
+}
+
+/// Read the provided service names out of a plugin's [`PluginInfo`].
+///
+/// The fields were appended to the struct, so a plugin built before them has a smaller
+/// `struct_size` and provides nothing as far as ordering is concerned.
+pub(crate) fn provided(info: &PluginInfo) -> Vec<String> {
+    let has_field =
+        info.struct_size >= field_end(core::mem::offset_of!(PluginInfo, provides_count));
+    if !has_field || info.provides.is_null() || info.provides_count == 0 {
+        return Vec::new();
+    }
+    // SAFETY: the ABI requires `provides` to point at `provides_count` entries that stay valid
+    // while the DLL is loaded, and the DLL is never unloaded.
+    let entries: &[Str] =
+        unsafe { core::slice::from_raw_parts(info.provides, info.provides_count) };
+    entries
+        .iter()
+        .map(|s| super::hostapi::text(*s))
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Service name to the plugins that said they provide it, filled as plugins are described.
+static PROVIDERS: Mutex<BTreeMap<String, Vec<String>>> = Mutex::new(BTreeMap::new());
+
+fn providers_map() -> MutexGuard<'static, BTreeMap<String, Vec<String>>> {
+    PROVIDERS.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Remember which services a described plugin provides.
+pub(crate) fn register_provider(plugin: &str, services: &[String]) {
+    let mut map = providers_map();
+    for service in services {
+        let list = map.entry(service.clone()).or_default();
+        if !list.iter().any(|p| p == plugin) {
+            list.push(plugin.to_owned());
+        }
+    }
+}
+
+/// Forget a plugin that will never start, so it stops counting as a provider.
+pub(crate) fn forget_provider(plugin: &str) {
+    for list in providers_map().values_mut() {
+        list.retain(|p| p != plugin);
+    }
+}
+
+/// Plugins known to provide `service`, in the order they were described.
+fn providers(service: &str) -> Vec<String> {
+    providers_map().get(service).cloned().unwrap_or_default()
+}
+
 /// The plugin-to-plugin requirements, for [`uniloader_core::deps::plan`].
 ///
 /// A requirement whose version text does not parse is reported and treated as "any version":
 /// refusing to start the plugin over a typo in a requirement would be worse than ignoring it.
+/// A service dependency becomes requirements on the plugins known to provide it, see
+/// [`deps::service_requirements`].
 pub(crate) fn plugin_requirements(plugin: &str, declared: &[Declared]) -> Vec<PluginReq> {
-    declared
-        .iter()
-        .filter(|d| d.kind == DependencyKind::PLUGIN)
-        .map(|d| PluginReq {
-            name: d.name.clone(),
-            version: VersionReq::parse(&d.version).unwrap_or_else(|e| {
-                log::warn!(
-                    "[{plugin}] dependency on {}: {e}; accepting any version",
-                    d.name
-                );
-                VersionReq::parse("")
-                    .unwrap_or_else(|_| unreachable!("the empty requirement parses"))
+    let mut reqs = Vec::new();
+    for d in declared {
+        match d.kind {
+            DependencyKind::PLUGIN => reqs.push(PluginReq {
+                name: d.name.clone(),
+                version: VersionReq::parse(&d.version).unwrap_or_else(|e| {
+                    log::warn!(
+                        "[{plugin}] dependency on {}: {e}; accepting any version",
+                        d.name
+                    );
+                    VersionReq::parse("")
+                        .unwrap_or_else(|_| unreachable!("the empty requirement parses"))
+                }),
+                optional: d.optional,
             }),
-            optional: d.optional,
-        })
-        .collect()
+            DependencyKind::SERVICE => {
+                let mut found = providers(&d.name);
+                found.retain(|p| p != plugin);
+                reqs.extend(deps::service_requirements(&d.name, &found, d.optional));
+            }
+            _ => {}
+        }
+    }
+    reqs
 }
 
 /// Whether a library of this name can be found without loading it.
@@ -132,7 +202,7 @@ pub(crate) fn unmet_external(game_dir: &Path, declared: &[Declared]) -> Option<S
         .iter()
         .filter(|d| !d.optional)
         .find_map(|d| match d.kind {
-            DependencyKind::PLUGIN => None,
+            DependencyKind::PLUGIN | DependencyKind::SERVICE => None,
             DependencyKind::LIBRARY => {
                 (!library_present(&d.name)).then(|| format!("library {} not found", d.name))
             }
