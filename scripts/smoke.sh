@@ -26,7 +26,7 @@ for arg in "$@"; do
 done
 
 if (( BUILD )); then
-    distrobox enter build-box -- bash -c "export PATH=/opt/rust/cargo/bin:\$PATH RUSTUP_HOME=/opt/rust/rustup CARGO_HOME=\$HOME/.cargo; cd '$ROOT' && nice -n 10 cargo xwin build --release --target $TARGET -p uniloader -p hello-plugin -p smoke-host"
+    distrobox enter build-box -- bash -c "export PATH=/opt/rust/cargo/bin:\$PATH RUSTUP_HOME=/opt/rust/rustup CARGO_HOME=\$HOME/.cargo; cd '$ROOT' && nice -n 10 cargo xwin build --release --target $TARGET -p uniloader -p hello-plugin -p lua-bridge -p smoke-host"
 fi
 
 WINE="${SMOKE_WINE:-$(ls -d "$HOME"/.local/share/Steam/compatibilitytools.d/GE-Proton*/files/bin/wine 2>/dev/null | sort -V | tail -1)}"
@@ -40,7 +40,15 @@ mkdir -p "$STAGE/plugins" "$STAGE/extra" "$STAGE/uniloader/config"
 rm -rf "$STAGE/uniloader/logs"
 cp "$OUT/smoke-host.exe" "$STAGE/"
 cp "$OUT/uniloader.dll" "$STAGE/version.dll"
-cp "$OUT/hello.dll" "$STAGE/plugins/"
+cp "$OUT/hello.dll" "$OUT/lua_bridge.dll" "$STAGE/plugins/"
+mkdir -p "$STAGE/plugins/lua"
+cat > "$STAGE/plugins/lua/smoke.lua" <<'LUA'
+uniloader.setting("speed", "Speed", 2.5, function(v) uniloader.log("speed now " .. v) end)
+uniloader.hotkey("wave", "Wave", "f10", function() print("wave") end)
+uniloader.command("echo", "Echo the arguments.", "<text>", function(args) print(args) end)
+local ok, lines = uniloader.exec("get lua.speed")
+uniloader.log("lua smoke: version " .. uniloader.version .. ", get ok=" .. tostring(ok) .. " -> " .. tostring(lines[1]))
+LUA
 # Stand-ins for an .asi mod and a chain-loaded library such as UE4SS: any DLL will do.
 cp "$OUT/hello.dll" "$STAGE/plugins/standin.asi"
 cp "$OUT/hello.dll" "$STAGE/extra/chained.dll"
@@ -62,7 +70,9 @@ grep -q '^forwarded' "$STAGE/run.log" || { echo "FAIL: version.dll call was not 
 [[ -n "$log" ]] || { echo "FAIL: the loader wrote no log"; fail=1; }
 if [[ -n "$log" ]]; then
     grep -q 'proxy for version.dll' "$log" || { echo "FAIL: proxy summary missing"; fail=1; }
-    grep -q '1 of 1 plugins running' "$log" || { echo "FAIL: hello did not start"; fail=1; }
+    grep -q '2 of 2 plugins running' "$log" || { echo "FAIL: hello and lua did not both start"; fail=1; }
+    grep -q 'lua smoke: version .* get ok=true -> lua.speed = 2.5' "$log" \
+        || { echo "FAIL: the Lua script did not run or could not read its setting"; fail=1; }
     grep -q 'loaded asi plugins/standin.asi' "$log" || { echo "FAIL: .asi not loaded"; fail=1; }
     grep -q 'loaded library extra/chained.dll' "$log" || { echo "FAIL: load list not loaded"; fail=1; }
 fi

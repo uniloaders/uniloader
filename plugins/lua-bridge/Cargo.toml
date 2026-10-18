@@ -1,0 +1,23 @@
+[package]
+name = "lua-bridge"
+description = "uniloader plugin that runs Lua scripts from plugins/lua/ as if they were plugins."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "lua_bridge"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+uniloader-sdk.workspace = true
+log.workspace = true
+# Lua 5.4 built from source by the `cc` crate (clang-cl under `cargo xwin`), so the DLL has no
+# runtime dependency. `send` makes the state usable from the loader's threads; mlua serialises
+# access internally.
+mlua = { version = "0.10", features = ["lua54", "vendored", "send"] }
+
+[lints]
+workspace = true
