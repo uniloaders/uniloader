@@ -107,6 +107,18 @@ impl fmt::Debug for Host {
     }
 }
 
+/// Copy a [`Str`] another plugin passed through a service ABI into an owned `String`.
+///
+/// Invalid UTF-8 is replaced rather than rejected.
+///
+/// # Safety
+/// `s` must be null or point at `len` readable bytes for the duration of the call, which is
+/// what every ABI that hands one over promises.
+#[must_use]
+pub unsafe fn read_str(s: Str) -> String {
+    str_from(s)
+}
+
 /// Copy a borrowed [`Str`] the loader passed us into an owned `String`.
 pub(crate) fn str_from(s: Str) -> String {
     String::from_utf8_lossy(bytes_from(Bytes {

@@ -382,11 +382,7 @@ pub(super) unsafe extern "C" fn input_capture(
     if guard.plugin(plugin).is_none() {
         return Status::INVALID_ARGUMENT;
     }
-    if capture {
-        guard.input_owner = Some(plugin);
-    } else if guard.input_owner == Some(plugin) {
-        guard.input_owner = None;
-    }
+    guard.claim_input(plugin, capture);
     Status::OK
 }
 

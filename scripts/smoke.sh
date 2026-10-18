@@ -26,7 +26,7 @@ for arg in "$@"; do
 done
 
 if (( BUILD )); then
-    distrobox enter build-box -- bash -c "export PATH=/opt/rust/cargo/bin:\$PATH RUSTUP_HOME=/opt/rust/rustup CARGO_HOME=\$HOME/.cargo; cd '$ROOT' && nice -n 10 cargo xwin build --release --target $TARGET -p uniloader -p hello-plugin -p lua-bridge -p kitchen-sink -p smoke-host"
+    distrobox enter build-box -- bash -c "export PATH=/opt/rust/cargo/bin:\$PATH RUSTUP_HOME=/opt/rust/rustup CARGO_HOME=\$HOME/.cargo; cd '$ROOT' && nice -n 10 cargo xwin build --release --target $TARGET -p uniloader -p hello-plugin -p lua-bridge -p kitchen-sink -p overlay -p smoke-host"
 fi
 
 WINE="${SMOKE_WINE:-$(ls -d "$HOME"/.local/share/Steam/compatibilitytools.d/GE-Proton*/files/bin/wine 2>/dev/null | sort -V | tail -1)}"
@@ -35,12 +35,17 @@ if [[ ! -x "$WINE" ]]; then
     exit 1
 fi
 WINESERVER="$(dirname "$WINE")/wineserver"
+# Direct3D 11 the way Proton games get it: DXVK, staged next to the host rather than installed
+# into the prefix. Wine's own wined3d is not usable from a bare Proton prefix.
+DXVK="$(dirname "$WINE")/../lib/wine/dxvk/x86_64-windows"
 
 mkdir -p "$STAGE/plugins" "$STAGE/extra" "$STAGE/uniloader/config"
 rm -rf "$STAGE/uniloader/logs"
 cp "$OUT/smoke-host.exe" "$STAGE/"
 cp "$OUT/uniloader.dll" "$STAGE/version.dll"
-cp "$OUT/hello.dll" "$OUT/lua_bridge.dll" "$OUT/kitchen_sink.dll" "$STAGE/plugins/"
+# Proton ships these read-only; `install` gives the copies a mode the next run can replace.
+install -m 0644 "$DXVK/d3d11.dll" "$DXVK/dxgi.dll" "$STAGE/"
+cp "$OUT/hello.dll" "$OUT/lua_bridge.dll" "$OUT/kitchen_sink.dll" "$OUT/overlay.dll" "$STAGE/plugins/"
 mkdir -p "$STAGE/plugins/lua"
 cat > "$STAGE/plugins/lua/smoke.lua" <<'LUA'
 uniloader.setting("speed", "Speed", 2.5, function(v) uniloader.log("speed now " .. v) end)
@@ -57,7 +62,8 @@ printf 'load = ["extra/chained.dll"]\n' > "$STAGE/uniloader/config/loader.toml"
 echo "== running under $WINE"
 status=0
 # Native first for version.dll: Wine would otherwise use its builtin and skip the proxy.
-( cd "$STAGE" && WINEDEBUG=-all WINEDLLOVERRIDES="version=n,b" timeout 120 "$WINE" smoke-host.exe ) \
+( cd "$STAGE" && WINEDEBUG=-all WINEDLLOVERRIDES="version=n,b;d3d11,dxgi=n" \
+    DXVK_LOG_LEVEL=none DXVK_STATE_CACHE=0 timeout 120 "$WINE" smoke-host.exe ) \
     | tee "$STAGE/run.log" || status=$?
 timeout 30 "$WINESERVER" -k 2> /dev/null || true
 
@@ -70,14 +76,25 @@ grep -q '^forwarded' "$STAGE/run.log" || { echo "FAIL: version.dll call was not 
 [[ -n "$log" ]] || { echo "FAIL: the loader wrote no log"; fail=1; }
 if [[ -n "$log" ]]; then
     grep -q 'proxy for version.dll' "$log" || { echo "FAIL: proxy summary missing"; fail=1; }
-    grep -q '3 of 3 plugins running' "$log" || { echo "FAIL: not every plugin started"; fail=1; }
+    grep -q '4 of 4 plugins running' "$log" || { echo "FAIL: not every plugin started"; fail=1; }
     grep -qE 'kitchen self-test: [0-9]+ passed, 0 failed' "$log" \
         || { echo "FAIL: the kitchen sink self-test failed or did not run"; fail=1; }
     grep -q 'lua smoke: version .* get ok=true -> lua.speed = 2.5' "$log" \
         || { echo "FAIL: the Lua script did not run or could not read its setting"; fail=1; }
     grep -q 'loaded asi plugins/standin.asi' "$log" || { echo "FAIL: .asi not loaded"; fail=1; }
     grep -q 'loaded library extra/chained.dll' "$log" || { echo "FAIL: load list not loaded"; fail=1; }
+    # The overlay, end to end: the vtable hook, the renderer, a consumer's panel body drawn
+    # through the service, a present subscriber, and a dialog answer delivered after a frame.
+    for expected in 'hooked IDXGISwapChain::Present' 'overlay ready' 'kitchen panel drawn' \
+        'kitchen saw a present' 'kitchen dialog answered 2'; do
+        grep -q "$expected" "$log" || { echo "FAIL: overlay: no '$expected'"; fail=1; }
+    done
 fi
+grep -qE '^presented [1-9]' "$STAGE/run.log" || { echo "FAIL: the host presented no frames"; fail=1; }
+# The host clears every frame to one colour; what differs in the last one is the overlay.
+drawn="$(awk '/^drawn pixels/ {print $3}' "$STAGE/run.log")"
+(( ${drawn:-0} > 10000 )) || { echo "FAIL: the overlay drew ${drawn:-no} pixels"; fail=1; }
+echo "== overlay drew ${drawn:-0} pixels; see $STAGE/capture.bmp"
 if (( status != 0 )) && (( fail == 0 )); then
     echo "FAIL: smoke-host exited with $status"
     fail=1

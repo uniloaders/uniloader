@@ -281,10 +281,12 @@ pub struct HostApi {
         scancode: u16,
         modifiers: KeyModifiers,
     ) -> Status,
-    /// Claim the keyboard (`capture` true) or give it back.
+    /// Claim the keyboard (`capture` true) or give the claim up.
     ///
     /// While a plugin holds it, only that plugin's own hotkeys fire, so typing into an
-    /// overlay does not also trigger other plugins' bindings. A stopped plugin's claim ends.
+    /// overlay does not also trigger other plugins' bindings. Claims stack: the newest holds
+    /// the keyboard, and giving one up hands it back to the one before. A stopped plugin's
+    /// claim ends.
     pub input_capture:
         unsafe extern "C" fn(host: *mut c_void, plugin: PluginHandle, capture: bool) -> Status,
 }

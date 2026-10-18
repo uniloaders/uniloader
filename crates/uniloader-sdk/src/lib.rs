@@ -38,7 +38,7 @@ mod registry;
 mod settings;
 
 pub use deps::Dependency;
-pub use host::{Arg, CommandLine, Hook, Host, PluginError, PluginRef};
+pub use host::{read_str, Arg, CommandLine, Hook, Host, PluginError, PluginRef};
 pub use plugin::Plugin;
 pub use registry::{
     ConsoleEntry, HotkeyEntry, ModuleEntry, PluginStateEvent, Service, SettingEntry,

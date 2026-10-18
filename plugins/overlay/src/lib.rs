@@ -1,0 +1,129 @@
+//! The overlay: an in-game console and settings editor, and the `overlay` service other
+//! plugins draw their panels, toasts and dialogs through.
+//!
+//! It is a plugin rather than part of the loader on purpose. Drawing inside a game means
+//! hooking its presentation, and that is different for every graphics API and risky in every
+//! one of them; a game that does not want an overlay should not carry one, and someone who
+//! wants a different one should be able to swap it. The loader only offers what any overlay
+//! needs and nothing that depends on a renderer: the console scrollback, the registries, key
+//! presses and keyboard capture.
+//!
+//! What is here:
+//!
+//! - **Rendering**: `Direct3D` 11 through a universal DXGI hook (`win::hooks`). `Present` and
+//!   `ResizeBuffers` live in one class vtable per DXGI implementation, so patching it through a
+//!   throwaway swapchain covers every swapchain the game makes, before or after the plugin
+//!   loads, whether the game proxies `dxgi.dll` or not. `Direct3D` 12, Vulkan and `OpenGL` games
+//!   get no overlay yet; see the README for the plan.
+//! - **UI**: egui, with the layer split so it never reaches a consumer (`ui`). Consumers get
+//!   a C ABI ([`uniloader_overlay::OverlayApi`]) and fill panels one widget at a time.
+//! - **Input**: the game window is subclassed while the overlay is up (`win::wnd`); key
+//!   presses are reported to the loader so scan-code hotkeys fire, and the keyboard is
+//!   claimed while a window has it, so typing does not trigger other plugins' hotkeys.
+
+// Only the Windows renderer drives the UI; elsewhere it is built for the unit tests alone.
+#![cfg_attr(
+    not(windows),
+    allow(dead_code, reason = "driven by the Windows renderer only")
+)]
+
+mod layout;
+mod notices;
+mod registry;
+mod service;
+mod shared;
+mod ui;
+#[cfg(windows)]
+mod win;
+
+use std::sync::OnceLock;
+
+use uniloader_sdk::{
+    export_plugin, topics, Host, Plugin, PluginError, PluginRef, PluginState, PluginStateEvent,
+};
+
+/// The loader, for code that runs outside a plugin callback: the render thread and the
+/// window procedure.
+static HOST: OnceLock<Host> = OnceLock::new();
+
+/// The loader as seen by this plugin, once it has started.
+pub(crate) fn host() -> Option<&'static Host> {
+    HOST.get()
+}
+
+/// The plugin instance. Everything it needs lives in statics, because the render thread
+/// and the window procedure reach it without a `&self`.
+pub struct OverlayPlugin;
+
+impl Plugin for OverlayPlugin {
+    const NAME: &'static str = "overlay";
+    const TITLE: &'static str = "Overlay";
+    const VERSION: &'static str = env!("CARGO_PKG_VERSION");
+    const AUTHORS: &'static str = "Bluscream";
+    const DESCRIPTION: &'static str =
+        "In-game console and settings editor, and the overlay service plugins draw through.";
+
+    // Providing the service is unsafe: the table layout is a promise the compiler cannot check.
+    #[allow(unsafe_code)]
+    fn start(host: Host) -> Result<Self, PluginError> {
+        // The key under Escape by position, because its name differs per layout; and a
+        // chord for layouts where that key is a dead key.
+        host.hotkey("console", "Show the in-game console", "sc29, ctrl+shift+c")?;
+        host.hotkey("settings", "Show the settings editor", "f11")?;
+        host.hotkey(
+            "mouse",
+            "Give the mouse back to the game, or take it",
+            "ctrl+shift+m",
+        )?;
+        host.subscribe(topics::PLUGIN_STATE)?;
+        // SAFETY: `service::TABLE` is the `OverlayApi` layout of this version, and every
+        // function in it is thread safe.
+        unsafe {
+            host.provide(
+                uniloader_overlay::SERVICE,
+                uniloader_overlay::VERSION,
+                &service::TABLE,
+            )?;
+        };
+        let _ = HOST.set(host);
+        layout::load(&host);
+        #[cfg(windows)]
+        win::install(&host);
+        #[cfg(not(windows))]
+        log::warn!("no renderer on this platform; the service works but nothing is drawn");
+        Ok(OverlayPlugin)
+    }
+
+    fn stop(&self, _host: &Host, _reason: uniloader_sdk::StopReason) {
+        #[cfg(windows)]
+        win::uninstall();
+        layout::save();
+    }
+
+    fn on_hotkey(&self, _host: &Host, action: &str) {
+        match action {
+            "console" => shared::toggle_console(),
+            "settings" => shared::toggle_editor(),
+            "mouse" => shared::toggle_grab(),
+            _ => {}
+        }
+    }
+
+    fn on_event(&self, _host: &Host, _from: PluginRef, topic: &str, payload: &[u8]) {
+        if topic != topics::PLUGIN_STATE {
+            return;
+        }
+        let Some(event) = PluginStateEvent::parse(payload) else {
+            return;
+        };
+        // A stopped or faulted plugin must not be called again: take down everything it
+        // put up. Disabled is only paused, so its panels stay registered but are skipped.
+        if event.state == PluginState::STOPPED || event.state == PluginState::FAULTED {
+            registry::remove_owner(event.plugin.raw());
+            notices::take_all(event.plugin.raw());
+            shared::refresh();
+        }
+    }
+}
+
+export_plugin!(OverlayPlugin);

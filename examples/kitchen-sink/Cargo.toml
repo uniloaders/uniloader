@@ -13,6 +13,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 uniloader-sdk.workspace = true
+uniloader-overlay.workspace = true
 log.workspace = true
 
 [lints]

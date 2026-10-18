@@ -190,24 +190,21 @@ fn console(c: &mut Checks, sink: &KitchenSink, host: &Host) {
                 l.kind == ConsoleKind::OUTPUT && l.text.ends_with("[kitchen] console read output")
             }),
     );
+    // Claimed first, so the press reaches this plugin whoever else holds the keyboard (the
+    // overlay does while a window is open); giving the claim up hands it back to them.
+    host.capture_input(true);
     let before = sink.hotkeys.load(Ordering::Relaxed);
     host.hotkey_press(0x58, KeyModifiers::default());
     c.check(
-        "scan code press fires its binding",
+        "scan code press fires its binding while capturing",
         sink.hotkeys.load(Ordering::Relaxed) == before + 1,
-    );
-    host.capture_input(true);
-    host.hotkey_press(0x58, KeyModifiers::default());
-    host.capture_input(false);
-    c.check(
-        "own hotkeys fire while capturing",
-        sink.hotkeys.load(Ordering::Relaxed) == before + 2,
     );
     host.hotkey_press(0x58, KeyModifiers(KeyModifiers::CTRL));
     c.check(
         "modifiers must match",
-        sink.hotkeys.load(Ordering::Relaxed) == before + 2,
+        sink.hotkeys.load(Ordering::Relaxed) == before + 1,
     );
+    host.capture_input(false);
     let names = host.console_names();
     c.check(
         "console names",
@@ -247,6 +244,9 @@ pub(crate) fn run(sink: &KitchenSink, host: &Host) {
     console(&mut c, sink, host);
     environment(&mut c, host);
     crate::hooks::run(&mut |what, ok| c.check(what, ok), host);
+    if let Some(overlay) = &sink.overlay {
+        crate::overlay::checks(&mut |what, ok| c.check(what, ok), overlay);
+    }
     log::info!(
         "kitchen self-test: {} passed, {} failed",
         c.passed,

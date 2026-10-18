@@ -130,8 +130,9 @@ pub struct State {
     pub foreign: Vec<Foreign>,
     /// Services plugins provide to each other.
     pub services: services::Registry,
-    /// The plugin holding the keyboard, whose hotkeys are then the only ones that fire.
-    pub input_owner: Option<PluginHandle>,
+    /// Plugins claiming the keyboard, oldest first; the newest running one holds it, and
+    /// its hotkeys are then the only ones that fire. See [`State::claim_input`].
+    pub input_claims: Vec<PluginHandle>,
     /// Recent console output and log records, oldest first.
     pub console: VecDeque<scrollback::Line>,
     /// How many lines the console has ever held.
@@ -175,7 +176,7 @@ impl State {
             pending: Vec::new(),
             foreign: Vec::new(),
             services: services::Registry::default(),
-            input_owner: None,
+            input_claims: Vec::new(),
             console: VecDeque::new(),
             console_printed: 0,
             hook_lines: no_hooks,
@@ -573,14 +574,26 @@ impl State {
             .collect()
     }
 
+    /// Claim the keyboard for `plugin`, or give its claim up. Claims stack: the newest holds
+    /// the keyboard, and giving one up hands it back to the one before, so two plugins that
+    /// each capture for a while cannot take it from each other for good.
+    pub fn claim_input(&mut self, plugin: PluginHandle, capture: bool) {
+        self.input_claims.retain(|h| *h != plugin);
+        if capture {
+            self.input_claims.push(plugin);
+        }
+    }
+
     /// The hotkey actions out of `fired` that may fire now: all of them, or only the ones of
     /// the plugin holding the keyboard. A claim by a plugin that is no longer running is void.
     #[must_use]
     pub fn allowed_hotkeys(&self, fired: Vec<String>) -> Vec<String> {
         let Some(owner) = self
-            .input_owner
-            .and_then(|handle| self.plugin(handle))
-            .filter(|p| p.enabled)
+            .input_claims
+            .iter()
+            .rev()
+            .filter_map(|handle| self.plugin(*handle))
+            .find(|p| p.enabled)
         else {
             return fired;
         };
@@ -862,19 +875,30 @@ pub(crate) mod tests {
         };
         let overlay = s.add_plugin(described("overlay"), "o.dll");
         let other = s.add_plugin(described("other"), "x.dll");
-        let (Ok(overlay), Ok(_)) = (overlay, other) else {
+        let (Ok(overlay), Ok(other)) = (overlay, other) else {
             panic!("plugins added");
         };
         let fired = || vec!["overlay.mouse".to_owned(), "other.jump".to_owned()];
         assert_eq!(s.allowed_hotkeys(fired()).len(), 2, "nobody captures");
-        s.input_owner = Some(overlay);
+        s.claim_input(overlay, true);
         assert_eq!(
             s.allowed_hotkeys(fired()).len(),
             2,
             "a stopped owner is void"
         );
         s.plugins[0].enabled = true;
+        s.plugins[1].enabled = true;
         assert_eq!(s.allowed_hotkeys(fired()), vec!["overlay.mouse".to_owned()]);
+        s.claim_input(other, true);
+        assert_eq!(s.allowed_hotkeys(fired()), vec!["other.jump".to_owned()]);
+        s.claim_input(other, false);
+        assert_eq!(
+            s.allowed_hotkeys(fired()),
+            vec!["overlay.mouse".to_owned()],
+            "giving a claim up hands the keyboard back"
+        );
+        s.claim_input(overlay, false);
+        assert_eq!(s.allowed_hotkeys(fired()).len(), 2);
     }
 
     #[test]

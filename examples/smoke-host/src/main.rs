@@ -5,7 +5,15 @@
 //! copied there under that name, the call must still reach the system DLL, and the loader must
 //! have started the plugins by the time the process has run for a moment.
 //!
-//! Prints `forwarded <size>` and exits 0 when the forwarded call answers, 1 otherwise.
+//! Then, like a game, it presents frames through a `Direct3D` 11 swapchain (on a hidden
+//! window), which is what the overlay hooks and draws on.
+//!
+//! Prints `forwarded <size>` and `presented <n>`, and exits 0 when the forwarded call answers.
+
+#[cfg(windows)]
+mod capture;
+#[cfg(windows)]
+mod d3d;
 
 #[cfg(windows)]
 fn main() -> std::process::ExitCode {
@@ -21,8 +29,13 @@ fn main() -> std::process::ExitCode {
     // SAFETY: a valid wide string and no handle out-parameter.
     let size = unsafe { GetFileVersionInfoSizeW(&HSTRING::from(target.as_str()), None) };
     println!("host {}", exe.display());
-    // Long enough for the loader thread to start the plugins and write the log.
-    std::thread::sleep(std::time::Duration::from_secs(3));
+    // Long enough for the loader thread to start the plugins and hook DXGI.
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    match d3d::present_frames(120) {
+        Ok(n) => println!("presented {n}"),
+        Err(e) => println!("no direct3d 11: {e}"),
+    }
+    std::thread::sleep(std::time::Duration::from_millis(500));
     if size == 0 {
         println!("not forwarded");
         return std::process::ExitCode::FAILURE;

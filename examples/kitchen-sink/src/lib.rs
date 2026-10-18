@@ -6,8 +6,12 @@
 //! which exercises the rest — settings, the registries, services, guarded calls, messages,
 //! events, console lines and all three hook kinds — and logs one line per check plus a total:
 //! `kitchen self-test: N passed, M failed`. `kitchen.selftest` runs it again from the console.
+//!
+//! When the overlay plugin is loaded it also uses the overlay service (`overlay.rs`): a panel
+//! with one of every widget, a toast, a dialog and a present subscriber.
 
 mod hooks;
+mod overlay;
 mod selftest;
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -37,6 +41,8 @@ pub struct KitchenSink {
     events: AtomicU32,
     hotkeys: AtomicU32,
     ran: AtomicBool,
+    /// The overlay, when one is loaded.
+    overlay: Option<uniloader_overlay::Overlay>,
 }
 
 impl Plugin for KitchenSink {
@@ -45,7 +51,10 @@ impl Plugin for KitchenSink {
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
     const AUTHORS: &'static str = "Bluscream";
     const DESCRIPTION: &'static str = "Exercises every host function and checks the results.";
-    const DEPENDENCIES: &'static [Dependency] = &[Dependency::plugin("hello", ">=0.1").optional()];
+    const DEPENDENCIES: &'static [Dependency] = &[
+        Dependency::plugin("hello", ">=0.1").optional(),
+        Dependency::plugin(uniloader_overlay::PLUGIN, ">=0.1").optional(),
+    ];
 
     // Providing a service is unsafe: the table's layout is a promise the compiler cannot check.
     #[allow(unsafe_code)]
@@ -72,6 +81,7 @@ impl Plugin for KitchenSink {
             events: AtomicU32::new(0),
             hotkeys: AtomicU32::new(0),
             ran: AtomicBool::new(false),
+            overlay: overlay::attach(&host),
         })
     }
 

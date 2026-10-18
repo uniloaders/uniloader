@@ -25,9 +25,14 @@ From the DayZ loader, made game-agnostic:
   faulting plugin is disabled; the game and the other plugins keep running.
 
 Game knowledge is not in the loader. It comes from **adapter plugins** that publish services
-to other plugins: an Unreal Engine adapter (objects, names, reflection, the game tick), an
-Enfusion adapter for DayZ, a Direct3D present hook for overlays. **Lua scripting** is a
-bridge plugin too, so a game that needs no scripting ships without a runtime.
+to other plugins: an Unreal Engine adapter (objects, names, reflection, the game tick) and an
+Enfusion adapter for DayZ. **Lua scripting** and the **in-game overlay** are bridge plugins
+too, so a game that needs neither ships without a runtime or a present hook.
+
+The overlay (`plugins/overlay`) draws a console, a settings editor for every plugin's
+settings and hotkeys, and whatever panels, toasts and dialogs other plugins put up through
+its `overlay` service. It hooks DXGI universally; the API coverage and the plan for the rest
+are in its [README](plugins/overlay/README.md).
 
 `.asi` files work both ways: uniloader loads the `.asi` mods of the Ultimate ASI Loader
 ecosystem from `plugins/`, and it can itself be loaded as an `.asi` (under any name that is
@@ -75,9 +80,12 @@ Command line: `--loader-console` opens a console window, `--noplugins` loads not
 | `crates/uniloader-core` | Platform independent logic: settings, key grammar, hotkeys, dependency ordering, console parsing, config files, PE version resources. Builds and tests on any host. |
 | `crates/uniloader-sdk` | The safe Rust side of the ABI: implement `Plugin`, call `export_plugin!`. |
 | `crates/uniloader` | The loader DLL: proxy, plugin host, host API, console. |
+| `crates/uniloader-overlay` | Client for the overlay service: its C ABI and a safe wrapper. |
 | `plugins/lua-bridge` | Lua 5.4 scripting as a plugin; its API is documented in `src/api.rs`. |
+| `plugins/overlay` | The in-game overlay: console, settings editor, the `overlay` service. |
 | `examples/hello-plugin` | The smallest useful plugin. |
-| `examples/smoke-host` | A stand-in game for `scripts/smoke.sh`. |
+| `examples/kitchen-sink` | Uses every host function and the overlay service, and checks the results. |
+| `examples/smoke-host` | A stand-in game for `scripts/smoke.sh`: imports `version.dll`, presents Direct3D 11 frames. |
 
 ## Building
 
@@ -90,6 +98,11 @@ scripts/gate.sh          # fmt, clippy, tests, docs, Windows clippy and release 
 scripts/gate.sh --host   # host steps only
 scripts/smoke.sh         # end to end under Wine with a stand-in game, no real game needed
 ```
+
+The smoke test runs the stand-in host under GE-Proton's Wine with DXVK, in a private prefix.
+It checks forwarding, the plugins, Lua, `.asi` loading and the kitchen sink's self-test. It
+also checks that the overlay drew: the host reads its last frame back, counts the pixels the
+overlay changed, and saves the frame as `target/smoke/capture.bmp`.
 
 ## License
 
