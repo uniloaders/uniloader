@@ -1,0 +1,57 @@
+[package]
+name = "uniloader"
+description = "Generic plugin loader: a system DLL proxy that hosts Rust plugins, their settings, hotkeys and console."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# One DLL for every proxy name: it reads its own file name at load time and forwards to the
+# system library of that name, so `dwmapi.dll`, `dxgi.dll`, `version.dll`, `dinput8.dll` and
+# `winmm.dll` are all copies of `uniloader.dll`. See `win::proxy`.
+[lib]
+name = "uniloader"
+crate-type = ["cdylib"]
+
+[dependencies]
+uniloader-api.workspace = true
+uniloader-core.workspace = true
+log.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+toml.workspace = true
+simplelog = "0.12"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_LibraryLoader",
+    "Win32_System_SystemServices",
+    "Win32_System_Memory",
+    "Win32_System_ProcessStatus",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+# Inline detours need the stolen prologue relocated, which needs a real x86-64 decoder.
+# `retour` pulls in libudis86 as C, which does not cross-compile under clang-cl, so the
+# trampoline is written on top of `iced-x86`; see `win::detour`.
+[target.'cfg(windows)'.dependencies.iced-x86]
+version = "1"
+default-features = false
+features = ["decoder", "instr_info", "std"]
+
+# Structured exception handling needs MSVC `__try`, which mingw's gcc does not implement, so
+# the hardware fault guard exists only on the MSVC target. That is the target the shipped DLL
+# uses; see `win::guard`.
+[target.'cfg(all(windows, target_env = "msvc"))'.dependencies]
+microseh = "1"
+
+[lints]
+workspace = true

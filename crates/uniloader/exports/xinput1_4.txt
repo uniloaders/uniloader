@@ -1,0 +1,8 @@
+# xinput1_4.dll exports, from techiew/UltimateProxyDLL (public domain)
+XInputGetState
+XInputSetState
+XInputGetCapabilities
+XInputEnable
+XInputGetBatteryInformation
+XInputGetKeystroke
+XInputGetAudioDeviceIds

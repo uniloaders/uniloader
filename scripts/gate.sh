@@ -48,7 +48,8 @@ if (( HOST_ONLY )); then
     echo "== host gate passed"
     exit 0
 fi
-# The Windows target: cross linker and C compiler settings in .cargo/config.toml.
-step clippy-windows cargo clippy --workspace --all-targets --target "$TARGET" -- -D warnings
-step build-windows cargo build --release --workspace --target "$TARGET"
+# The Windows target: `cargo xwin` supplies the MSVC CRT/SDK, lld-link and clang-cl, the same
+# way the DayZ loader builds, so no .cargo/config.toml is needed.
+step clippy-windows cargo xwin clippy --workspace --all-targets --target "$TARGET" -- -D warnings
+step build-windows cargo xwin build --release --workspace --target "$TARGET"
 echo "== gate passed"

@@ -1,0 +1,7 @@
+# dinput8.dll exports, from techiew/UltimateProxyDLL (public domain)
+DirectInput8Create
+DllCanUnloadNow
+DllGetClassObject
+DllRegisterServer
+DllUnregisterServer
+GetdfDIJoystick

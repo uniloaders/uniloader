@@ -77,6 +77,8 @@ pub enum Line {
     Plugin(PluginOp, Option<String>),
     /// `hotkeys`: every hotkey action and what it is bound to.
     Hotkeys,
+    /// `hooks`: patches, vtable slots and detours plugins installed through the loader.
+    Hooks,
     /// `<plugin.key>` alone prints the value, `<plugin.key> <value>` sets it.
     Variable(String, Option<String>),
     /// `<plugin.command> [args...]`: forwarded to the owning plugin with raw args.
@@ -139,6 +141,7 @@ pub fn parse(line: &str) -> Result<Line, ParseError> {
             Line::Plugin(op, name)
         }
         "hotkeys" | "keys" => Line::Hotkeys,
+        "hooks" => Line::Hooks,
         "quit" | "exit" => Line::Quit,
         "get" => {
             if rest.is_empty() {
@@ -175,6 +178,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "plugin disable",
     "plugin list",
     "hotkeys",
+    "hooks",
     "get",
     "set",
     "quit",
@@ -208,6 +212,10 @@ pub const BUILTIN_HELP: &[(&str, &str)] = &[
         "Resume or pause callback delivery.",
     ),
     ("hotkeys", "List every hotkey action and its binding."),
+    (
+        "hooks",
+        "List the hooks plugins installed through the loader.",
+    ),
     ("quit", "Close the game, the way its own menu would."),
     ("get <plugin.key>", "Print a setting."),
     ("set <plugin.key> <value>", "Change a setting."),
@@ -236,6 +244,7 @@ mod tests {
         assert_eq!(parse("ls jump"), Ok(Line::List(Some("jump".into()))));
         assert_eq!(parse("plugins"), Ok(Line::Plugin(PluginOp::List, None)));
         assert_eq!(parse("hotkeys"), Ok(Line::Hotkeys));
+        assert_eq!(parse("hooks"), Ok(Line::Hooks));
         assert_eq!(parse("get A.B"), Ok(Line::Get("a.b".into())));
         assert_eq!(
             parse("set a.b Hello World"),

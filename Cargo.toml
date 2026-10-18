@@ -4,6 +4,7 @@ members = [
     "crates/uniloader-api",
     "crates/uniloader-core",
     "crates/uniloader-sdk",
+    "crates/uniloader",
     "examples/hello-plugin",
 ]
 
