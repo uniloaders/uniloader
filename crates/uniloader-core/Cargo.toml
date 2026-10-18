@@ -1,0 +1,15 @@
+[package]
+name = "uniloader-core"
+description = "Platform independent logic of uniloader: settings, hotkeys and key grammar, dependency ordering, console parsing, config files."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+toml.workspace = true
+serde.workspace = true
+
+[lints]
+workspace = true

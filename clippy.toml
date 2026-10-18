@@ -1,0 +1,2 @@
+# Product and API names that are prose, not code, so `doc_markdown` must not ask for backticks.
+doc-valid-idents = ["DayZ", "DXGI", "Proton", "Wine", "Lua", "UE4SS", "..."]
