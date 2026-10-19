@@ -13,8 +13,9 @@
 //! - **Rendering**: `Direct3D` 11 through a universal DXGI hook (`win::hooks`). `Present` and
 //!   `ResizeBuffers` live in one class vtable per DXGI implementation, so patching it through a
 //!   throwaway swapchain covers every swapchain the game makes, before or after the plugin
-//!   loads, whether the game proxies `dxgi.dll` or not. `Direct3D` 12, Vulkan and `OpenGL` games
-//!   get no overlay yet; see the README for the plan.
+//!   loads, whether the game proxies `dxgi.dll` or not. `Direct3D` 12 is drawn through
+//!   `Direct3D` 11 on 12 (`win::d3d12`), `OpenGL` through a `wglSwapBuffers` detour and a glow
+//!   painter (`win::gl`). Vulkan games get no overlay yet.
 //! - **UI**: egui, with the layer split so it never reaches a consumer (`ui`). Consumers get
 //!   a C ABI ([`uniloader_overlay::OverlayApi`]) and fill panels one widget at a time.
 //! - **Input**: the game window is subclassed while the overlay is up (`win::wnd`); key

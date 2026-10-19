@@ -1,5 +1,5 @@
 //! The Windows half: the DXGI hook, the `Direct3D` 11 renderer (also over `Direct3D` 12),
-//! window input and clipboard.
+//! the `OpenGL` one (`gl`), window input and clipboard.
 //!
 //! Everything that touches the device runs on the thread that calls `Present`, which is why
 //! the renderer lives in a thread local: the immediate context is not thread safe, and this
@@ -7,6 +7,7 @@
 
 mod clipboard;
 mod d3d12;
+mod gl;
 mod hooks;
 mod render;
 mod wnd;
@@ -86,11 +87,13 @@ enum Backend {
 /// Hook DXGI. Called from the plugin's `start`.
 pub(crate) fn install(host: &Host) {
     hooks::install(host);
+    gl::install(host);
 }
 
 /// Let go of the game: the window procedure goes back, and the hooks stop forwarding to us.
 pub(crate) fn uninstall() {
     hooks::uninstall();
+    gl::uninstall();
     wnd::unsubclass();
 }
 

@@ -88,8 +88,9 @@ if [[ -n "$log" ]]; then
     grep -q 'loaded library extra/chained.dll' "$log" || { echo "FAIL: load list not loaded"; fail=1; }
     # The overlay, end to end: the vtable hook, the renderer, a consumer's panel body drawn
     # through the service, a present subscriber, and a dialog answer delivered after a frame.
-    for expected in 'hooked IDXGISwapChain::Present' 'overlay ready' 'kitchen panel drawn' \
-        'kitchen saw a present' 'kitchen dialog answered 2'; do
+    for expected in 'hooked IDXGISwapChain::Present' 'overlay ready (Direct3D 11)' \
+        'kitchen panel drawn' 'kitchen saw a present' 'kitchen dialog answered 2' \
+        'hooked wglSwapBuffers' 'overlay ready (OpenGL)'; do
         grep -q "$expected" "$log" || { echo "FAIL: overlay: no '$expected'"; fail=1; }
     done
 fi
@@ -98,6 +99,10 @@ grep -qE '^presented [1-9]' "$STAGE/run.log" || { echo "FAIL: the host presented
 drawn="$(awk '/^drawn pixels/ {print $3}' "$STAGE/run.log")"
 (( ${drawn:-0} > 10000 )) || { echo "FAIL: the overlay drew ${drawn:-no} pixels"; fail=1; }
 echo "== overlay drew ${drawn:-0} pixels; see $STAGE/capture.bmp"
+grep -qE '^swapped [1-9]' "$STAGE/run.log" || { echo "FAIL: the host swapped no OpenGL frames"; fail=1; }
+gl_drawn="$(awk '/^gl drawn pixels/ {print $4}' "$STAGE/run.log")"
+(( ${gl_drawn:-0} > 10000 )) || { echo "FAIL: the OpenGL overlay drew ${gl_drawn:-no} pixels"; fail=1; }
+echo "== OpenGL overlay drew ${gl_drawn:-0} pixels; see $STAGE/capture-gl.bmp"
 if (( status != 0 )) && (( fail == 0 )); then
     echo "FAIL: smoke-host exited with $status"
     fail=1

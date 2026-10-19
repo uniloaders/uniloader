@@ -66,8 +66,8 @@ From another language, look the service up by name (`overlay`, version 1) and ca
 | Direct3D 11 (native, DXVK) | drawn |
 | Direct3D 10 | hooked, not drawn: the device is not a Direct3D 11 one |
 | Direct3D 12 (native DXGI, vkd3d-proton) | drawn through Direct3D 11 on 12; verified in Train Sim World 7 under Proton |
+| OpenGL 3.0 and later (WGL) | drawn; verified in the Wine smoke test |
 | Vulkan | not hooked yet |
-| OpenGL | not hooked yet |
 
 The hook is universal for DXGI. `Present`, `Present1` and `ResizeBuffers` are virtual
 functions shared by every swapchain of one implementation. A throwaway swapchain on a hidden
@@ -96,13 +96,22 @@ and sets `overlay.cards_elsewhere = true`; the overlay then draws no cards. Ever
 sent again whenever plugins are announced running, since events published while plugins
 are still starting reach nobody.
 
+`OpenGL` is drawn from a detour on `opengl32!wglSwapBuffers`. `gdi32!SwapBuffers` ends up
+there too, so the detour sees every frame however the game presents. The detour goes in when
+`opengl32.dll` is loaded: at start, or within the first minute for games that load it at run
+time (SDL, GLFW). The overlay never loads it itself, so a `Direct3D` game is untouched. A
+small glow painter (`win/gl/painter.rs`) draws egui into the default framebuffer in the game's
+own context. It needs `OpenGL` 3.0, uses GLSL 1.30 or 1.50 as the context allows, and reads
+every piece of state it changes beforehand and puts it back afterwards, because the game draws
+on with the same context. A context the game replaces gets a new painter. Present subscribers
+get `GraphicsApi::OPENGL`, with the `HDC` as `swapchain` and the `HGLRC` as `device`.
+
 The plan for the rest keeps the split that is already there. `ui` builds an egui frame and
 knows nothing about devices; `win` owns the renderers. Each new API is one more behind the
 same `Gui::run`:
 
 - **Vulkan**: hook `vkQueuePresentKHR` and `vkCreateSwapchainKHR` via the loader's
   `vkGetDeviceProcAddr`, and render with an egui Vulkan backend into the swapchain image.
-- **OpenGL**: hook `wglSwapBuffers` and draw with the egui glow backend in the game's context.
 
 ## VR
 

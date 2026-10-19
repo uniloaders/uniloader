@@ -211,6 +211,8 @@ pub struct GraphicsApi(pub u32);
 impl GraphicsApi {
     /// A DXGI swapchain: `Direct3D` 10, 11 or 12.
     pub const DXGI: GraphicsApi = GraphicsApi(1);
+    /// `OpenGL` through WGL: called from `wglSwapBuffers` with the game's context current.
+    pub const OPENGL: GraphicsApi = GraphicsApi(2);
 }
 
 /// One frame about to be presented.
@@ -221,9 +223,11 @@ pub struct PresentInfo {
     pub struct_size: usize,
     /// Which API `swapchain` and `device` belong to.
     pub api: GraphicsApi,
-    /// For DXGI, the `IDXGISwapChain*` being presented. Borrowed for the call.
+    /// For DXGI, the `IDXGISwapChain*` being presented. Borrowed for the call. For `OpenGL`,
+    /// the `HDC` passed to `wglSwapBuffers`.
     pub swapchain: *mut c_void,
     /// For DXGI, the `ID3D11Device*` behind it, or null when it is not a `Direct3D` 11 one.
+    /// For `OpenGL`, the current `HGLRC`.
     pub device: *mut c_void,
     /// The window it presents to.
     pub hwnd: *mut c_void,

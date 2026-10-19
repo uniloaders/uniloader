@@ -159,7 +159,7 @@ fn present_on(hwnd: HWND, frames: u32) -> windows::core::Result<u32> {
 const CLEAR: [f32; 4] = [0.0, 0.25, 0.5, 1.0];
 
 /// Drain this thread's message queue, as a game's loop does between frames.
-fn pump() {
+pub(crate) fn pump() {
     let mut msg = MSG::default();
     // SAFETY: `msg` is a valid out-pointer; the messages are for this thread's own window.
     unsafe {

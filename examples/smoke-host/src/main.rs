@@ -6,14 +6,18 @@
 //! have started the plugins by the time the process has run for a moment.
 //!
 //! Then, like a game, it presents frames through a `Direct3D` 11 swapchain (on a hidden
-//! window), which is what the overlay hooks and draws on.
+//! window), which is what the overlay hooks and draws on, and then through `OpenGL`
+//! (`SwapBuffers` on another hidden window).
 //!
-//! Prints `forwarded <size>` and `presented <n>`, and exits 0 when the forwarded call answers.
+//! Prints `forwarded <size>`, `presented <n>` and `swapped <n>`, and exits 0 when the
+//! forwarded call answers.
 
 #[cfg(windows)]
 mod capture;
 #[cfg(windows)]
 mod d3d;
+#[cfg(windows)]
+mod gl;
 
 #[cfg(windows)]
 fn main() -> std::process::ExitCode {
@@ -34,6 +38,10 @@ fn main() -> std::process::ExitCode {
     match d3d::present_frames(120) {
         Ok(n) => println!("presented {n}"),
         Err(e) => println!("no direct3d 11: {e}"),
+    }
+    match gl::present_frames(120) {
+        Ok(n) => println!("swapped {n}"),
+        Err(e) => println!("no opengl: {e}"),
     }
     std::thread::sleep(std::time::Duration::from_millis(500));
     if size == 0 {
