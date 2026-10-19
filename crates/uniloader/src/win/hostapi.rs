@@ -253,8 +253,11 @@ unsafe extern "C" fn setting_set(
     let (name, value) = (text(name), text(value));
     let outcome = state().set_setting(Some(plugin), &name, &value);
     match outcome {
-        Ok(notify) => {
-            plugins::deliver(notify.into_iter().collect());
+        Ok(changed) => {
+            if let Some(persist) = changed.persist {
+                persist.write();
+            }
+            plugins::deliver(changed.notify.into_iter().collect());
             Status::OK
         }
         Err((status, message)) => {

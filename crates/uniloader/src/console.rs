@@ -7,7 +7,7 @@ use uniloader_api::{PluginHandle, Status};
 use uniloader_core::console::{self, Line, PluginOp, BUILTIN_HELP};
 use uniloader_core::names;
 
-use crate::state::{Notify, State};
+use crate::state::{Notify, Persist, State};
 
 /// What executing a line produced.
 #[derive(Debug, PartialEq, Eq)]
@@ -16,6 +16,8 @@ pub struct Outcome {
     pub status: Status,
     /// Setting notifications to deliver.
     pub notify: Vec<Notify>,
+    /// Settings files to write once the lock is released.
+    pub persist: Vec<Persist>,
     /// Plugin command to run: `(plugin, name, args)`.
     pub command: Option<(PluginHandle, String, String)>,
     /// Lifecycle operation for the platform layer to perform once the lock is released.
@@ -30,6 +32,7 @@ impl Default for Outcome {
         Outcome {
             status: Status::OK,
             notify: Vec::new(),
+            persist: Vec::new(),
             command: None,
             lifecycle: None,
         }
@@ -209,12 +212,13 @@ fn get(state: &mut State, caller: Option<PluginHandle>, name: &str) -> Outcome {
 
 fn set(state: &mut State, caller: Option<PluginHandle>, name: &str, value: &str) -> Outcome {
     match state.set_setting(caller, name, value) {
-        Ok(notify) => {
+        Ok(changed) => {
             if let Ok(v) = state.get_setting(caller, name) {
                 state.console_print(format!("{name} = {v}"));
             }
             Outcome {
-                notify: notify.into_iter().collect(),
+                notify: changed.notify.into_iter().collect(),
+                persist: changed.persist.into_iter().collect(),
                 ..Outcome::default()
             }
         }

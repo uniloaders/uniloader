@@ -108,6 +108,44 @@ pub enum Notify {
     },
 }
 
+/// What [`State::set_setting`] changed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Changed {
+    /// The notification to deliver; `None` when the value stayed the same.
+    pub notify: Option<Notify>,
+    /// The settings file to write; `None` for a transient or unchanged setting.
+    pub persist: Option<Persist>,
+}
+
+/// A plugin's settings file to write once the state lock is released: a file write must
+/// not hold up every other plugin and the hotkey thread.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Persist {
+    path: std::path::PathBuf,
+    values: BTreeMap<String, String>,
+    /// Handed out under the state lock, so it orders writes of one file as the sets were.
+    seq: u64,
+}
+
+impl Persist {
+    /// Writes the file, unless a later set of it was written already (two sets can race
+    /// between the lock and here).
+    pub fn write(self) {
+        static WRITTEN: std::sync::Mutex<BTreeMap<std::path::PathBuf, u64>> =
+            std::sync::Mutex::new(BTreeMap::new());
+        let mut written = WRITTEN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if written.get(&self.path).is_some_and(|seq| *seq > self.seq) {
+            return;
+        }
+        if let Err(e) = store::write(&self.path, &self.values) {
+            log::error!("could not save settings: {e}");
+        }
+        written.insert(self.path, self.seq);
+    }
+}
+
 /// Which registrations are currently allowed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
@@ -159,6 +197,11 @@ pub struct State {
     /// Closes the game for `quit`, and returns what to print. A function pointer for the
     /// same reason: ending the process is the platform layer's business.
     pub quit: fn() -> Vec<String>,
+    /// The stored values of the plugin starting now, read before its start so that each
+    /// [`State::register_setting`] does not read the file again under the lock.
+    pub start_values: Option<(PluginHandle, BTreeMap<String, String>)>,
+    /// The last [`Persist::seq`] handed out.
+    persist_seq: u64,
 }
 
 /// Default for [`State::hook_lines`]: no platform layer, so no hooks.
@@ -194,6 +237,8 @@ impl State {
             console_printed: 0,
             hook_lines: no_hooks,
             quit: no_quit,
+            start_values: None,
+            persist_seq: 0,
         }
     }
 
@@ -266,17 +311,27 @@ impl State {
         self.require_starting(plugin)?;
         names::setting_key(&desc.key).map_err(|_| Status::INVALID_ARGUMENT)?;
         let record = self.plugin(plugin).ok_or(Status::NOT_FOUND)?;
-        let stored = crate::config::load_plugin_values(&self.paths, record.name());
-        let value = stored.get(&desc.key).map(String::as_str);
+        let read;
+        let stored = match &self.start_values {
+            Some((handle, values)) if *handle == plugin => values,
+            _ => {
+                read = crate::config::load_plugin_values(&self.paths, record.name());
+                &read
+            }
+        };
+        let value = stored.get(&desc.key).cloned();
         let record = self.plugin_mut(plugin).ok_or(Status::NOT_FOUND)?;
         let name = record.info.name.clone();
-        record.settings.register(desc, value).map_err(|e| {
-            log::error!("{name}: {e}");
-            match e {
-                settings::SettingError::Duplicate(_) => Status::ALREADY_EXISTS,
-                _ => Status::INVALID_ARGUMENT,
-            }
-        })
+        record
+            .settings
+            .register(desc, value.as_deref())
+            .map_err(|e| {
+                log::error!("{name}: {e}");
+                match e {
+                    settings::SettingError::Duplicate(_) => Status::ALREADY_EXISTS,
+                    _ => Status::INVALID_ARGUMENT,
+                }
+            })
     }
 
     /// Resolve `name` (own key or `plugin.key`) relative to `caller`.
@@ -307,7 +362,8 @@ impl State {
             .ok_or(Status::NOT_FOUND)
     }
 
-    /// Validate, store and persist a setting. Returns the notification to deliver, if any.
+    /// Validate and store a setting. Returns the notification to deliver and the file to
+    /// write, once the lock is released.
     ///
     /// # Errors
     /// The status and the validation message.
@@ -316,7 +372,7 @@ impl State {
         caller: Option<PluginHandle>,
         name: &str,
         value: &str,
-    ) -> Result<Option<Notify>, (Status, String)> {
+    ) -> Result<Changed, (Status, String)> {
         let (handle, key) = self
             .resolve(caller, name)
             .ok_or((Status::NOT_FOUND, format!("unknown setting {name}")))?;
@@ -332,19 +388,29 @@ impl State {
             .settings
             .set(&key, value)
             .map_err(|e| (Status::INVALID_ARGUMENT, e.to_string()))?;
-        if changed.persist && changed.differs {
-            if let Err(e) = store::write(&config_path, &record.settings.persistent_values()) {
-                log::error!("could not save settings: {e}");
-            }
-        }
         if !changed.differs {
-            return Ok(None);
+            return Ok(Changed {
+                notify: None,
+                persist: None,
+            });
         }
-        Ok(Some(Notify::SettingChanged {
-            plugin: handle,
-            key,
-            value: changed.value,
-        }))
+        let values = changed.persist.then(|| record.settings.persistent_values());
+        let persist = values.map(|values| {
+            self.persist_seq += 1;
+            Persist {
+                path: config_path,
+                values,
+                seq: self.persist_seq,
+            }
+        });
+        Ok(Changed {
+            notify: Some(Notify::SettingChanged {
+                plugin: handle,
+                key,
+                value: changed.value,
+            }),
+            persist,
+        })
     }
 
     /// Register a hotkey for the plugin currently starting. Returns the qualified name.
@@ -657,311 +723,5 @@ impl State {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
-    use super::*;
-
-    pub(crate) fn state() -> State {
-        let dir = std::env::temp_dir().join(format!(
-            "uniloader-state-{}-{}",
-            std::process::id(),
-            rand_suffix()
-        ));
-        State::new(Paths::from_game_dir(&dir), LoaderConfig::default())
-    }
-
-    fn rand_suffix() -> u64 {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static N: AtomicU64 = AtomicU64::new(0);
-        N.fetch_add(1, Ordering::Relaxed)
-    }
-
-    pub(crate) fn described(name: &str) -> Described {
-        Described {
-            name: name.to_owned(),
-            version: "1".to_owned(),
-            ..Described::default()
-        }
-    }
-
-    pub(crate) fn desc(key: &str) -> settings::Desc {
-        settings::Desc {
-            key: key.into(),
-            title: String::new(),
-            description: String::new(),
-            kind: settings::Kind::Int,
-            default: "1".into(),
-            min: 0.0,
-            max: 10.0,
-            choices: Vec::new(),
-            restart_required: false,
-            advanced: false,
-            transient: false,
-        }
-    }
-
-    pub(crate) fn started(s: &mut State, name: &str) -> PluginHandle {
-        let h = s
-            .add_plugin(described(name), &format!("{name}.dll"))
-            .unwrap_or_else(|e| panic!("{e:?}"));
-        s.phase = Phase::Starting(h);
-        h
-    }
-
-    #[test]
-    fn registrations_require_start_phase() {
-        let mut s = state();
-        let h = s
-            .add_plugin(described("a"), "a.dll")
-            .unwrap_or_else(|e| panic!("{e:?}"));
-        assert_eq!(s.register_setting(h, desc("x")), Err(Status::WRONG_PHASE));
-        s.phase = Phase::Starting(h);
-        assert_eq!(s.register_setting(h, desc("x")), Ok(()));
-        assert_eq!(
-            s.register_setting(h, desc("x")),
-            Err(Status::ALREADY_EXISTS)
-        );
-        assert_eq!(
-            s.register_setting(h, desc("Bad Key")),
-            Err(Status::INVALID_ARGUMENT)
-        );
-        assert_eq!(
-            s.register_hotkey(h, "go", "Go", "f5"),
-            Ok("a.go".to_owned())
-        );
-        assert_eq!(
-            s.register_hotkey(h, "go", "Go", "f5"),
-            Err(Status::ALREADY_EXISTS)
-        );
-        assert_eq!(
-            s.register_hotkey(h, "bad", "Bad", "nokey"),
-            Err(Status::INVALID_ARGUMENT)
-        );
-        s.phase = Phase::Running;
-        assert_eq!(s.subscribe(h, "late"), Err(Status::WRONG_PHASE));
-        assert_eq!(
-            s.add_plugin(described("a"), "a2.dll"),
-            Err(Status::INVALID_ARGUMENT)
-        );
-    }
-
-    #[test]
-    fn settings_resolve_own_and_qualified_names() {
-        let mut s = state();
-        let a = started(&mut s, "a");
-        s.register_setting(a, desc("x"))
-            .unwrap_or_else(|e| panic!("{e:?}"));
-        let b = started(&mut s, "b");
-        s.register_setting(b, desc("x"))
-            .unwrap_or_else(|e| panic!("{e:?}"));
-        s.phase = Phase::Running;
-        s.set_enabled(a, true);
-        s.set_enabled(b, true);
-
-        assert_eq!(s.get_setting(Some(a), "x"), Ok("1".into()));
-        assert_eq!(s.get_setting(None, "x"), Err(Status::NOT_FOUND));
-        assert_eq!(s.get_setting(None, "b.x"), Ok("1".into()));
-        let notify = s
-            .set_setting(Some(a), "b.x", "7")
-            .unwrap_or_else(|e| panic!("{e:?}"));
-        assert_eq!(
-            notify,
-            Some(Notify::SettingChanged {
-                plugin: b,
-                key: "x".into(),
-                value: "7".into()
-            })
-        );
-        assert_eq!(
-            s.set_setting(None, "b.x", "7"),
-            Ok(None),
-            "unchanged value notifies nobody"
-        );
-        assert!(matches!(
-            s.set_setting(None, "b.x", "99"),
-            Err((Status::INVALID_ARGUMENT, _))
-        ));
-        assert!(matches!(
-            s.set_setting(None, "c.x", "1"),
-            Err((Status::NOT_FOUND, _))
-        ));
-        assert!(s.paths.plugin_config("b").exists(), "persisted to disk");
-        assert_eq!(crate::config::load_plugin_values(&s.paths, "b")["x"], "7");
-        let _ = std::fs::remove_dir_all(&s.paths.game_dir);
-    }
-
-    #[test]
-    fn subscribers_exclude_sender_and_disabled() {
-        let mut s = state();
-        let a = started(&mut s, "a");
-        s.subscribe(a, "pose").unwrap_or_else(|e| panic!("{e:?}"));
-        let b = started(&mut s, "b");
-        s.subscribe(b, "pose").unwrap_or_else(|e| panic!("{e:?}"));
-        let c = started(&mut s, "c");
-        s.subscribe(c, "pose").unwrap_or_else(|e| panic!("{e:?}"));
-        assert_eq!(s.subscribe(c, ""), Err(Status::INVALID_ARGUMENT));
-        for h in [a, b] {
-            s.set_enabled(h, true);
-        }
-        assert_eq!(s.subscribers(a, "pose"), vec![b]);
-        assert_eq!(s.subscribers(a, "other"), Vec::<PluginHandle>::new());
-    }
-
-    #[test]
-    fn a_pause_is_not_a_stop() {
-        let mut s = state();
-        let a = started(&mut s, "a");
-        let state_of = |s: &State| s.plugin(a).map(PluginRecord::state);
-        s.set_enabled(a, true);
-        assert_eq!(state_of(&s), Some(PluginState::RUNNING));
-        s.set_enabled(a, false);
-        assert_eq!(state_of(&s), Some(PluginState::DISABLED));
-        assert!(!s.has_ended(a));
-        s.set_ended(a, PluginState::STOPPED);
-        assert_eq!(state_of(&s), Some(PluginState::STOPPED));
-        assert!(s.has_ended(a));
-        // Enabling again does not bring a stopped plugin back.
-        s.set_enabled(a, true);
-        assert_eq!(state_of(&s), Some(PluginState::STOPPED));
-    }
-
-    #[test]
-    fn services_need_a_running_provider() {
-        let mut s = state();
-        let a = started(&mut s, "a");
-        assert_eq!(s.register_service(a, "overlay", 1, 0x10), Ok(()));
-        assert_eq!(
-            s.register_service(PluginHandle(9), "x", 1, 0x10),
-            Err(Status::NOT_FOUND)
-        );
-        assert_eq!(s.service("overlay"), None, "not running yet");
-        s.set_enabled(a, true);
-        assert_eq!(s.service("overlay").map(|x| x.table), Some(0x10));
-        s.set_enabled(a, false);
-        assert_eq!(s.service("overlay"), None, "paused provider");
-    }
-
-    #[test]
-    fn rebinding_persists_only_differences_from_the_default() {
-        let mut s = state();
-        let a = started(&mut s, "a");
-        s.register_hotkey(a, "go", "Go", "f5")
-            .unwrap_or_else(|e| panic!("{e:?}"));
-        assert_eq!(s.rebind_hotkey("a.go", "ctrl+f6, f7"), Ok(()));
-        assert_eq!(s.hotkey_overrides["a.go"], "ctrl+f6, f7");
-        assert_eq!(
-            store::read(&s.paths.hotkeys_file()).unwrap_or_default()["a.go"],
-            "ctrl+f6, f7"
-        );
-        assert_eq!(s.rebind_hotkey("a.go", "f5"), Ok(()));
-        assert!(!s.hotkey_overrides.contains_key("a.go"));
-        assert_eq!(s.rebind_hotkey("a.nope", "f5"), Err(Status::NOT_FOUND));
-        assert_eq!(
-            s.rebind_hotkey("a.go", "nokey"),
-            Err(Status::INVALID_ARGUMENT)
-        );
-        let _ = std::fs::remove_dir_all(&s.paths.game_dir);
-    }
-
-    #[test]
-    fn captured_output_survives_a_full_history() {
-        let mut s = state();
-        // Fill the buffer first: a position in it is then meaningless, which is the bug this
-        // guards against — capture used to skip by index and returned nothing.
-        for i in 0..(CONSOLE_HISTORY + 5) {
-            s.console_print(format!("old {i}"));
-        }
-        let mark = s.console_mark();
-        s.console_print("new 1".to_owned());
-        s.console_print("new 2".to_owned());
-        assert_eq!(
-            s.console_since(mark),
-            vec!["new 1".to_owned(), "new 2".to_owned()]
-        );
-    }
-
-    #[test]
-    fn capture_cannot_return_evicted_lines() {
-        let mut s = state();
-        let mark = s.console_mark();
-        for i in 0..(CONSOLE_HISTORY + 5) {
-            s.console_print(i.to_string());
-        }
-        let captured = s.console_since(mark);
-        assert_eq!(captured.len(), CONSOLE_HISTORY);
-        assert_eq!(captured.first().map(String::as_str), Some("5"));
-    }
-
-    #[test]
-    fn console_view_includes_log_records() {
-        let mut s = state();
-        let mark = s.console_mark();
-        s.console_push(
-            scrollback::Kind::Log(log::Level::Warn),
-            "t".to_owned(),
-            "careful".to_owned(),
-        );
-        s.console_print("out".to_owned());
-        assert_eq!(s.console_since(mark), vec!["out".to_owned()]);
-        let all = s.console_all_since(mark);
-        assert_eq!(all.len(), 2);
-        assert_eq!(all[0].kind, scrollback::Kind::Log(log::Level::Warn));
-        assert_eq!(
-            (all[0].target.as_str(), all[0].text.as_str()),
-            ("t", "careful")
-        );
-        assert_eq!(all[0].clock.len(), "HH:MM:SS".len());
-    }
-
-    #[test]
-    fn a_capturing_plugin_keeps_only_its_own_hotkeys() {
-        let mut s = state();
-        let described = |name: &str| Described {
-            name: name.to_owned(),
-            ..Described::default()
-        };
-        let overlay = s.add_plugin(described("overlay"), "o.dll");
-        let other = s.add_plugin(described("other"), "x.dll");
-        let (Ok(overlay), Ok(other)) = (overlay, other) else {
-            panic!("plugins added");
-        };
-        let fired = || vec!["overlay.mouse".to_owned(), "other.jump".to_owned()];
-        assert_eq!(s.allowed_hotkeys(fired()).len(), 2, "nobody captures");
-        s.claim_input(overlay, true);
-        assert_eq!(
-            s.allowed_hotkeys(fired()).len(),
-            2,
-            "a stopped owner is void"
-        );
-        s.plugins[0].enabled = true;
-        s.plugins[1].enabled = true;
-        assert_eq!(s.allowed_hotkeys(fired()), vec!["overlay.mouse".to_owned()]);
-        s.claim_input(other, true);
-        assert_eq!(s.allowed_hotkeys(fired()), vec!["other.jump".to_owned()]);
-        s.claim_input(other, false);
-        assert_eq!(
-            s.allowed_hotkeys(fired()),
-            vec!["overlay.mouse".to_owned()],
-            "giving a claim up hands the keyboard back"
-        );
-        s.claim_input(overlay, false);
-        assert_eq!(s.allowed_hotkeys(fired()).len(), 2);
-    }
-
-    #[test]
-    fn completion_names_include_builtins() {
-        let s = state();
-        let names = s.completion_names();
-        assert!(names.iter().any(|n| n == "plugin load"));
-        assert!(names.windows(2).all(|w| w[0] < w[1]), "sorted, no repeats");
-    }
-
-    #[test]
-    fn console_history_is_bounded() {
-        let mut s = state();
-        for i in 0..(CONSOLE_HISTORY + 5) {
-            s.console_print(i.to_string());
-        }
-        assert_eq!(s.console.len(), CONSOLE_HISTORY);
-        assert_eq!(s.console.front().map(|line| line.text.as_str()), Some("5"));
-    }
-}
+#[path = "state_tests.rs"]
+pub(crate) mod tests;

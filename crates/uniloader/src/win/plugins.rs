@@ -400,17 +400,24 @@ pub(super) fn start_one(described: &Described) -> Result<Active, String> {
 
     let mut callbacks = PluginCallbacks::empty();
     let host = super::host_api();
+    // Read before taking the lock: every setting the plugin registers looks its value up.
+    let paths = super::state().paths.clone();
+    let stored = crate::config::load_plugin_values(&paths, name);
     let previous = {
         let mut guard = super::state();
         guard.set_dependencies(handle, declared.iter().map(external::Declared::describe));
+        let values = guard.start_values.replace((handle, stored));
         let previous = guard.phase;
         guard.phase = Phase::Starting(handle);
-        previous
+        (previous, values)
     };
     // SAFETY: `host` lives for the process's lifetime and `callbacks` is writable.
     let status =
         unsafe { super::guard::call(|| (exports.start)(host, handle, &raw mut callbacks)) };
-    super::state().phase = previous;
+    {
+        let mut guard = super::state();
+        (guard.phase, guard.start_values) = previous;
+    }
 
     let failure = match status {
         Ok(Status::OK) => None,

@@ -249,6 +249,9 @@ pub(crate) fn run_console_line_capture(
     // caller capturing output already knows its own line, so it is not part of the answer.
     let echo = format!("> {}", line.trim());
     let printed: Vec<String> = printed.into_iter().filter(|l| *l != echo).collect();
+    for persist in outcome.persist {
+        persist.write();
+    }
     dispatch::deliver(outcome.notify);
     if let Some((op, name)) = outcome.lifecycle {
         // Performed out here, with no lock held: it loads a DLL and calls into it.
