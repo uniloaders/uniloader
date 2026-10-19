@@ -19,9 +19,9 @@ use core::ffi::c_void;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use uniloader_sdk::Host;
-use windows::core::{IUnknown, Interface};
+use windows::core::{s, w, IUnknown, Interface, GUID, HRESULT};
 use windows::Win32::Foundation::HWND;
-use windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_11_0;
+use windows::Win32::Graphics::Direct3D::{D3D_FEATURE_LEVEL, D3D_FEATURE_LEVEL_11_0};
 use windows::Win32::Graphics::Direct3D11::{
     ID3D11Device, ID3D11DeviceContext, ID3D11Resource, ID3D11Texture2D, D3D11_BIND_RENDER_TARGET,
     D3D11_CREATE_DEVICE_BGRA_SUPPORT,
@@ -30,14 +30,15 @@ use windows::Win32::Graphics::Direct3D11on12::{
     D3D11On12CreateDevice, ID3D11On12Device, D3D11_RESOURCE_FLAGS,
 };
 use windows::Win32::Graphics::Direct3D12::{
-    D3D12CreateDevice, ID3D12CommandQueue, ID3D12Device, ID3D12Resource,
-    D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_QUEUE_DESC, D3D12_RESOURCE_STATE_PRESENT,
+    ID3D12CommandQueue, ID3D12Device, ID3D12Resource, D3D12_COMMAND_LIST_TYPE_DIRECT,
+    D3D12_COMMAND_QUEUE_DESC, D3D12_RESOURCE_STATE_PRESENT,
 };
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory1, IDXGIFactory2, IDXGISwapChain, IDXGISwapChain3, DXGI_SWAP_CHAIN_DESC1,
     DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_USAGE_RENDER_TARGET_OUTPUT,
 };
+use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 
 use super::render;
 
@@ -52,12 +53,43 @@ static REAL_EXECUTE: AtomicUsize = AtomicUsize::new(0);
 /// The game's direct queue, holding one reference of ours; zero until one executes.
 static QUEUE: AtomicUsize = AtomicUsize::new(0);
 
+type CreateDeviceFn = unsafe extern "system" fn(
+    *mut c_void,
+    D3D_FEATURE_LEVEL,
+    *const GUID,
+    *mut *mut c_void,
+) -> HRESULT;
+
+/// A `Direct3D` 12 device, through `d3d12.dll` loaded now rather than imported: where it
+/// cannot load (plain Wine without vkd3d), only the `Direct3D` 12 part goes, not the plugin.
+fn create_device() -> windows::core::Result<ID3D12Device> {
+    // SAFETY: a constant, NUL-terminated name; the library stays loaded for the process.
+    let module = unsafe { LoadLibraryW(w!("d3d12.dll")) }?;
+    // SAFETY: a loaded module and a constant, NUL-terminated name.
+    let address = unsafe { GetProcAddress(module, s!("D3D12CreateDevice")) }
+        .ok_or_else(windows::core::Error::from_thread)?;
+    // SAFETY: `D3D12CreateDevice` has this signature.
+    let create = unsafe {
+        core::mem::transmute::<unsafe extern "system" fn() -> isize, CreateDeviceFn>(address)
+    };
+    let mut raw = core::ptr::null_mut();
+    // SAFETY: the default adapter, a valid interface id and out-pointer.
+    unsafe {
+        create(
+            core::ptr::null_mut(),
+            D3D_FEATURE_LEVEL_11_0,
+            &ID3D12Device::IID,
+            &raw mut raw,
+        )
+    }
+    .ok()?;
+    // SAFETY: a device the call created, its one reference handed to us.
+    Ok(unsafe { ID3D12Device::from_raw(raw) })
+}
+
 /// A throwaway `Direct3D` 12 swapchain on `hwnd`, and the queue it was made with.
 pub(super) fn probe(hwnd: HWND) -> windows::core::Result<(IDXGISwapChain, ID3D12CommandQueue)> {
-    let mut device: Option<ID3D12Device> = None;
-    // SAFETY: `device` is a valid out-pointer for the created device.
-    unsafe { D3D12CreateDevice(None, D3D_FEATURE_LEVEL_11_0, &raw mut device) }?;
-    let device = device.ok_or_else(windows::core::Error::empty)?;
+    let device = create_device()?;
     let queue_desc = D3D12_COMMAND_QUEUE_DESC {
         Type: D3D12_COMMAND_LIST_TYPE_DIRECT,
         ..D3D12_COMMAND_QUEUE_DESC::default()
