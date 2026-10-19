@@ -126,6 +126,12 @@ impl Showcase {
     pub fn is_empty(&self) -> bool {
         self.cards.is_empty()
     }
+
+    /// Every card, in the order they came.
+    #[must_use]
+    pub fn cards(&self) -> &[ShownCard] {
+        &self.cards
+    }
 }
 
 #[cfg(test)]

@@ -14,6 +14,7 @@
 //! plugin in another language uses the table directly.
 
 mod abi;
+pub mod card_bus;
 mod client;
 pub mod showcase;
 

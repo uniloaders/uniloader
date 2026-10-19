@@ -92,6 +92,15 @@ impl Plugin for OverlayPlugin {
                      reads it to open this console rather than its own.",
                 ),
         )?;
+        host.setting(
+            &Setting::bool("cards_elsewhere", "A game's own UI shows the cards", false)
+                .transient()
+                .advanced()
+                .with_description(
+                    "Set by a game's own UI that shows the plugins' showcase cards its own \
+                     way, from the overlay.card messages; the overlay then draws none.",
+                ),
+        )?;
         host.subscribe(topics::PLUGIN_STATE)?;
         // SAFETY: `service::TABLE` is the `OverlayApi` layout of this version, and every
         // function in it is thread safe.
@@ -139,6 +148,12 @@ impl Plugin for OverlayPlugin {
         toggle(action);
     }
 
+    fn on_setting_changed(&self, _host: &Host, key: &str, value: &str) {
+        if key.rsplit('.').next() == Some("cards_elsewhere") {
+            cards::set_elsewhere(value == "true");
+        }
+    }
+
     fn on_event(&self, _host: &Host, _from: PluginRef, topic: &str, payload: &[u8]) {
         if topic != topics::PLUGIN_STATE {
             return;
@@ -146,6 +161,9 @@ impl Plugin for OverlayPlugin {
         let Some(event) = PluginStateEvent::parse(payload) else {
             return;
         };
+        if event.state == PluginState::RUNNING {
+            cards::send_all();
+        }
         // A stopped or faulted plugin must not be called again: take down everything it
         // put up. Disabled is only paused, so its panels stay registered but are skipped.
         if event.state == PluginState::STOPPED || event.state == PluginState::FAULTED {

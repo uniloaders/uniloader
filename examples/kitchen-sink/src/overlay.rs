@@ -113,8 +113,8 @@ fn draw(ui: &mut Ui<'_>) {
 }
 
 /// Checks that need no frame: the panel registry through the service, and the overlay's
-/// console command. The console and the settings editor are left open, so the smoke test's
-/// captured frame shows them.
+/// console command. In the smoke test host the console and the settings editor are left
+/// open, so its captured frame shows them; in a game they are closed again.
 pub(crate) fn checks(check: &mut dyn FnMut(&str, bool), overlay: &Overlay, host: &Host) {
     // Whichever plugin provides the service: the egui `overlay`, or a game's own UI. Both
     // have a `toggle` command for their console and settings screens.
@@ -168,4 +168,18 @@ pub(crate) fn checks(check: &mut dyn FnMut(&str, bool), overlay: &Overlay, host:
         "overlay close refuses an unknown id",
         overlay.close(u64::MAX).is_err(),
     );
+    // In a game they would cover the screen at every start: closed again.
+    if !in_smoke_host() {
+        let _ = host.console_exec(&format!("{provider}.toggle console"));
+        let _ = host.console_exec(&format!("{provider}.toggle settings"));
+        let _ = overlay.set_open("panel", false);
+    }
+}
+
+/// Whether this is uniloader's smoke test host, whose captured frame shows the windows.
+fn in_smoke_host() -> bool {
+    std::env::current_exe().is_ok_and(|exe| {
+        exe.file_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case("smoke-host.exe"))
+    })
 }
