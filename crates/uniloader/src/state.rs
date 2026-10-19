@@ -129,20 +129,29 @@ pub struct Persist {
 
 impl Persist {
     /// Writes the file, unless a later set of it was written already (two sets can race
-    /// between the lock and here).
+    /// between the lock and here). Writes of one file wait for each other; writes of
+    /// different files do not.
     pub fn write(self) {
-        static WRITTEN: std::sync::Mutex<BTreeMap<std::path::PathBuf, u64>> =
+        type Last = std::sync::Arc<std::sync::Mutex<u64>>;
+        static FILES: std::sync::Mutex<BTreeMap<std::path::PathBuf, Last>> =
             std::sync::Mutex::new(BTreeMap::new());
-        let mut written = WRITTEN
+        let file = std::sync::Arc::clone(
+            FILES
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .entry(self.path.clone())
+                .or_default(),
+        );
+        let mut last = file
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if written.get(&self.path).is_some_and(|seq| *seq > self.seq) {
+        if *last > self.seq {
             return;
         }
         if let Err(e) = store::write(&self.path, &self.values) {
             log::error!("could not save settings: {e}");
         }
-        written.insert(self.path, self.seq);
+        *last = self.seq;
     }
 }
 

@@ -53,6 +53,41 @@ static UNKNOWN: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
     static IN_FRAME: Cell<bool> = const { Cell::new(false) };
+    /// The slot this thread is drawing with, its lock held: a destroy detour re-entered for
+    /// it (a plugin's callback during the draw) queues its work in [`LATER`] instead of
+    /// waiting for a lock its own thread holds.
+    static DRAWING: Cell<usize> = const { Cell::new(0) };
+    /// Destroys that came while [`DRAWING`]; done after the draw.
+    static LATER: std::cell::RefCell<Vec<Later>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// A destroy deferred until the draw that was running ends.
+enum Later {
+    /// `vkDestroySwapchainKHR`: forget what the renderer had for it.
+    Forget(vk::SwapchainKHR),
+    /// `vkDestroyDevice`: the renderer's objects went with the device; drop it unused.
+    DeviceGone,
+}
+
+/// Whether this thread is drawing with `slot` (so its lock is held right here).
+fn drawing_with(slot: &Slot) -> bool {
+    DRAWING.with(Cell::get) == Arc::as_ptr(slot) as usize
+}
+
+/// Marks this thread as drawing with a slot until dropped, also when the draw panics.
+struct Drawing;
+
+impl Drawing {
+    fn start(slot: &Slot) -> Self {
+        DRAWING.with(|d| d.set(Arc::as_ptr(slot) as usize));
+        Drawing
+    }
+}
+
+impl Drop for Drawing {
+    fn drop(&mut self) {
+        DRAWING.with(|d| d.set(0));
+    }
 }
 
 /// The originals behind each detour, as addresses; zero when not hooked.
@@ -404,7 +439,9 @@ unsafe extern "system" fn destroy_device(
         t.renderers.remove(&device.as_raw())
     };
     if let Some(slot) = slot {
-        if let Some(mut renderer) = lock(&slot).take() {
+        if drawing_with(&slot) {
+            LATER.with_borrow_mut(|later| later.push(Later::DeviceGone));
+        } else if let Some(mut renderer) = lock(&slot).take() {
             renderer.destroy();
         }
     }
@@ -523,7 +560,9 @@ unsafe extern "system" fn destroy_swapchain(
         t.renderers.get(&device.as_raw()).cloned()
     };
     if let Some(slot) = slot {
-        if let Some(renderer) = lock(&slot).as_mut() {
+        if drawing_with(&slot) {
+            LATER.with_borrow_mut(|later| later.push(Later::Forget(swapchain)));
+        } else if let Some(renderer) = lock(&slot).as_mut() {
             renderer.forget(swapchain);
         }
     }
@@ -621,17 +660,37 @@ fn frame(queue: vk::Queue, present: &vk::PresentInfoKHR<'_>) -> Option<vk::Semap
         )
     };
     let mut renderer = lock(&slot);
-    renderer.as_mut()?.draw(
-        host,
-        &render::Present {
-            queue,
-            family,
-            swapchain,
-            chain,
-            index,
-            waits,
-        },
-    )
+    let drawn = {
+        let _drawing = Drawing::start(&slot);
+        renderer.as_mut()?.draw(
+            host,
+            &render::Present {
+                queue,
+                family,
+                swapchain,
+                chain,
+                index,
+                waits,
+            },
+        )
+    };
+    let mut device_gone = false;
+    for later in LATER.take() {
+        match later {
+            Later::Forget(gone) => {
+                if let Some(renderer) = renderer.as_mut() {
+                    renderer.forget(gone);
+                }
+            }
+            Later::DeviceGone => device_gone = true,
+        }
+    }
+    if device_gone {
+        log::warn!("Vulkan device destroyed during the overlay's own frame; renderer dropped");
+        drop(renderer.take());
+        return None;
+    }
+    drawn
 }
 
 /// Run the present subscribers for a Vulkan frame.

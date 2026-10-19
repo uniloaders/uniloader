@@ -47,13 +47,6 @@ thread_local! {
 
 /// Run `f` as the only lifecycle operation in progress.
 pub(super) fn serialised<T>(f: impl FnOnce() -> T) -> T {
-    /// Clears [`INSIDE`] however `f` ends.
-    struct Leave;
-    impl Drop for Leave {
-        fn drop(&mut self) {
-            INSIDE.with(|inside| inside.set(false));
-        }
-    }
     if INSIDE.with(Cell::get) {
         return f();
     }
@@ -64,8 +57,37 @@ pub(super) fn serialised<T>(f: impl FnOnce() -> T) -> T {
 }
 
 /// Perform one lifecycle operation. Returns the status and the lines to print.
+///
+/// Asked for from the console or by a plugin, so it does not wait for another operation
+/// running on another thread: that one runs plugin code, which may be waiting for this
+/// thread (the game or render thread). It answers busy instead; nested on the same thread
+/// it runs inside the outer one, as [`serialised`] does.
 pub(crate) fn perform(op: PluginOp, name: &str) -> (Status, Vec<String>) {
-    serialised(|| perform_now(op, name))
+    if INSIDE.with(Cell::get) {
+        return perform_now(op, name);
+    }
+    let _lock = match LIFECYCLE.try_lock() {
+        Ok(lock) => lock,
+        Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => {
+            return (
+                Status::WRONG_PHASE,
+                vec!["another plugin operation is in progress; try again".to_owned()],
+            );
+        }
+    };
+    INSIDE.with(|inside| inside.set(true));
+    let _leave = Leave;
+    perform_now(op, name)
+}
+
+/// Clears [`INSIDE`] however the operation ends.
+struct Leave;
+
+impl Drop for Leave {
+    fn drop(&mut self) {
+        INSIDE.with(|inside| inside.set(false));
+    }
 }
 
 /// [`perform`] inside the lifecycle lock.

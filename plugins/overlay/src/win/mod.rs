@@ -129,7 +129,11 @@ pub(crate) fn frame(swapchain: *mut c_void, sync_interval: u32, flags: u32) {
         return;
     }
     DXGI_PRESENTED.store(millis_since_epoch() + 1, Ordering::Relaxed);
-    let Some(host) = crate::host() else { return };
+    let Some(host) = crate::host() else {
+        // Stopped: the renderer lives on this (the render) thread, so it goes here.
+        drop(OVERLAY.with_borrow_mut(|slot| slot.0.take()));
+        return;
+    };
     let Some(chain) = render::swapchain_of(swapchain) else {
         return;
     };
