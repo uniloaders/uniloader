@@ -60,7 +60,7 @@ From another language, look the service up by name (`overlay`, version 1) and ca
 | --- | --- |
 | Direct3D 11 (native, DXVK) | drawn |
 | Direct3D 10 | hooked, not drawn: the device is not a Direct3D 11 one |
-| Direct3D 12 (native DXGI, vkd3d-proton) | drawn through Direct3D 11 on 12; not yet tried in a game |
+| Direct3D 12 (native DXGI, vkd3d-proton) | drawn through Direct3D 11 on 12; verified in Train Sim World 7 under Proton |
 | Vulkan | not hooked yet |
 | OpenGL | not hooked yet |
 
@@ -75,6 +75,21 @@ vkd3d-proton's swapchain class rather than DXVK's; when the class differs it is 
 The game's direct queue is taken from `ExecuteCommandLists`, and a Direct3D 11 device layered
 over it (`D3D11On12CreateDevice`, native on Windows and implemented by DXVK over vkd3d-proton)
 runs the same egui renderer into the backbuffer, wrapped and released within each `Present`.
+That layer exists only while something is shown: hidden for 3 s, it is dropped. It is never
+dropped as the render thread ends, though, because that runs under the loader lock and the
+layer's teardown waits for DXVK's worker threads, which need the same lock (the game hung
+on quit that way). `d3d12.dll` is loaded at run time, so where it cannot load, only the
+Direct3D 12 part is skipped.
+
+## Showcase cards and a game's own UI
+
+Cards a plugin sets with `card_set` are drawn at the bottom centre while an overlay window
+is open. A game UI plugin that shows them its own way (tsw-sdk's `tsw_ui` on Train Sim
+World's main menu) subscribes to the `overlay.card` topic, keeps its own
+`showcase::Showcase` from the messages ([`card_bus`](../../crates/uniloader-overlay/src/card_bus.rs)),
+and sets `overlay.cards_elsewhere = true`; the overlay then draws no cards. Every card is
+sent again whenever plugins are announced running, since events published while plugins
+are still starting reach nobody.
 
 The plan for the rest keeps the split that is already there. `ui` builds an egui frame and
 knows nothing about devices; `win` owns the renderers. Each new API is one more behind the
