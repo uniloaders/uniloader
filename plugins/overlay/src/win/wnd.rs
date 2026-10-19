@@ -153,6 +153,56 @@ pub(crate) fn take_last_key() -> Option<(u16, u16, uniloader_core::keys::Modifie
         .map(|(vk, scancode)| (vk, scancode, modifiers))
 }
 
+/// Post `input` to the game window as the messages real input would make (`overlay.input`).
+pub(crate) fn inject(input: &crate::inject::Input) -> Result<(), String> {
+    use crate::inject::Input;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{MapVirtualKeyW, MAPVK_VK_TO_VSC};
+    use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
+
+    let hwnd = WINDOW.load(Ordering::Acquire);
+    if hwnd.is_null() {
+        return Err("no game window yet".to_owned());
+    }
+    let hwnd = Some(HWND(hwnd));
+    let post = |msg: u32, wparam: usize, lparam: isize| {
+        // SAFETY: posting to a window handle has no memory effects; a stale handle fails.
+        unsafe { PostMessageW(hwnd, msg, WPARAM(wparam), LPARAM(lparam)) }
+            .map_err(|e| format!("posting to the game window: {e}"))
+    };
+    match input {
+        Input::Type(text) => {
+            for unit in text.encode_utf16() {
+                post(WM_CHAR, usize::from(unit), 1)?;
+            }
+        }
+        Input::Key(vk) => {
+            // SAFETY: a table lookup.
+            let scancode = unsafe { MapVirtualKeyW(u32::from(*vk), MAPVK_VK_TO_VSC) };
+            #[allow(clippy::cast_possible_wrap, reason = "a bit field, not a number")]
+            let down = (1 | (scancode << 16)) as isize;
+            // Key up: previous state down (bit 30) and transition (bit 31).
+            #[allow(clippy::cast_possible_wrap, reason = "a bit field, not a number")]
+            let up = (1 | (scancode << 16) | 0xC000_0000) as isize;
+            post(WM_KEYDOWN, usize::from(*vk), down)?;
+            post(WM_KEYUP, usize::from(*vk), up)?;
+        }
+        Input::Click(x, y) => {
+            // Placed directly: once relative mouse input is latched, absolute moves are
+            // ignored (see the module comment).
+            {
+                let mut guard = pending();
+                let screen = guard.screen;
+                let pos = Pos2::new(*x, *y).clamp(Pos2::ZERO, Pos2::new(screen.x, screen.y));
+                guard.pointer = pos;
+                guard.events.push(Event::PointerMoved(pos));
+            }
+            post(WM_LBUTTONDOWN, 1, 0)?;
+            post(WM_LBUTTONUP, 0, 0)?;
+        }
+    }
+    Ok(())
+}
+
 /// Where the overlay should draw its cursor.
 pub(crate) fn pointer() -> Pos2 {
     pending().pointer

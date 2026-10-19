@@ -19,6 +19,8 @@ use super::chrome::{self, Chrome, Placed};
 const HISTORY: usize = 100;
 /// How many scrollback lines the window keeps.
 const SCROLLBACK: usize = 2000;
+/// Room kept right of the input box for the Run button.
+const RUN_BUTTON_WIDTH: f32 = 44.0;
 
 /// What the input box's keys asked for this frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -227,12 +229,18 @@ impl ConsolePanel {
                     .id(id)
                     .font(egui::TextStyle::Monospace)
                     .hint_text("type `help`")
-                    .desired_width(ui.available_width()),
+                    .desired_width((ui.available_width() - RUN_BUTTON_WIDTH).max(80.0)),
             );
+            let run = ui.add_enabled(!self.input.trim().is_empty(), egui::Button::new("Run"));
             if self.focus {
                 response.request_focus();
                 self.focus = false;
             }
+            let pressed = if run.clicked() {
+                Some(Pressed::Submit)
+            } else {
+                pressed
+            };
             match pressed {
                 Some(Pressed::Submit) => {
                     outcome.submitted = self.submit();
@@ -250,7 +258,7 @@ impl ConsolePanel {
         };
         ui.label(
             RichText::new(format!(
-                "{} lines{hidden_note} — Tab completes, Up recalls, Enter runs",
+                "{} lines{hidden_note} — Tab completes, Up recalls, Enter or Run runs",
                 stats.total
             ))
             .small()

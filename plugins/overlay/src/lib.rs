@@ -28,6 +28,7 @@
 )]
 
 mod cards;
+mod inject;
 mod layout;
 mod notices;
 mod registry;
@@ -82,6 +83,11 @@ impl Plugin for OverlayPlugin {
             "toggle",
             "Open or close the console or the settings editor, or flip who has the mouse.",
             "console|settings|mouse",
+        )?;
+        host.command(
+            "input",
+            "Type, press a key or click in the overlay, as if from the keyboard and mouse.",
+            inject::USAGE,
         )?;
         host.setting(
             &Setting::bool("drawing", "Drawing in this game", false)
@@ -140,6 +146,16 @@ impl Plugin for OverlayPlugin {
             ("toggle", other) => Err(PluginError::from(format!(
                 "toggle what? {other:?} is not console, settings or mouse"
             ))),
+            ("input", args) => {
+                let input = inject::parse(args).map_err(PluginError::from)?;
+                #[cfg(windows)]
+                return win::inject(&input).map_err(PluginError::from);
+                #[cfg(not(windows))]
+                {
+                    let _ = input;
+                    Err(PluginError::Unsupported)
+                }
+            }
             _ => Err(PluginError::Unsupported),
         }
     }
