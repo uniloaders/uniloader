@@ -59,6 +59,9 @@ struct Target {
     extent: vk::Extent2D,
     /// The format stores linear values (sRGB, float): the shader converts.
     linear: bool,
+    /// The queue family its command buffers are for, and their pool.
+    family: u32,
+    pool: vk::CommandPool,
 }
 
 pub(super) struct Renderer {
@@ -174,6 +177,10 @@ impl Renderer {
             return None;
         }
         let key = p.swapchain.as_raw();
+        // Command buffers only run on queues of the family their pool is for.
+        if self.targets.get(&key).is_some_and(|t| t.family != p.family) {
+            self.forget(p.swapchain);
+        }
         if !self.targets.contains_key(&key) {
             match self.target(p) {
                 Ok(target) => {
@@ -272,6 +279,8 @@ impl Renderer {
             pipeline,
             extent: p.chain.extent,
             linear: is_linear(p.chain.format),
+            family: p.family,
+            pool,
         };
         // SAFETY: complete create infos on the live device; on failure the partial target
         // is destroyed by `destroy_target`.
@@ -329,7 +338,7 @@ impl Renderer {
         match made {
             Ok(()) => Ok(target),
             Err(e) => {
-                destroy_target(&self.gpu, target, None);
+                destroy_target(&self.gpu, target);
                 Err(e)
             }
         }
@@ -377,8 +386,7 @@ impl Renderer {
     /// The game destroys `swapchain`: its views and slots go first.
     pub(super) fn forget(&mut self, swapchain: vk::SwapchainKHR) {
         if let Some(target) = self.targets.remove(&swapchain.as_raw()) {
-            let pool = self.pools.values().next().copied();
-            destroy_target(&self.gpu, target, pool);
+            destroy_target(&self.gpu, target);
         }
     }
 
@@ -389,9 +397,8 @@ impl Renderer {
         unsafe {
             let _ = device.device_wait_idle();
         }
-        let pool = self.pools.values().next().copied();
         for (_, target) in self.targets.drain() {
-            destroy_target(&self.gpu, target, pool);
+            destroy_target(&self.gpu, target);
         }
         self.textures.destroy(&self.gpu);
         // SAFETY: objects of the idle device.
@@ -455,7 +462,7 @@ fn is_linear(format: vk::Format) -> bool {
     )
 }
 
-fn destroy_target(gpu: &Gpu, target: Target, pool: Option<vk::CommandPool>) {
+fn destroy_target(gpu: &Gpu, target: Target) {
     let device = &gpu.device;
     let fences: Vec<vk::Fence> = target.slots.iter().map(|s| s.fence).collect();
     // SAFETY: objects of this device; waiting on the fences first makes them unused.
@@ -466,9 +473,7 @@ fn destroy_target(gpu: &Gpu, target: Target, pool: Option<vk::CommandPool>) {
         for slot in target.slots {
             device.destroy_fence(slot.fence, None);
             device.destroy_semaphore(slot.done, None);
-            if let Some(pool) = pool {
-                device.free_command_buffers(pool, &[slot.cmd]);
-            }
+            device.free_command_buffers(target.pool, &[slot.cmd]);
             for buffer in [slot.vertices, slot.indices].into_iter().flatten() {
                 gpu.destroy_buffer(buffer);
             }
