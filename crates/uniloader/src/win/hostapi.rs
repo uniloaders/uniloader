@@ -310,16 +310,18 @@ unsafe extern "C" fn command_register(
 }
 
 unsafe extern "C" fn console_print(_host: *mut c_void, plugin: PluginHandle, line: Str) {
-    let mut guard = state();
-    let name = guard
+    // The plugin's text is read and the window written with no lock held: a slow console
+    // write must not stall every other host call.
+    let body = text(line);
+    let name = state()
         .plugin(plugin)
         .map_or_else(|| "?".to_owned(), |p| p.name().to_owned());
     // Same shape as a log line, because a plugin printing to the console is the same kind of
     // event as a plugin logging. The scrollback keeps its own clock per line, so only the
     // external window, which prints raw text, gets one written in.
-    let line = format!("[INFO ] [{name}] {}", text(line));
+    let line = format!("[INFO ] [{name}] {body}");
     console::print(&format!("{} {line}", console::clock()));
-    guard.console_print(line);
+    state().console_print(line);
 }
 
 unsafe extern "C" fn console_exec(_host: *mut c_void, plugin: PluginHandle, line: Str) -> Status {
@@ -422,10 +424,13 @@ unsafe extern "C" fn hook_patch(
     note: Str,
     out_id: *mut u64,
 ) -> Status {
-    if bytes.is_null() || out_id.is_null() {
+    // The length is checked before the slice exists: a garbage `len` is undefined behaviour
+    // at slice creation, not just when read.
+    if bytes.is_null() || out_id.is_null() || len == 0 || len > plugin_hooks::MAX_PATCH {
         return Status::INVALID_ARGUMENT;
     }
-    // SAFETY: the ABI requires `bytes`/`len` to describe readable memory for this call.
+    // SAFETY: the ABI requires `bytes`/`len` to describe readable memory for this call, and
+    // `len` is small.
     let patch = unsafe { core::slice::from_raw_parts(bytes, len) };
     match plugin_hooks::patch(plugin, address as usize, patch, &text(note)) {
         Ok(id) => {

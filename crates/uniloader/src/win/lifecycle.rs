@@ -17,7 +17,9 @@
 //! Nothing here runs under the state lock while a plugin is being called, so a plugin may
 //! issue these from its own command handler.
 
+use std::cell::Cell;
 use std::path::PathBuf;
+use std::sync::{Mutex, PoisonError};
 
 use uniloader_api::{Status, StopReason};
 use uniloader_core::console::PluginOp;
@@ -31,8 +33,43 @@ use super::{deps as external, plugins, state};
 /// graph that is 16 deep is a mistake either way.
 const MAX_DEPTH: usize = 16;
 
+/// Serialises lifecycle operations across threads: each saves and restores the single
+/// `Phase`, so two at once (the console thread and a plugin's `console_exec` on the game
+/// thread) would leave it wrong. Separate from the state lock, which is never held while a
+/// plugin runs; this one is, so a nested operation on the same thread (a plugin's `start`
+/// issuing `plugin load`) runs inside the outer one instead of waiting for it.
+static LIFECYCLE: Mutex<()> = Mutex::new(());
+
+thread_local! {
+    /// Whether this thread is inside [`serialised`] already.
+    static INSIDE: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Run `f` as the only lifecycle operation in progress.
+pub(super) fn serialised<T>(f: impl FnOnce() -> T) -> T {
+    /// Clears [`INSIDE`] however `f` ends.
+    struct Leave;
+    impl Drop for Leave {
+        fn drop(&mut self) {
+            INSIDE.with(|inside| inside.set(false));
+        }
+    }
+    if INSIDE.with(Cell::get) {
+        return f();
+    }
+    let _lock = LIFECYCLE.lock().unwrap_or_else(PoisonError::into_inner);
+    INSIDE.with(|inside| inside.set(true));
+    let _leave = Leave;
+    f()
+}
+
 /// Perform one lifecycle operation. Returns the status and the lines to print.
 pub(crate) fn perform(op: PluginOp, name: &str) -> (Status, Vec<String>) {
+    serialised(|| perform_now(op, name))
+}
+
+/// [`perform`] inside the lifecycle lock.
+fn perform_now(op: PluginOp, name: &str) -> (Status, Vec<String>) {
     match op {
         PluginOp::Load => {
             let mut lines = Vec::new();
@@ -57,15 +94,45 @@ pub(crate) fn perform(op: PluginOp, name: &str) -> (Status, Vec<String>) {
     }
 }
 
-/// Resolve `name` to a DLL in the plugin directory, accepting it with or without `.dll`.
-fn plugin_file(name: &str) -> Option<PathBuf> {
-    let dir = state().paths.plugins_dir.clone();
-    let direct = dir.join(name);
-    if direct.is_file() {
-        return Some(direct);
+/// Resolve `name` to a DLL directly in the plugin directory, accepting it with or without
+/// `.dll`, under the same rules `load_all` applies: a bare file name (no path, so a console
+/// line cannot load a DLL from anywhere else), not on the disable list, and claiming to be a
+/// plugin, so a helper DLL next to the plugins never has its `DllMain` run.
+fn plugin_file(name: &str) -> Result<PathBuf, String> {
+    let (dir, disabled) = {
+        let guard = state();
+        (
+            guard.paths.plugins_dir.clone(),
+            guard.config.disabled_plugins.clone(),
+        )
+    };
+    if !is_bare_file_name(name) {
+        return Err(format!("{name:?} is not a plain plugin name"));
     }
-    let with_extension = dir.join(format!("{name}.dll"));
-    with_extension.is_file().then_some(with_extension)
+    let stem = name
+        .get(..name.len().saturating_sub(4))
+        .filter(|_| name.to_ascii_lowercase().ends_with(".dll"))
+        .unwrap_or(name);
+    if disabled.iter().any(|d| d.eq_ignore_ascii_case(stem)) {
+        return Err(format!("{stem} is disabled in loader.toml"));
+    }
+    let file = [dir.join(name), dir.join(format!("{name}.dll"))]
+        .into_iter()
+        .find(|f| f.is_file() && f.extension().is_some_and(|e| e.eq_ignore_ascii_case("dll")))
+        .ok_or_else(|| format!("no {stem}.dll in {}", dir.display()))?;
+    if !plugins::claims_to_be_a_plugin(&file) {
+        return Err(format!("{} is not a plugin", file.display()));
+    }
+    Ok(file)
+}
+
+/// A single path component: no separators, no `..`, no drive or stream prefix.
+fn is_bare_file_name(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.contains(['/', '\\', ':'])
+        && !name.chars().any(char::is_control)
 }
 
 /// Check the requirements of a plugin about to start against what is already running.
@@ -81,6 +148,14 @@ pub(super) fn unmet_plugin_requirement(requirements: &[PluginReq]) -> Option<Str
                 return Some(format!(
                     "requires plugin {}, which is not loaded",
                     requirement.name
+                ))
+            }
+            // Stopped or faulted for the session, or its start failed: it will not run.
+            Some(record) if record.ended.is_some() && !requirement.optional => {
+                return Some(format!(
+                    "requires plugin {}, which is not running ({})",
+                    requirement.name,
+                    record.state().as_str()
                 ))
             }
             Some(record) if !requirement.version.matches(&record.info.version) => {
@@ -135,8 +210,7 @@ fn load(
     let described = if let Some(waiting) = plugins::take_pending(name) {
         waiting
     } else {
-        let file = plugin_file(name)
-            .ok_or_else(|| format!("no {name}.dll in {}", state().paths.plugins_dir.display()))?;
+        let file = plugin_file(name)?;
         plugins::describe_one(&file).map_err(|e| format!("{}: {e}", file.display()))?
     };
     let plugin = described.name().to_owned();

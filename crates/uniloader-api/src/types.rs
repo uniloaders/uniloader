@@ -123,8 +123,16 @@ impl LogLevel {
 pub struct StopReason(pub u32);
 
 impl StopReason {
-    /// The game is shutting down. Everything is about to disappear anyway, so do the least
-    /// that is correct: a long teardown here delays the process exit for no benefit.
+    /// The game is shutting down through the loader's `quit`. Everything is about to
+    /// disappear anyway, so do the least that is correct: a long teardown here delays the
+    /// process exit for no benefit. When the game exits on its own, no stop export runs:
+    /// by then the OS has ended every other thread, wherever it was, and holds its loader
+    /// lock, so calling into a plugin could hang the exit.
+    ///
+    /// `stop` is called at most once, and never after a fault. Callbacks already running on
+    /// another thread when it is called may still finish afterwards, so the `ctx` given in
+    /// `start` must stay valid for the life of the process: release resources in `stop`, but
+    /// do not free `ctx` itself.
     pub const EXIT: StopReason = StopReason(0);
     /// The plugin was stopped on request (`plugin stop`) while the game keeps running.
     /// Remove hooks, stop threads and release resources: whatever is left behind stays

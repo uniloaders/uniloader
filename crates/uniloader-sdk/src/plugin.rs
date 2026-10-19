@@ -42,9 +42,10 @@ pub trait Plugin: Sized + Send + Sync + 'static {
     /// Return an error to stay unloaded; the loader logs it and continues with other plugins.
     fn start(host: Host) -> Result<Self, PluginError>;
 
-    /// The plugin is being stopped: `plugin stop`, the game exiting, or a `start` that failed
-    /// partway. [`StopReason::EXIT`] is the one case where doing less is better, because the
-    /// process is about to vanish anyway.
+    /// The plugin is being stopped: `plugin stop`, the loader's `quit`, or a `start` that
+    /// failed partway. [`StopReason::EXIT`] is the one case where doing less is better,
+    /// because the process is about to vanish anyway. Called at most once; not called when
+    /// the game exits on its own (see [`StopReason::EXIT`]).
     ///
     /// Hooks registered through the host are torn down by the loader either way; this is for
     /// everything the plugin owns itself.

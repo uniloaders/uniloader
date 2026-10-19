@@ -47,6 +47,9 @@ pub(crate) struct Active {
     pub(crate) stop: Option<StopFn>,
     /// Cleared when the plugin faults; no further callbacks are delivered.
     pub(crate) enabled: AtomicBool,
+    /// Set once the plugin stopped or faulted: its stop export runs at most once, and never
+    /// after a fault. Read without the state lock, so process exit can use it.
+    pub(crate) ended: AtomicBool,
 }
 
 // SAFETY: the pointers in `callbacks` are owned by the plugin DLL, which stays loaded for
@@ -157,6 +160,7 @@ impl Active {
     /// Stop delivering callbacks after a fault, and record it in the registry.
     pub(crate) fn disable(&self, reason: &str) {
         if self.enabled.swap(false, Ordering::Relaxed) {
+            self.ended.store(true, Ordering::Release);
             log::error!(
                 "[{}] disabled for the rest of this session: {reason}",
                 self.name
@@ -188,7 +192,14 @@ impl Active {
     /// The plugin runs first and the loader cleans up after it: a plugin that removes its own
     /// hook in `stop` is the normal case, and the registry treats an already-removed hook as
     /// nothing to do.
+    ///
+    /// Runs at most once per plugin, and not after a fault; callbacks stop being delivered
+    /// before the export is called.
     pub(crate) fn call_stop(&self, reason: StopReason) {
+        if self.ended.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        self.enabled.store(false, Ordering::Release);
         if let Some(stop) = self.stop {
             let ctx = self.callbacks.ctx;
             // SAFETY: `ctx` is the pointer the plugin gave us in `start`.
@@ -209,7 +220,7 @@ impl Active {
 /// runs its `DllMain`, which for a proxy DLL means installing hooks nobody asked for. An
 /// export name appears literally in the file's export table, so looking for the describe
 /// export's name in the bytes answers the question without mapping anything.
-fn claims_to_be_a_plugin(file: &Path) -> bool {
+pub(super) fn claims_to_be_a_plugin(file: &Path) -> bool {
     match std::fs::read(file) {
         Ok(bytes) => bytes
             .windows(DESCRIBE_EXPORT.len())
@@ -417,6 +428,10 @@ pub(super) fn start_one(described: &Described) -> Result<Active, String> {
             }
         }
         super::plugin_hooks::remove_all(handle, name);
+        // Recorded as ended, so a dependent sees it as unmet rather than as a paused plugin,
+        // and a service it promised resolves to nobody.
+        super::state().set_ended(handle, PluginState::FAULTED);
+        external::forget_provider(name);
         return Err(failure);
     }
     if callbacks.struct_size < core::mem::size_of::<PluginCallbacks>() {
@@ -429,11 +444,17 @@ pub(super) fn start_one(described: &Described) -> Result<Active, String> {
         callbacks,
         stop: exports.stop,
         enabled: AtomicBool::new(true),
+        ended: AtomicBool::new(false),
     })
 }
 
 /// Load every plugin in `paths.plugins_dir`, honouring the disable list.
 pub(crate) fn load_all(paths: &Paths, disabled: &[String]) {
+    super::lifecycle::serialised(|| load_all_now(paths, disabled));
+}
+
+/// [`load_all`] inside the lifecycle lock.
+fn load_all_now(paths: &Paths, disabled: &[String]) {
     // What did not start and why, for `loader.plugin_not_running` at the end.
     let mut not_running: Vec<(String, String)> = Vec::new();
     let mut described = Vec::new();
@@ -596,6 +617,7 @@ pub(super) fn start_pending() -> Vec<String> {
                 append(active);
                 names.push(name);
             }
+            // `start_one` already recorded it as faulted and forgot it as a provider.
             Err(e) => log::error!("[{name}] {e}"),
         }
     }
@@ -606,11 +628,10 @@ pub(super) fn append(plugin: Active) {
     publish(vec![plugin]);
 }
 
-/// Call every plugin's stop export. Called at process shutdown.
+/// Call the stop export of every plugin that has not ended (paused ones too), once. For
+/// `quit`, which runs on a thread of its own with the process intact.
 pub(crate) fn stop_all() {
     for &plugin in active() {
-        if plugin.is_enabled() {
-            plugin.call_stop(StopReason::EXIT);
-        }
+        plugin.call_stop(StopReason::EXIT);
     }
 }

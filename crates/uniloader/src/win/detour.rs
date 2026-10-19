@@ -36,6 +36,9 @@ const JUMP_LEN: usize = 5;
 const ABSOLUTE_JUMP_LEN: usize = 14;
 /// How many instructions to consider before giving up on a prologue.
 const MAX_INSTRUCTIONS: usize = 8;
+
+/// The most entry bytes [`install`] reads: [`MAX_INSTRUCTIONS`] of the longest x86 length.
+pub(super) const MAX_ENTRY_READ: usize = MAX_INSTRUCTIONS * 16;
 /// How far from the target to look for a place to put the relay.
 const NEAR_RANGE: usize = 512 * 1024 * 1024;
 
@@ -162,16 +165,18 @@ fn alloc_executable(near: Option<usize>) -> Option<*mut u8> {
 /// a game session costs nothing against having to prove otherwise.
 ///
 /// # Safety
-/// `target` must be the entry point of a function and `replacement` must have its exact
-/// signature and calling convention.
+/// `target` must be the entry point of a function, with `readable` bytes of committed memory
+/// from it, and `replacement` must have its exact signature and calling convention.
 pub(super) unsafe fn install(
     target: usize,
+    readable: usize,
     replacement: usize,
     write: impl Fn(usize, &[u8]) -> Result<Vec<u8>, Status>,
 ) -> Result<Detour, String> {
-    // SAFETY: the caller established that `target` is committed code; reading the longest
-    // possible stolen prologue from it is what the decoder needs.
-    let entry = unsafe { core::slice::from_raw_parts(target as *const u8, MAX_INSTRUCTIONS * 16) };
+    // The longest prologue the decoder could need, but never past the end of the region.
+    let window = readable.min(MAX_ENTRY_READ);
+    // SAFETY: the caller established that `readable` bytes from `target` are committed.
+    let entry = unsafe { core::slice::from_raw_parts(target as *const u8, window) };
     let stolen = stolen_length(entry, target as u64)?;
 
     let trampoline = alloc_executable(None).ok_or("cannot allocate a trampoline page")?;

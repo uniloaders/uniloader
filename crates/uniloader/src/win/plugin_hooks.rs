@@ -37,7 +37,7 @@ use windows::Win32::System::Threading::GetCurrentProcess;
 ///
 /// Not a technical limit; a patch longer than this is a code cave being written through the
 /// wrong door, and the loader would rather say so than restore a page of somebody's bytes.
-const MAX_PATCH: usize = 256;
+pub(super) const MAX_PATCH: usize = 256;
 
 /// What was installed, and what it takes to undo it.
 enum Installed {
@@ -77,27 +77,29 @@ fn registry() -> std::sync::MutexGuard<'static, Vec<Entry>> {
 /// The cheapest honest check there is: it rules out a null, a stale or a wildly wrong
 /// address, which is what a typo in a plugin looks like.
 fn is_writable_region(address: usize, len: usize) -> bool {
-    if address == 0 || len == 0 {
-        return false;
+    // The whole range has to be inside this one region; a patch that spans two is a patch
+    // that is about to run off the end of a section.
+    len != 0 && accessible_from(address) >= len
+}
+
+/// How many bytes from `address` lie in the same committed, accessible region; 0 when
+/// `address` itself is not accessible.
+fn accessible_from(address: usize) -> usize {
+    if address == 0 {
+        return 0;
     }
     let mut info = MEMORY_BASIC_INFORMATION::default();
     let size = core::mem::size_of::<MEMORY_BASIC_INFORMATION>();
     // SAFETY: `info` is writable and `size` describes it; querying any address is allowed.
     let written = unsafe { VirtualQuery(Some(address as *const c_void), &raw mut info, size) };
-    if written != size {
-        return false;
-    }
-    if info.State != MEM_COMMIT {
-        return false;
+    if written != size || info.State != MEM_COMMIT {
+        return 0;
     }
     let bad = PAGE_NOACCESS | PAGE_GUARD;
     if info.Protect & bad != PAGE_PROTECTION_FLAGS(0) {
-        return false;
+        return 0;
     }
-    // The whole range has to be inside this one region; a patch that spans two is a patch
-    // that is about to run off the end of a section.
-    let region_end = info.BaseAddress as usize + info.RegionSize;
-    address + len <= region_end
+    (info.BaseAddress as usize + info.RegionSize).saturating_sub(address)
 }
 
 /// Write bytes into the game's code, returning what was there.
@@ -139,8 +141,11 @@ unsafe fn write_over(address: usize, bytes: &[u8]) -> Result<Vec<u8>, Status> {
 }
 
 /// Whether this address already carries a hook of a kind that cannot be stacked.
-fn already_hooked(address: usize) -> Option<&'static str> {
-    registry().iter().find_map(|entry| match entry.installed {
+///
+/// Callers hold the registry from this check until the hook is recorded, so two plugins
+/// hooking one address at once cannot both pass it.
+fn already_hooked(hooks: &[Entry], address: usize) -> Option<&'static str> {
+    hooks.iter().find_map(|entry| match entry.installed {
         Installed::Patch { address: at, .. } if at == address => Some("patched"),
         Installed::Detour { ref detour } if detour.target == address => Some("detoured"),
         Installed::Vtable { slot, .. } if slot == address => Some("replaced"),
@@ -148,12 +153,12 @@ fn already_hooked(address: usize) -> Option<&'static str> {
     })
 }
 
-/// Record an installed hook and return its id.
-fn record(plugin: PluginHandle, note: &str, installed: Installed) -> u64 {
+/// Record an installed hook in the held registry and return its id.
+fn record(hooks: &mut Vec<Entry>, plugin: PluginHandle, note: &str, installed: Installed) -> u64 {
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     let name = super::plugins::find(plugin).map_or_else(String::new, |p| p.name.clone());
     log::debug!("[{name}] hook {id} installed: {note}");
-    registry().push(Entry {
+    hooks.push(Entry {
         id,
         plugin,
         name,
@@ -177,13 +182,19 @@ pub(super) fn patch(
         log::error!("refusing to patch {address:#X}: not committed, writable memory");
         return Err(Status::INVALID_ARGUMENT);
     }
-    if let Some(how) = already_hooked(address) {
+    let mut hooks = registry();
+    if let Some(how) = already_hooked(&hooks, address) {
         log::error!("refusing to patch {address:#X}: already {how} by another hook");
         return Err(Status::ALREADY_EXISTS);
     }
     // SAFETY: the range is committed and inside one region, checked above.
     let original = unsafe { write_over(address, bytes) }?;
-    Ok(record(plugin, note, Installed::Patch { address, original }))
+    Ok(record(
+        &mut hooks,
+        plugin,
+        note,
+        Installed::Patch { address, original },
+    ))
 }
 
 /// Replace one virtual table slot on a plugin's behalf, returning the old pointer.
@@ -209,7 +220,8 @@ pub(super) fn vtable(
         log::error!("refusing to hook vtable slot {index}: {slot:#X} is not writable");
         return Err(Status::INVALID_ARGUMENT);
     }
-    if let Some(how) = already_hooked(slot) {
+    let mut hooks = registry();
+    if let Some(how) = already_hooked(&hooks, slot) {
         log::error!("refusing to hook vtable slot {index}: already {how}");
         return Err(Status::ALREADY_EXISTS);
     }
@@ -218,7 +230,12 @@ pub(super) fn vtable(
     let original_bytes = unsafe { write_over(slot, &bytes) }?;
     let original =
         usize::from_ne_bytes(original_bytes.try_into().map_err(|_| Status::ERROR)?) as *mut c_void;
-    let id = record(plugin, note, Installed::Vtable { slot, original });
+    let id = record(
+        &mut hooks,
+        plugin,
+        note,
+        Installed::Vtable { slot, original },
+    );
     Ok((id, original))
 }
 
@@ -234,23 +251,30 @@ pub(super) fn detour(
     }
     // Five bytes is the shortest jump; the prologue has to be at least that long and
     // relocatable, which `retour` decides.
-    if !is_writable_region(target as usize, 5) {
+    let readable = accessible_from(target as usize);
+    if readable < 5 {
         log::error!("refusing to detour {target:p}: not committed, executable memory");
         return Err(Status::INVALID_ARGUMENT);
     }
-    if let Some(how) = already_hooked(target as usize) {
+    let mut hooks = registry();
+    if let Some(how) = already_hooked(&hooks, target as usize) {
         log::error!("refusing to detour {target:p}: already {how}");
         return Err(Status::ALREADY_EXISTS);
     }
-    // SAFETY: the target is committed code, checked above. Whether the replacement has the
-    // target's signature is the plugin's responsibility, exactly as it would be if the plugin
-    // installed the detour itself.
+    // SAFETY: `readable` bytes from the target are committed, checked above. Whether the
+    // replacement has the target's signature is the plugin's responsibility, exactly as it
+    // would be if the plugin installed the detour itself.
     let installed = unsafe {
-        super::detour::install(target as usize, replacement as usize, |at, bytes| {
-            // `install` only ever asks for the target's own entry bytes, which the region
-            // check above covered; the enclosing `unsafe` block carries the obligation.
-            write_over(at, bytes)
-        })
+        super::detour::install(
+            target as usize,
+            readable,
+            replacement as usize,
+            |at, bytes| {
+                // `install` only ever asks for the target's own entry bytes, inside the
+                // readable window; the enclosing `unsafe` block carries the obligation.
+                write_over(at, bytes)
+            },
+        )
     };
 
     let installed = installed.map_err(|e| {
@@ -258,19 +282,24 @@ pub(super) fn detour(
         Status::UNSUPPORTED
     })?;
     let trampoline = installed.trampoline;
-    let id = record(plugin, note, Installed::Detour { detour: installed });
+    let id = record(
+        &mut hooks,
+        plugin,
+        note,
+        Installed::Detour { detour: installed },
+    );
     Ok((id, trampoline))
 }
 
 /// Undo one hook. `plugin` must own it.
 pub(super) fn remove(plugin: PluginHandle, id: u64) -> Status {
-    let entry = {
-        let mut hooks = registry();
-        let Some(index) = hooks.iter().position(|e| e.id == id && e.plugin == plugin) else {
-            return Status::NOT_FOUND;
-        };
-        hooks.remove(index)
+    // Undone with the registry held, so a hook installed at the same address meanwhile
+    // cannot record bytes that are about to be overwritten.
+    let mut hooks = registry();
+    let Some(index) = hooks.iter().position(|e| e.id == id && e.plugin == plugin) else {
+        return Status::NOT_FOUND;
     };
+    let entry = hooks.remove(index);
     undo(&entry);
     Status::OK
 }
@@ -280,23 +309,21 @@ pub(super) fn remove(plugin: PluginHandle, id: u64) -> Status {
 /// Reverse order matters: two patches that overlap, or a vtable slot hooked twice, only come
 /// back correctly if they are undone in the order opposite to installation.
 pub(crate) fn remove_all(plugin: PluginHandle, name: &str) {
-    let mine = {
-        let mut hooks = registry();
-        let mut mine: Vec<Entry> = Vec::new();
-        let mut index = hooks.len();
-        while index > 0 {
-            index -= 1;
-            if hooks[index].plugin == plugin {
-                let mut entry = hooks.remove(index);
-                // Recorded during `start`, before the plugin had a published name.
-                if entry.name.is_empty() {
-                    name.clone_into(&mut entry.name);
-                }
-                mine.push(entry);
+    // Held until the bytes are back, as in `remove`.
+    let mut hooks = registry();
+    let mut mine: Vec<Entry> = Vec::new();
+    let mut index = hooks.len();
+    while index > 0 {
+        index -= 1;
+        if hooks[index].plugin == plugin {
+            let mut entry = hooks.remove(index);
+            // Recorded during `start`, before the plugin had a published name.
+            if entry.name.is_empty() {
+                name.clone_into(&mut entry.name);
             }
+            mine.push(entry);
         }
-        mine
-    };
+    }
     if mine.is_empty() {
         return;
     }

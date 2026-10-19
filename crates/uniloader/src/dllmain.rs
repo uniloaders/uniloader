@@ -22,7 +22,7 @@ const TRUE: i32 = 1;
 pub unsafe extern "system" fn DllMain(
     module: HINSTANCE,
     reason: u32,
-    _reserved: *mut c_void,
+    reserved: *mut c_void,
 ) -> i32 {
     match reason {
         DLL_PROCESS_ATTACH => {
@@ -38,7 +38,9 @@ pub unsafe extern "system" fn DllMain(
                 .name("uniloader-init".to_owned())
                 .spawn(crate::win::initialize);
         }
-        DLL_PROCESS_DETACH => crate::win::shutdown(),
+        // A non-null `reserved` means the process is terminating rather than this DLL
+        // being unloaded.
+        DLL_PROCESS_DETACH => crate::win::shutdown(!reserved.is_null()),
         _ => {}
     }
     TRUE

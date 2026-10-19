@@ -276,8 +276,13 @@ pub(crate) fn run_console_line_capture(
     }
 }
 
-/// Called from `DllMain` on process detach.
-pub(crate) fn shutdown() {
-    plugins::stop_all();
-    log::info!("loader shut down");
+/// Called from `DllMain` on process detach. `terminating` is true when the process is
+/// exiting: its other threads were killed wherever they were, possibly holding one of the
+/// loader's locks or a plugin's, and the OS loader lock is held. Nothing runs then; plugins
+/// are stopped only by `quit` or `plugin stop`, before the process ends.
+pub(crate) fn shutdown(terminating: bool) {
+    if !terminating {
+        plugins::stop_all();
+        log::info!("loader shut down");
+    }
 }
