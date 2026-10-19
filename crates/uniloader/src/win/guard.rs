@@ -21,15 +21,22 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 pub(crate) enum Fault {
     /// The plugin unwound out of the call.
     Panic,
-    /// The plugin raised a hardware or structured exception.
-    Exception(u32),
+    /// The plugin raised a hardware or structured exception: its code and the address of
+    /// the faulting instruction.
+    Exception(u32, usize),
 }
 
 impl std::fmt::Display for Fault {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Fault::Panic => f.write_str("the call unwound"),
-            Fault::Exception(code) => write!(f, "exception {code:#010x}"),
+            Fault::Exception(code, address) => {
+                write!(f, "exception {code:#010x} at {address:#x}")?;
+                if let Some((module, offset)) = inner::module_of(*address) {
+                    write!(f, " ({module}+{offset:#x})")?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -55,25 +62,56 @@ pub(crate) unsafe fn call<R>(f: impl FnOnce() -> R) -> Result<R, Fault> {
     }));
     match outcome {
         Ok(Ok(())) => slot.ok_or(Fault::Panic),
-        Ok(Err(code)) => Err(Fault::Exception(code)),
+        Ok(Err((code, address))) => Err(Fault::Exception(code, address)),
         Err(_) => Err(Fault::Panic),
     }
 }
 
 #[cfg(all(windows, target_env = "msvc"))]
 mod inner {
-    /// Run `f` under a structured exception handler, reporting the exception code.
-    pub(super) fn protect(f: impl FnMut()) -> Result<(), u32> {
-        microseh::try_seh(f).map_err(|e| e.code() as u32)
+    use windows::Win32::Foundation::HMODULE;
+    use windows::Win32::System::LibraryLoader::{
+        GetModuleHandleExW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+        GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+    };
+
+    /// Run `f` under a structured exception handler, reporting the exception code and
+    /// address.
+    pub(super) fn protect(f: impl FnMut()) -> Result<(), (u32, usize)> {
+        microseh::try_seh(f).map_err(|e| (e.raw_code(), e.address() as usize))
+    }
+
+    /// The file name of the module holding `address` and the offset into it.
+    pub(super) fn module_of(address: usize) -> Option<(String, usize)> {
+        let mut module = HMODULE::default();
+        // SAFETY: FROM_ADDRESS reads `address` as an address only; UNCHANGED_REFCOUNT takes no
+        // reference that would need releasing.
+        unsafe {
+            GetModuleHandleExW(
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+                    | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                windows::core::PCWSTR(address as *const u16),
+                &raw mut module,
+            )
+        }
+        .ok()?;
+        let path = super::super::proxy::module_path(Some(module));
+        let name = path.file_name()?.to_string_lossy().into_owned();
+        Some((name, address.wrapping_sub(module.0 as usize)))
     }
 }
 
 #[cfg(not(all(windows, target_env = "msvc")))]
 mod inner {
     /// Without MSVC `__try` there is no structured handler, so a fault reaches the game.
-    pub(super) fn protect(mut f: impl FnMut()) -> Result<(), u32> {
+    pub(super) fn protect(mut f: impl FnMut()) -> Result<(), (u32, usize)> {
         f();
         Ok(())
+    }
+
+    /// No module lookup without the structured handler (no fault is ever reported).
+    pub(super) fn module_of(_address: usize) -> Option<(String, usize)> {
+        None
     }
 }
 
