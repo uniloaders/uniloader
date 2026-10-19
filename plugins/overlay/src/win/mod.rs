@@ -200,9 +200,7 @@ fn let_go_when_idle(slot: &mut Option<Overlay>) {
         .as_ref()
         .is_some_and(|o| matches!(o.backend, Backend::D3D12(_)) && o.last_drawn.elapsed() >= IDLE);
     if let Some(overlay) = slot.take_if(|_| idle) {
-        if let Backend::D3D12(on12) = &overlay.backend {
-            on12.idle();
-        }
+        // `On12` idles its context as it drops.
         drop(overlay);
         log::info!("overlay hidden; Direct3D 11 on 12 let go until it is shown again");
     }
@@ -296,7 +294,8 @@ impl Overlay {
                     self.gui.context(),
                     output,
                 );
-                on12.finish(wrapped);
+                // Hands the buffer back before `Present`.
+                drop(wrapped);
                 result
             }
         }

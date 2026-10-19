@@ -16,6 +16,7 @@
 #![allow(unsafe_code)]
 
 use core::ffi::c_void;
+use std::mem::ManuallyDrop;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use uniloader_sdk::Host;
@@ -205,10 +206,29 @@ pub(super) struct On12 {
     pub(super) context: ID3D11DeviceContext,
 }
 
-/// One backbuffer, wrapped for `Direct3D` 11 for the frame.
+/// One backbuffer, wrapped for `Direct3D` 11 for the frame. Dropping it hands the buffer
+/// back to `Direct3D` 12 and submits what was drawn, so nothing of ours holds it once
+/// `Present` (or a resize) comes; also when the frame panicked.
 pub(super) struct Wrapped {
+    layer: ID3D11On12Device,
+    context: ID3D11DeviceContext,
     resource: ID3D11Resource,
-    pub(super) target: render::Target,
+    /// Dropped first, in [`Wrapped::drop`]: the view goes before the buffer is released.
+    pub(super) target: ManuallyDrop<render::Target>,
+}
+
+impl Drop for Wrapped {
+    fn drop(&mut self) {
+        // SAFETY: dropped here only, and the field is not used after.
+        unsafe { ManuallyDrop::drop(&mut self.target) };
+        // SAFETY: the resource acquired in `On12::wrap`.
+        unsafe {
+            self.layer
+                .ReleaseWrappedResources(&[Some(self.resource.clone())]);
+        }
+        // SAFETY: a live immediate context.
+        unsafe { self.context.Flush() };
+    }
 }
 
 impl On12 {
@@ -268,24 +288,21 @@ impl On12 {
         let target = render::target_of(&texture, &self.device)?;
         let resource: ID3D11Resource = texture.cast()?;
         let acquired = [Some(resource.clone())];
-        // SAFETY: a resource wrapped by this device, acquired once and released in `finish`.
+        // SAFETY: a resource wrapped by this device, acquired once and released when the
+        // `Wrapped` drops.
         unsafe { self.layer.AcquireWrappedResources(&acquired) };
-        Ok(Wrapped { resource, target })
+        Ok(Wrapped {
+            layer: self.layer.clone(),
+            context: self.context.clone(),
+            resource,
+            target: ManuallyDrop::new(target),
+        })
     }
+}
 
-    /// Hands the backbuffer back to `Direct3D` 12 and submits what was drawn, so nothing of
-    /// ours holds it once `Present` (or a resize) comes.
-    pub(super) fn finish(&self, wrapped: Wrapped) {
-        let Wrapped { resource, target } = wrapped;
-        drop(target);
-        // SAFETY: the resource acquired in `wrap`.
-        unsafe { self.layer.ReleaseWrappedResources(&[Some(resource)]) };
-        // SAFETY: a live immediate context.
-        unsafe { self.context.Flush() };
-    }
-
-    /// Unbinds everything and submits, before the layer goes.
-    pub(super) fn idle(&self) {
+impl Drop for On12 {
+    /// Unbinds everything and submits before the layer goes; also when a frame panicked.
+    fn drop(&mut self) {
         // SAFETY: a live immediate context, used only on this thread.
         unsafe {
             self.context.ClearState();
