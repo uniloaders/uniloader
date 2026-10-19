@@ -41,9 +41,23 @@ fn announce(host: &Host, drawing: bool) {
     }
 }
 
+/// The renderer's slot. When the thread ends it lets the renderer go without dropping it:
+/// thread-local destructors run under the loader lock, and dropping a `Direct3D` 11 on 12
+/// device there joins DXVK's worker threads, which need that lock to end. The game hung on
+/// quit that way. The thread ending is the game shutting down, so nothing is lost.
+struct Slot(Option<Overlay>);
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        if let Some(overlay) = self.0.take() {
+            std::mem::forget(overlay);
+        }
+    }
+}
+
 thread_local! {
     /// The renderer, made on the first frame that needs it.
-    static OVERLAY: RefCell<Option<Overlay>> = const { RefCell::new(None) };
+    static OVERLAY: RefCell<Slot> = const { RefCell::new(Slot(None)) };
     /// Set while this thread is inside a frame: some implementations' `Present` calls
     /// `Present1` through the vtable, which would otherwise draw the overlay twice.
     static IN_FRAME: Cell<bool> = const { Cell::new(false) };
@@ -55,7 +69,11 @@ struct Overlay {
     renderer: egui_directx11::Renderer,
     backend: Backend,
     started: Instant,
+    last_drawn: Instant,
 }
+
+/// How long a hidden `Direct3D` 12 overlay keeps its renderer.
+const IDLE: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// What the renderer draws with.
 enum Backend {
@@ -99,13 +117,15 @@ pub(crate) fn frame(swapchain: *mut c_void, sync_interval: u32, flags: u32) {
         wnd::subclass(desc.OutputWindow.0);
         subscribers(host, &chain, &desc, (sync_interval, flags));
         if shared::is_visible() {
-            OVERLAY.with_borrow_mut(|slot| draw(host, slot, &chain));
+            OVERLAY.with_borrow_mut(|slot| draw(host, &mut slot.0, &chain));
+        } else {
+            OVERLAY.with_borrow_mut(|slot| let_go_when_idle(&mut slot.0));
         }
     }));
     IN_FRAME.with(|f| f.set(false));
     if outcome.is_err() {
         log::error!("overlay frame panicked; the renderer is rebuilt on the next frame");
-        OVERLAY.with_borrow_mut(Option::take);
+        drop(OVERLAY.with_borrow_mut(|slot| slot.0.take()));
     }
 }
 
@@ -144,12 +164,28 @@ fn subscribers(host: &Host, chain: &IDXGISwapChain, desc: &DXGI_SWAP_CHAIN_DESC,
     }
 }
 
+/// Drops a `Direct3D` 11 on 12 renderer hidden for [`IDLE`], so a layer over the game's
+/// queue is only alive while something is shown. It is made again when something is.
+fn let_go_when_idle(slot: &mut Option<Overlay>) {
+    let idle = slot
+        .as_ref()
+        .is_some_and(|o| matches!(o.backend, Backend::D3D12(_)) && o.last_drawn.elapsed() >= IDLE);
+    if let Some(overlay) = slot.take_if(|_| idle) {
+        if let Backend::D3D12(on12) = &overlay.backend {
+            on12.idle();
+        }
+        drop(overlay);
+        log::info!("overlay hidden; Direct3D 11 on 12 let go until it is shown again");
+    }
+}
+
 /// Make the renderer if there is none yet, then draw one frame.
 fn draw(host: &Host, slot: &mut Option<Overlay>, chain: &IDXGISwapChain) {
     if slot.is_none() {
         *slot = create(chain);
     }
     let Some(overlay) = slot else { return };
+    overlay.last_drawn = Instant::now();
     if let Err(e) = overlay.draw(host, chain) {
         log::error!("overlay frame failed: {e}");
     }
@@ -200,6 +236,7 @@ fn create(chain: &IDXGISwapChain) -> Option<Overlay> {
         renderer,
         backend,
         started: Instant::now(),
+        last_drawn: Instant::now(),
     })
 }
 

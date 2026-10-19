@@ -250,6 +250,15 @@ impl On12 {
         // SAFETY: a live immediate context.
         unsafe { self.context.Flush() };
     }
+
+    /// Unbinds everything and submits, before the layer goes.
+    pub(super) fn idle(&self) {
+        // SAFETY: a live immediate context, used only on this thread.
+        unsafe {
+            self.context.ClearState();
+            self.context.Flush();
+        }
+    }
 }
 
 /// Whether two COM objects share a vtable, that is, are of one class.
