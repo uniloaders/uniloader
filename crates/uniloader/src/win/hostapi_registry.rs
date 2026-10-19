@@ -38,11 +38,7 @@ fn collect_entries() -> Vec<Entry> {
         .map(|(i, p)| Entry {
             handle: PluginHandle(u32::try_from(i + 1).unwrap_or(0)),
             kind: ModuleKind::PLUGIN,
-            state: if p.enabled {
-                PluginState::RUNNING
-            } else {
-                PluginState::DISABLED
-            },
+            state: p.state(),
             fields: [
                 p.info.name.clone(),
                 p.info.title.clone(),

@@ -109,7 +109,7 @@ fn list_plugins(state: &mut State) -> Outcome {
                 p.name(),
                 p.info.version,
                 p.file,
-                if p.enabled { "running" } else { "stopped" }
+                p.state().as_str()
             )
         })
         .collect();

@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use uniloader_api::{PluginHandle, Status};
+use uniloader_api::{PluginHandle, PluginState, Status};
 use uniloader_core::{hotkeys, keys, names, settings, store};
 
 use crate::config::{LoaderConfig, Paths};
@@ -57,9 +57,22 @@ pub struct PluginRecord {
     pub dependencies: Vec<String>,
     /// Start returned success and no fault happened since.
     pub enabled: bool,
+    /// [`PluginState::STOPPED`] or [`PluginState::FAULTED`] once it ended: for good this
+    /// session, unlike a pause (`plugin disable`), so it is never enabled again.
+    pub ended: Option<PluginState>,
 }
 
 impl PluginRecord {
+    /// Running, paused (disabled), stopped or faulted.
+    #[must_use]
+    pub fn state(&self) -> PluginState {
+        match (self.ended, self.enabled) {
+            (Some(ended), _) => ended,
+            (None, true) => PluginState::RUNNING,
+            (None, false) => PluginState::DISABLED,
+        }
+    }
+
     /// Unique name from the describe export.
     #[must_use]
     pub fn name(&self) -> &str {
@@ -200,6 +213,7 @@ impl State {
             commands: BTreeMap::new(),
             dependencies: Vec::new(),
             enabled: false,
+            ended: None,
         });
         Ok(PluginHandle(
             u32::try_from(self.plugins.len()).map_err(|_| Status::ERROR)?,
@@ -504,6 +518,20 @@ impl State {
         }
     }
 
+    /// Mark a plugin ended for the session: stopped or faulted. It also stops being enabled.
+    pub fn set_ended(&mut self, plugin: PluginHandle, ended: PluginState) {
+        if let Some(record) = self.plugin_mut(plugin) {
+            record.enabled = false;
+            record.ended = Some(ended);
+        }
+    }
+
+    /// Whether a plugin ended for the session (stopped or faulted).
+    #[must_use]
+    pub fn has_ended(&self, plugin: PluginHandle) -> bool {
+        self.plugin(plugin).is_some_and(|p| p.ended.is_some())
+    }
+
     /// Append a console line, trimming history.
     ///
     /// Queued log records are taken first, so a command's output lands after whatever the
@@ -776,6 +804,24 @@ pub(crate) mod tests {
         }
         assert_eq!(s.subscribers(a, "pose"), vec![b]);
         assert_eq!(s.subscribers(a, "other"), Vec::<PluginHandle>::new());
+    }
+
+    #[test]
+    fn a_pause_is_not_a_stop() {
+        let mut s = state();
+        let a = started(&mut s, "a");
+        let state_of = |s: &State| s.plugin(a).map(PluginRecord::state);
+        s.set_enabled(a, true);
+        assert_eq!(state_of(&s), Some(PluginState::RUNNING));
+        s.set_enabled(a, false);
+        assert_eq!(state_of(&s), Some(PluginState::DISABLED));
+        assert!(!s.has_ended(a));
+        s.set_ended(a, PluginState::STOPPED);
+        assert_eq!(state_of(&s), Some(PluginState::STOPPED));
+        assert!(s.has_ended(a));
+        // Enabling again does not bring a stopped plugin back.
+        s.set_enabled(a, true);
+        assert_eq!(state_of(&s), Some(PluginState::STOPPED));
     }
 
     #[test]

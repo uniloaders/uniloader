@@ -188,7 +188,8 @@ fn stop(name: &str) -> (Status, Vec<String>) {
         }
         return (Status::NOT_FOUND, vec![format!("no plugin named {name}")]);
     };
-    if !plugin.is_enabled() {
+    // A paused plugin is still to be stopped: only an ended one is not.
+    if state().has_ended(plugin.handle) {
         return (Status::OK, vec![format!("{name} is already stopped")]);
     }
     plugin.suspend();
@@ -207,6 +208,14 @@ fn delivery(op: PluginOp, name: &str) -> (Status, Vec<String>) {
         return (Status::NOT_FOUND, vec![format!("no plugin named {name}")]);
     };
     let enable = op == PluginOp::Enable;
+    if enable && state().has_ended(plugin.handle) {
+        return (
+            Status::WRONG_PHASE,
+            vec![format!(
+                "{name} is stopped for this session; it starts again with the next game start"
+            )],
+        );
+    }
     let changed = if enable {
         plugin.enable()
     } else {

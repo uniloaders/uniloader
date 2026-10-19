@@ -140,6 +140,10 @@ impl Active {
 
     /// Resume callback delivery and tell the plugin. Returns whether this changed anything.
     pub(crate) fn enable(&self) -> bool {
+        // A stopped or faulted plugin has torn down: calling it again is not safe.
+        if super::state().has_ended(self.handle) {
+            return false;
+        }
         let changed = !self.enabled.swap(true, Ordering::Relaxed);
         if changed {
             super::state().set_enabled(self.handle, true);
@@ -157,7 +161,7 @@ impl Active {
                 "[{}] disabled for the rest of this session: {reason}",
                 self.name
             );
-            super::state().set_enabled(self.handle, false);
+            super::state().set_ended(self.handle, PluginState::FAULTED);
             announce(self.handle, &self.name, PluginState::FAULTED);
         }
     }
@@ -193,6 +197,7 @@ impl Active {
             }
         }
         super::plugin_hooks::remove_all(self.handle, &self.name);
+        super::state().set_ended(self.handle, PluginState::STOPPED);
         announce(self.handle, &self.name, PluginState::STOPPED);
     }
 }

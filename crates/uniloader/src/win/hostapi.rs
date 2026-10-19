@@ -367,13 +367,11 @@ unsafe extern "C" fn plugin_state(
     if out.is_null() {
         return Status::INVALID_ARGUMENT;
     }
-    let Some(enabled) = state().plugin(plugin).map(|p| p.enabled) else {
+    let Some(value) = state()
+        .plugin(plugin)
+        .map(crate::state::PluginRecord::state)
+    else {
         return Status::NOT_FOUND;
-    };
-    let value = if enabled {
-        PluginState::RUNNING
-    } else {
-        PluginState::DISABLED
     };
     // SAFETY: checked non-null; the ABI requires a writable out-param.
     unsafe { out.write(value) };
