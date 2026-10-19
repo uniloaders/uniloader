@@ -65,4 +65,9 @@ pub mod topics {
     ///
     /// Services use it to forget what a stopped consumer registered with them.
     pub const PLUGIN_STATE: &str = "loader.plugin_state";
+    /// A plugin found at start did not start: it waits for a dependency, needs another
+    /// version, or failed. Sent once per plugin after the loader's start pass, to the plugins
+    /// running then, so a UI can tell the player. Payload: its name, a NUL byte, then why
+    /// (UTF-8).
+    pub const PLUGIN_NOT_RUNNING: &str = "loader.plugin_not_running";
 }

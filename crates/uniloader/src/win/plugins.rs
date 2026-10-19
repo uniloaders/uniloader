@@ -434,6 +434,8 @@ pub(super) fn start_one(described: &Described) -> Result<Active, String> {
 
 /// Load every plugin in `paths.plugins_dir`, honouring the disable list.
 pub(crate) fn load_all(paths: &Paths, disabled: &[String]) {
+    // What did not start and why, for `loader.plugin_not_running` at the end.
+    let mut not_running: Vec<(String, String)> = Vec::new();
     let mut described = Vec::new();
     for file in plugin_files(&paths.plugins_dir) {
         let stem = file
@@ -446,7 +448,10 @@ pub(crate) fn load_all(paths: &Paths, disabled: &[String]) {
         }
         match describe_one(&file) {
             Ok(plugin) => described.push(plugin),
-            Err(e) => log::error!("{}: {e}", file.display()),
+            Err(e) => {
+                log::error!("{}: {e}", file.display());
+                not_running.push((stem, e));
+            }
         }
     }
     described.retain(
@@ -454,6 +459,7 @@ pub(crate) fn load_all(paths: &Paths, disabled: &[String]) {
             Some(reason) => {
                 log::error!("[{}] not started: {reason}", plugin.name());
                 external::forget_provider(plugin.name());
+                not_running.push((plugin.name().to_owned(), reason));
                 false
             }
             None => true,
@@ -479,7 +485,10 @@ pub(crate) fn load_all(paths: &Paths, disabled: &[String]) {
         };
         match start_one(&plugin) {
             Ok(active) => started.push(active),
-            Err(e) => log::error!("{}: {e}", plugin.file.display()),
+            Err(e) => {
+                log::error!("{}: {e}", plugin.file.display());
+                not_running.push((plugin.name().to_owned(), e));
+            }
         }
     }
     publish(started);
@@ -495,9 +504,40 @@ pub(crate) fn load_all(paths: &Paths, disabled: &[String]) {
         } else {
             log::error!("[{}] not started: {reason}", plugin.name());
             external::forget_provider(plugin.name());
+            not_running.push((plugin.name().to_owned(), reason.to_string()));
         }
     }
     start_pending();
+    // Those still waiting now wait for good (until a `plugin load`).
+    let waiting = super::state().pending.clone();
+    not_running.extend(waiting);
+    announce_not_running(&not_running);
+}
+
+/// Publish `loader.plugin_not_running` for each of `plugins` (name, why). Never called with
+/// the state lock held.
+fn announce_not_running(plugins: &[(String, String)]) {
+    if plugins.is_empty() {
+        return;
+    }
+    let targets = super::state().subscribers(PluginHandle::NONE, topics::PLUGIN_NOT_RUNNING);
+    for (name, reason) in plugins {
+        deliver_event(
+            PluginHandle::NONE,
+            &targets,
+            topics::PLUGIN_NOT_RUNNING,
+            &not_running_payload(name, reason),
+        );
+    }
+}
+
+/// Name, NUL, reason: the payload [`topics::PLUGIN_NOT_RUNNING`] documents.
+fn not_running_payload(name: &str, reason: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(name.len() + 1 + reason.len());
+    out.extend_from_slice(name.as_bytes());
+    out.push(0);
+    out.extend_from_slice(reason.as_bytes());
+    out
 }
 
 /// Whether another plugin starting could still make this rejection go away.

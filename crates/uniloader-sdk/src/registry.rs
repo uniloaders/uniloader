@@ -174,6 +174,37 @@ impl PluginStateEvent {
     }
 }
 
+/// A `loader.plugin_not_running` event, decoded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotRunningEvent {
+    /// The plugin that did not start.
+    pub name: String,
+    /// Why, as the loader logged it.
+    pub reason: String,
+}
+
+impl NotRunningEvent {
+    /// Decode the payload of [`uniloader_api::topics::PLUGIN_NOT_RUNNING`].
+    #[must_use]
+    pub fn parse(payload: &[u8]) -> Option<Self> {
+        let split = payload.iter().position(|&b| b == 0)?;
+        Some(NotRunningEvent {
+            name: String::from_utf8_lossy(&payload[..split]).into_owned(),
+            reason: String::from_utf8_lossy(&payload[split + 1..]).into_owned(),
+        })
+    }
+
+    /// The payload the loader sends for `name` and `reason`.
+    #[must_use]
+    pub fn payload(name: &str, reason: &str) -> Vec<u8> {
+        let mut out = Vec::with_capacity(name.len() + 1 + reason.len());
+        out.extend_from_slice(name.as_bytes());
+        out.push(0);
+        out.extend_from_slice(reason.as_bytes());
+        out
+    }
+}
+
 /// Sink pushing a converted entry into the caller's vector.
 ///
 /// # Safety
@@ -447,6 +478,15 @@ impl Host {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn not_running_payloads_round_trip() {
+        let payload = NotRunningEvent::payload("coop", "needs tsw >=0.1");
+        let event = NotRunningEvent::parse(&payload).unwrap_or_else(|| panic!("parse"));
+        assert_eq!(event.name, "coop");
+        assert_eq!(event.reason, "needs tsw >=0.1");
+        assert_eq!(NotRunningEvent::parse(b"no separator"), None);
+    }
 
     #[test]
     fn plugin_state_payloads_round_trip() {

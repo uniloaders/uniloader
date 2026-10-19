@@ -41,10 +41,14 @@ mod win;
 
 use std::sync::OnceLock;
 
+use uniloader_overlay::{UiLevel, UiNotice};
 use uniloader_sdk::{
-    export_plugin, topics, Host, Plugin, PluginError, PluginRef, PluginState, PluginStateEvent,
-    Setting,
+    export_plugin, topics, Host, NotRunningEvent, Plugin, PluginError, PluginRef, PluginState,
+    PluginStateEvent, Setting,
 };
+
+/// How long the notice that a plugin is not running stays.
+const NOT_RUNNING_SECONDS: f32 = 20.0;
 
 /// The loader, for code that runs outside a plugin callback: the render thread and the
 /// window procedure.
@@ -109,6 +113,7 @@ impl Plugin for OverlayPlugin {
                 ),
         )?;
         host.subscribe(topics::PLUGIN_STATE)?;
+        host.subscribe(topics::PLUGIN_NOT_RUNNING)?;
         // SAFETY: `service::TABLE` is the `OverlayApi` layout of this version, and every
         // function in it is thread safe.
         let provided = unsafe {
@@ -172,6 +177,20 @@ impl Plugin for OverlayPlugin {
     }
 
     fn on_event(&self, _host: &Host, _from: PluginRef, topic: &str, payload: &[u8]) {
+        if topic == topics::PLUGIN_NOT_RUNNING {
+            // The player sees why a plugin they installed does nothing.
+            if let Some(event) = NotRunningEvent::parse(payload) {
+                notices::passing(
+                    None,
+                    UiNotice::NOTICE,
+                    UiLevel::WARNING,
+                    &format!("{} is not running", event.name),
+                    &event.reason,
+                    NOT_RUNNING_SECONDS,
+                );
+            }
+            return;
+        }
         if topic != topics::PLUGIN_STATE {
             return;
         }

@@ -41,7 +41,8 @@ pub use deps::Dependency;
 pub use host::{read_str, Arg, CommandLine, Hook, Host, PluginError, PluginRef};
 pub use plugin::Plugin;
 pub use registry::{
-    ConsoleEntry, HotkeyEntry, ModuleEntry, PluginStateEvent, Service, SettingEntry,
+    ConsoleEntry, HotkeyEntry, ModuleEntry, NotRunningEvent, PluginStateEvent, Service,
+    SettingEntry,
 };
 pub use settings::{Setting, SettingKind};
 pub use uniloader_api as api;
