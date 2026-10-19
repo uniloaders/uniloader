@@ -23,6 +23,11 @@ does not walk the player forward. It also tells the loader, which then fires onl
 overlay's own hotkeys. Window positions, sizes and opacity are saved to
 `uniloader/config/overlay-windows.toml`.
 
+The same from the loader console: `overlay.toggle console|settings|mouse`. For testing by code,
+`overlay.input type <text>`, `overlay.input key enter` (escape, tab, arrows and a few more)
+and `overlay.input click <x> <y>` post the window messages real input would. They go through
+the same input path and take no focus from other windows.
+
 ## Drawing from a plugin
 
 Depend on the plugin and on the client crate:
