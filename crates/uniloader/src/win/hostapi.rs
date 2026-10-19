@@ -126,6 +126,7 @@ pub(crate) fn build(paths: &Paths, process: &Process) -> &'static HostApi {
         console_names: registry::console_names,
         hotkey_press: registry::hotkey_press,
         input_capture: registry::input_capture,
+        plugin_of: caller::plugin_of,
     }))
 }
 

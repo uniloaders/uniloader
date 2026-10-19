@@ -59,6 +59,13 @@ impl Bytes {
     }
 }
 
+/// A plugin's loader context ([`crate::HostApi::host`]), passed to a service so the service
+/// can ask the loader who is calling ([`crate::HostApi::plugin_of`]). Only compared, never
+/// dereferenced.
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Caller(pub *mut core::ffi::c_void);
+
 /// Opaque identifier the loader assigns to each loaded plugin.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

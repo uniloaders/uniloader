@@ -6,8 +6,8 @@ use crate::registry::{
     ConsoleLineFn, GuardedFn, HotkeyInfoFn, KeyModifiers, PluginEntryFn, ServiceInfo, SettingInfoFn,
 };
 use crate::types::{
-    ArgEntry, Bytes, CommandDesc, EnvEntry, HotkeyDesc, LogLevel, PluginHandle, PluginState,
-    SettingDesc, Status, Str,
+    ArgEntry, Bytes, Caller, CommandDesc, EnvEntry, HotkeyDesc, LogLevel, PluginHandle,
+    PluginState, SettingDesc, Status, Str,
 };
 
 /// Callback a message receiver uses to answer synchronously.
@@ -291,4 +291,11 @@ pub struct HostApi {
     /// claim ends.
     pub input_capture:
         unsafe extern "C" fn(host: *mut c_void, plugin: PluginHandle, capture: bool) -> Status,
+    /// Which plugin `caller` (another plugin's [`HostApi::host`]) belongs to, into `out`.
+    ///
+    /// For services: a consumer passes its own `host` with each call, and the service asks
+    /// here who that is instead of trusting a handle the consumer names.
+    /// [`Status::NOT_FOUND`] for a pointer that is no plugin's.
+    pub plugin_of:
+        unsafe extern "C" fn(host: *mut c_void, caller: Caller, out: *mut PluginHandle) -> Status,
 }

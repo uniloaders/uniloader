@@ -32,9 +32,9 @@ pub use registry::{
     ModuleKind, PluginEntry, PluginEntryFn, ServiceInfo, SettingInfo, SettingInfoFn,
 };
 pub use types::{
-    ArgEntry, Bytes, CommandDesc, Dependency, DependencyKind, EnvEntry, HotkeyDesc, LogLevel,
-    PluginHandle, PluginInfo, PluginState, SettingDesc, SettingFlags, SettingKind, Status,
-    StopReason, Str,
+    ArgEntry, Bytes, Caller, CommandDesc, Dependency, DependencyKind, EnvEntry, HotkeyDesc,
+    LogLevel, PluginHandle, PluginInfo, PluginState, SettingDesc, SettingFlags, SettingKind,
+    Status, StopReason, Str,
 };
 
 /// Version of this ABI. The loader refuses plugins describing a different version.

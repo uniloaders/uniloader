@@ -44,20 +44,47 @@ pub(super) fn table_for(plugin: PluginHandle, base: &'static HostApi) -> &'stati
     table
 }
 
-/// Whether `host`, the context a caller passed back, is `plugin`'s. Says so in the log
-/// when it is not.
-pub(super) fn is(host: *mut c_void, plugin: PluginHandle, what: &str) -> bool {
-    let owner = CONTEXTS
+/// The plugin whose context `host` is, if any.
+pub(super) fn owner(host: *mut c_void) -> Option<PluginHandle> {
+    CONTEXTS
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .get(&(host as usize))
-        .copied();
-    if owner == Some(plugin.0) {
+        .copied()
+        .map(PluginHandle)
+}
+
+/// `HostApi::plugin_of`.
+#[allow(unsafe_code)]
+pub(super) unsafe extern "C" fn plugin_of(
+    _host: *mut c_void,
+    caller: uniloader_api::Caller,
+    out: *mut PluginHandle,
+) -> uniloader_api::Status {
+    if out.is_null() {
+        return uniloader_api::Status::INVALID_ARGUMENT;
+    }
+    match owner(caller.0) {
+        Some(plugin) => {
+            // SAFETY: checked non-null; the ABI requires a writable handle.
+            unsafe { out.write(plugin) };
+            uniloader_api::Status::OK
+        }
+        None => uniloader_api::Status::NOT_FOUND,
+    }
+}
+
+/// Whether `host`, the context a caller passed back, is `plugin`'s. Says so in the log
+/// when it is not.
+pub(super) fn is(host: *mut c_void, plugin: PluginHandle, what: &str) -> bool {
+    let owner = owner(host);
+    if owner == Some(plugin) {
         return true;
     }
     log::warn!(
-        "{what}: refused, the handle {} is not the caller's (its context names {owner:?})",
-        plugin.0
+        "{what}: refused, the handle {} is not the caller's (its context names {:?})",
+        plugin.0,
+        owner.map(|p| p.0)
     );
     false
 }

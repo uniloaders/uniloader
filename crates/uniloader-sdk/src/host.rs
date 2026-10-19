@@ -10,7 +10,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 use uniloader_api::{
-    ArgEntry, Bytes, CommandDesc, EnvEntry, HostApi, HotkeyDesc, LogLevel, PluginHandle,
+    ArgEntry, Bytes, Caller, CommandDesc, EnvEntry, HostApi, HotkeyDesc, LogLevel, PluginHandle,
     PluginState, SettingDesc, SettingFlags, Status, Str,
 };
 pub use uniloader_core::cmdline::{Arg, CommandLine};
@@ -159,6 +159,23 @@ impl Host {
     #[must_use]
     pub fn me(&self) -> PluginRef {
         PluginRef(self.handle)
+    }
+
+    /// The loader's context for this plugin ([`HostApi::host`]), which names it: what a
+    /// service asks for to know its caller, see [`Host::plugin_of`].
+    #[must_use]
+    pub fn context(&self) -> Caller {
+        Caller(self.api.host)
+    }
+
+    /// The plugin a caller's [`Host::context`] belongs to; `None` for a pointer that is no
+    /// plugin's. For services, which must not trust a handle their caller names.
+    #[must_use]
+    pub fn plugin_of(&self, caller: Caller) -> Option<PluginRef> {
+        let mut out = PluginHandle(0);
+        // SAFETY: the function only compares `caller`, and `out` is writable.
+        let status = unsafe { (self.api.plugin_of)(self.api.host, caller, &raw mut out) };
+        (status == Status::OK).then_some(PluginRef(out))
     }
 
     /// The loader's version.

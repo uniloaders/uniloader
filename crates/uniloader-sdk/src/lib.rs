@@ -47,7 +47,7 @@ pub use registry::{
 pub use settings::{Setting, SettingKind};
 pub use uniloader_api as api;
 pub use uniloader_api::{
-    topics, ConsoleKind, KeyModifiers, LogLevel, ModuleKind, PluginState, StopReason,
+    topics, Caller, ConsoleKind, KeyModifiers, LogLevel, ModuleKind, PluginState, StopReason,
 };
 
 // Used by the macro expansion; not part of the public surface.
