@@ -399,7 +399,7 @@ pub(super) fn start_one(described: &Described) -> Result<Active, String> {
     }
 
     let mut callbacks = PluginCallbacks::empty();
-    let host = super::host_api();
+    let host = super::caller::table_for(handle, super::host_api());
     // Read before taking the lock: every setting the plugin registers looks its value up.
     let paths = super::state().paths.clone();
     let stored = crate::config::load_plugin_values(&paths, name);

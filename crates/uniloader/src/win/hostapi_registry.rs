@@ -234,12 +234,15 @@ pub(super) unsafe extern "C" fn hotkey_rebind(
 }
 
 pub(super) unsafe extern "C" fn service_register(
-    _host: *mut c_void,
+    host: *mut c_void,
     plugin: PluginHandle,
     name: Str,
     version: u32,
     table: *const c_void,
 ) -> Status {
+    if !super::caller::is(host, plugin, "service_register") {
+        return Status::INVALID_ARGUMENT;
+    }
     let name = text(name);
     let result = state().register_service(plugin, &name, version, table as usize);
     match result {
@@ -378,10 +381,13 @@ pub(super) unsafe extern "C" fn hotkey_press(
 }
 
 pub(super) unsafe extern "C" fn input_capture(
-    _host: *mut c_void,
+    host: *mut c_void,
     plugin: PluginHandle,
     capture: bool,
 ) -> Status {
+    if !super::caller::is(host, plugin, "input_capture") {
+        return Status::INVALID_ARGUMENT;
+    }
     let mut guard = state();
     if guard.plugin(plugin).is_none() {
         return Status::INVALID_ARGUMENT;

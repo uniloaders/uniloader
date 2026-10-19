@@ -26,7 +26,9 @@ pub struct HostApi {
     pub struct_size: usize,
     /// Equals [`crate::API_VERSION`].
     pub api_version: u32,
-    /// Opaque loader state, pass back unchanged.
+    /// Opaque loader state, pass back unchanged. Each plugin's table has its own: the
+    /// functions that act in a plugin's name (messages, events, hooks, services, input
+    /// claims) refuse a handle that is not the caller's with [`Status::INVALID_ARGUMENT`].
     pub host: *mut c_void,
     /// The loader's own version.
     pub loader_version: Str,

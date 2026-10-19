@@ -7,6 +7,7 @@
 //! From the DayZ loader's `win/mod.rs` (`eaebd9b`) without DXGI, the overlay, game data and
 //! input listening; those belong in adapter plugins.
 
+mod caller;
 mod console;
 mod deps;
 mod detour;

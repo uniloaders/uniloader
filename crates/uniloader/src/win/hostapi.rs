@@ -22,7 +22,7 @@ use crate::process::Process;
 use crate::state::CommandInfo;
 
 use super::hostapi_registry as registry;
-use super::{console, plugin_hooks, plugins, state};
+use super::{caller, console, plugin_hooks, plugins, state};
 
 /// Owned backing storage for every string the table hands out. Leaked once at startup so
 /// the pointers stay valid for as long as any plugin can hold them.
@@ -384,7 +384,7 @@ unsafe extern "C" fn plugin_state(
 }
 
 unsafe extern "C" fn plugin_message(
-    _host: *mut c_void,
+    host: *mut c_void,
     from: PluginHandle,
     to: PluginHandle,
     topic: Str,
@@ -392,25 +392,34 @@ unsafe extern "C" fn plugin_message(
     reply: Option<ReplyFn>,
     reply_ctx: *mut c_void,
 ) -> Status {
+    if !caller::is(host, from, "plugin_message") {
+        return Status::INVALID_ARGUMENT;
+    }
     plugins::deliver_message(from, to, &text(topic), &payload(data), reply, reply_ctx)
 }
 
 unsafe extern "C" fn event_subscribe(
-    _host: *mut c_void,
+    host: *mut c_void,
     plugin: PluginHandle,
     topic: Str,
 ) -> Status {
+    if !caller::is(host, plugin, "event_subscribe") {
+        return Status::INVALID_ARGUMENT;
+    }
     state()
         .subscribe(plugin, &text(topic))
         .map_or_else(|e| e, |()| Status::OK)
 }
 
 unsafe extern "C" fn event_publish(
-    _host: *mut c_void,
+    host: *mut c_void,
     from: PluginHandle,
     topic: Str,
     data: Bytes,
 ) -> Status {
+    if !caller::is(host, from, "event_publish") {
+        return Status::INVALID_ARGUMENT;
+    }
     let topic = text(topic);
     let data = payload(data);
     let targets = state().subscribers(from, &topic);
@@ -419,7 +428,7 @@ unsafe extern "C" fn event_publish(
 }
 
 unsafe extern "C" fn hook_patch(
-    _host: *mut c_void,
+    host: *mut c_void,
     plugin: PluginHandle,
     address: *mut c_void,
     bytes: *const u8,
@@ -427,6 +436,9 @@ unsafe extern "C" fn hook_patch(
     note: Str,
     out_id: *mut u64,
 ) -> Status {
+    if !caller::is(host, plugin, "hook_patch") {
+        return Status::INVALID_ARGUMENT;
+    }
     // The length is checked before the slice exists: a garbage `len` is undefined behaviour
     // at slice creation, not just when read.
     if bytes.is_null() || out_id.is_null() || len == 0 || len > plugin_hooks::MAX_PATCH {
@@ -446,7 +458,7 @@ unsafe extern "C" fn hook_patch(
 }
 
 unsafe extern "C" fn hook_vtable(
-    _host: *mut c_void,
+    host: *mut c_void,
     plugin: PluginHandle,
     object: *mut c_void,
     index: u32,
@@ -455,6 +467,9 @@ unsafe extern "C" fn hook_vtable(
     out_original: *mut *mut c_void,
     out_id: *mut u64,
 ) -> Status {
+    if !caller::is(host, plugin, "hook_vtable") {
+        return Status::INVALID_ARGUMENT;
+    }
     if out_original.is_null() || out_id.is_null() {
         return Status::INVALID_ARGUMENT;
     }
@@ -472,7 +487,7 @@ unsafe extern "C" fn hook_vtable(
 }
 
 unsafe extern "C" fn hook_detour(
-    _host: *mut c_void,
+    host: *mut c_void,
     plugin: PluginHandle,
     target: *mut c_void,
     replacement: *mut c_void,
@@ -480,6 +495,9 @@ unsafe extern "C" fn hook_detour(
     out_trampoline: *mut *mut c_void,
     out_id: *mut u64,
 ) -> Status {
+    if !caller::is(host, plugin, "hook_detour") {
+        return Status::INVALID_ARGUMENT;
+    }
     if out_trampoline.is_null() || out_id.is_null() {
         return Status::INVALID_ARGUMENT;
     }
@@ -496,6 +514,9 @@ unsafe extern "C" fn hook_detour(
     }
 }
 
-unsafe extern "C" fn hook_remove(_host: *mut c_void, plugin: PluginHandle, id: u64) -> Status {
+unsafe extern "C" fn hook_remove(host: *mut c_void, plugin: PluginHandle, id: u64) -> Status {
+    if !caller::is(host, plugin, "hook_remove") {
+        return Status::INVALID_ARGUMENT;
+    }
     plugin_hooks::remove(plugin, id)
 }
