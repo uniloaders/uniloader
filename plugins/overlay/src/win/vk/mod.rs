@@ -27,7 +27,7 @@ use core::ffi::{c_void, CStr};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use ash::vk::{self, Handle};
@@ -97,13 +97,23 @@ struct Tracked {
     surfaces: HashMap<u64, isize>,
     swapchains: HashMap<u64, Swapchain>,
     /// `None` once making one failed, so it is not tried every frame.
-    renderers: HashMap<u64, Option<render::Renderer>>,
+    renderers: HashMap<u64, Slot>,
 }
+
+/// One device's renderer, behind a lock of its own: a frame draws with only this held, never
+/// [`TRACKED`], because drawing calls into plugins (panels, commands, settings) and one of
+/// them making a Vulkan object on this thread would re-enter a detour that takes `TRACKED`.
+/// Taken after `TRACKED` is released, never while it is held.
+type Slot = Arc<Mutex<Option<render::Renderer>>>;
 
 static TRACKED: LazyLock<Mutex<Tracked>> = LazyLock::new(Mutex::default);
 
 fn tracked() -> MutexGuard<'static, Tracked> {
     TRACKED.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn lock(slot: &Slot) -> MutexGuard<'_, Option<render::Renderer>> {
+    slot.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// `vulkan-1.dll`'s two entry points, all the overlay loads functions through.
@@ -186,22 +196,6 @@ pub(crate) fn install(host: &Host) {
         });
     if let Err(e) = watcher {
         log::debug!("no thread to watch for Vulkan ({e})");
-    }
-}
-
-/// Forget the originals: the loader removes the detours itself.
-pub(crate) fn uninstall() {
-    for real in [
-        &REAL.create_device,
-        &REAL.destroy_device,
-        &REAL.get_device_queue,
-        &REAL.get_device_queue2,
-        &REAL.create_surface,
-        &REAL.create_swapchain,
-        &REAL.destroy_swapchain,
-        &REAL.queue_present,
-    ] {
-        real.store(0, Ordering::Release);
     }
 }
 
@@ -402,14 +396,17 @@ unsafe extern "system" fn destroy_device(
     let Some(real) = (unsafe { original::<vk::PFN_vkDestroyDevice>(&REAL.destroy_device) }) else {
         return;
     };
-    {
+    let slot = {
         let mut t = tracked();
-        if let Some(Some(mut renderer)) = t.renderers.remove(&device.as_raw()) {
-            renderer.destroy();
-        }
         t.devices.remove(&device.as_raw());
         t.queues.retain(|_, (d, _)| *d != device);
         t.swapchains.retain(|_, s| s.device != device);
+        t.renderers.remove(&device.as_raw())
+    };
+    if let Some(slot) = slot {
+        if let Some(mut renderer) = lock(&slot).take() {
+            renderer.destroy();
+        }
     }
     // SAFETY: forwarding the caller's arguments.
     unsafe { real(device, allocator) };
@@ -520,12 +517,15 @@ unsafe extern "system" fn destroy_swapchain(
     else {
         return;
     };
-    {
+    let slot = {
         let mut t = tracked();
-        if let Some(Some(renderer)) = t.renderers.get_mut(&device.as_raw()) {
+        t.swapchains.remove(&swapchain.as_raw());
+        t.renderers.get(&device.as_raw()).cloned()
+    };
+    if let Some(slot) = slot {
+        if let Some(renderer) = lock(&slot).as_mut() {
             renderer.forget(swapchain);
         }
-        t.swapchains.remove(&swapchain.as_raw());
     }
     // SAFETY: forwarding the caller's arguments.
     unsafe { real(device, swapchain, allocator) };
@@ -611,14 +611,17 @@ fn frame(queue: vk::Queue, present: &vk::PresentInfoKHR<'_>) -> Option<vk::Semap
             )
         }
     };
-    let mut t = tracked();
-    let physical = *t.devices.get(&device.as_raw())?;
-    let slot = t
-        .renderers
-        .entry(device.as_raw())
-        .or_insert_with(|| render::Renderer::new(device, physical));
-    let renderer = slot.as_mut()?;
-    renderer.draw(
+    let slot = {
+        let mut t = tracked();
+        let physical = *t.devices.get(&device.as_raw())?;
+        Arc::clone(
+            t.renderers
+                .entry(device.as_raw())
+                .or_insert_with(|| Arc::new(Mutex::new(render::Renderer::new(device, physical)))),
+        )
+    };
+    let mut renderer = lock(&slot);
+    renderer.as_mut()?.draw(
         host,
         &render::Present {
             queue,

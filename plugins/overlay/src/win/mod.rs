@@ -111,11 +111,12 @@ pub(crate) fn install(host: &Host) {
     vk::install(host);
 }
 
-/// Let go of the game: the window procedure goes back, and the hooks stop forwarding to us.
+/// Let go of the game: the window procedure goes back and the `Direct3D` 12 queue reference
+/// is released. The hooks keep forwarding to the originals, which are never cleared: they
+/// stay reachable from the render thread until the loader has restored what they replaced,
+/// and with `crate::host()` gone they do nothing else.
 pub(crate) fn uninstall() {
-    hooks::uninstall();
-    gl::uninstall();
-    vk::uninstall();
+    d3d12::uninstall();
     wnd::unsubclass();
 }
 

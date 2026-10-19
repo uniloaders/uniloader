@@ -54,8 +54,16 @@ const NOT_RUNNING_SECONDS: f32 = 20.0;
 /// window procedure.
 static HOST: OnceLock<Host> = OnceLock::new();
 
-/// The loader as seen by this plugin, once it has started.
+/// Set by `stop`. The hooks stay reachable after it (until the loader restores what they
+/// replaced, or for good where the overlay patched a vtable itself), so they keep forwarding
+/// to the originals, which are never cleared; this makes them do nothing else.
+static STOPPED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The loader as seen by this plugin, once it has started and until it stops.
 pub(crate) fn host() -> Option<&'static Host> {
+    if STOPPED.load(std::sync::atomic::Ordering::Acquire) {
+        return None;
+    }
     HOST.get()
 }
 
@@ -138,6 +146,7 @@ impl Plugin for OverlayPlugin {
     }
 
     fn stop(&self, _host: &Host, _reason: uniloader_sdk::StopReason) {
+        STOPPED.store(true, std::sync::atomic::Ordering::Release);
         #[cfg(windows)]
         win::uninstall();
         layout::save();

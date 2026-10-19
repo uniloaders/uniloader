@@ -15,6 +15,8 @@ use uniloader_sdk::api::PluginHandle;
 const TOAST_SECONDS: f32 = 5.0;
 /// How long a notice stays when the caller does not say.
 const NOTICE_SECONDS: f32 = 3.0;
+/// The longest a caller may ask for.
+const MAX_SECONDS: f32 = 86_400.0;
 /// How long the fade at the end takes.
 const FADE: f32 = 0.6;
 
@@ -130,8 +132,10 @@ pub(crate) fn passing(
     text: &str,
     seconds: f32,
 ) -> u64 {
-    let seconds = if seconds > 0.0 {
-        seconds
+    // A plugin's number, so it is bounded here: infinity (or anything huge) would panic in
+    // `Duration::from_secs_f32` on every frame. A day is "until dismissed" in practice.
+    let seconds = if seconds.is_finite() && seconds > 0.0 {
+        seconds.min(MAX_SECONDS)
     } else if kind == UiNotice::TOAST {
         TOAST_SECONDS
     } else {

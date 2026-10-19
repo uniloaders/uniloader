@@ -194,7 +194,7 @@ pub(crate) fn inject(input: &crate::inject::Input) -> Result<(), String> {
                 let screen = guard.screen;
                 let pos = Pos2::new(*x, *y).clamp(Pos2::ZERO, Pos2::new(screen.x, screen.y));
                 guard.pointer = pos;
-                guard.events.push(Event::PointerMoved(pos));
+                push(&mut guard.events, Event::PointerMoved(pos));
             }
             post(WM_LBUTTONDOWN, 1, 0)?;
             post(WM_LBUTTONUP, 0, 0)?;
@@ -214,11 +214,20 @@ unsafe extern "system" fn procedure(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    let capturing = shared::is_capturing();
-    let input = record(msg, wparam, lparam, capturing);
-    if capturing && input {
-        // Swallowed: the overlay has the keyboard and mouse while it is open.
-        return LRESULT(0);
+    // After `stop` (when another subclasser kept us in the chain) only forwarding is left.
+    if crate::host().is_some() {
+        let capturing = shared::is_capturing();
+        let input = record(msg, wparam, lparam, capturing);
+        // A release whose press reached the game goes to the game too, even when capture
+        // began in between: swallowing it would leave the key held down there.
+        let owed = forwarded::release_owed(msg, wparam);
+        if capturing && input && !owed {
+            // Swallowed: the overlay has the keyboard and mouse while it is open.
+            return LRESULT(0);
+        }
+        if !capturing {
+            forwarded::note(msg, wparam);
+        }
     }
     let previous = PREVIOUS.load(Ordering::Acquire);
     if previous == 0 {
@@ -244,6 +253,82 @@ unsafe extern "system" fn procedure(
     }
 }
 
+/// Which keys and mouse buttons are down in the game: pressed while the overlay did not
+/// capture, so their releases are owed to the game whatever the overlay does by then.
+mod forwarded {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use windows::Win32::Foundation::WPARAM;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{VK_LBUTTON, VK_MBUTTON, VK_RBUTTON};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
+        WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    };
+
+    /// One bit per virtual-key code (mouse buttons have theirs too).
+    static DOWN: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+
+    /// The key a press or release message is about, and whether it is a press.
+    fn key(msg: u32, wparam: WPARAM) -> Option<(u8, bool)> {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "virtual-key codes are a byte"
+        )]
+        let vk = wparam.0 as u8;
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "the button codes are 1, 2 and 4"
+        )]
+        let button = |code: u16| code as u8;
+        match msg {
+            WM_KEYDOWN | WM_SYSKEYDOWN => Some((vk, true)),
+            WM_KEYUP | WM_SYSKEYUP => Some((vk, false)),
+            WM_LBUTTONDOWN => Some((button(VK_LBUTTON.0), true)),
+            WM_LBUTTONUP => Some((button(VK_LBUTTON.0), false)),
+            WM_RBUTTONDOWN => Some((button(VK_RBUTTON.0), true)),
+            WM_RBUTTONUP => Some((button(VK_RBUTTON.0), false)),
+            WM_MBUTTONDOWN => Some((button(VK_MBUTTON.0), true)),
+            WM_MBUTTONUP => Some((button(VK_MBUTTON.0), false)),
+            _ => None,
+        }
+    }
+
+    fn word_and_bit(vk: u8) -> (&'static AtomicU64, u64) {
+        (&DOWN[usize::from(vk / 64)], 1 << (vk % 64))
+    }
+
+    /// Record a message the game is about to receive.
+    pub(super) fn note(msg: u32, wparam: WPARAM) {
+        if let Some((vk, pressed)) = key(msg, wparam) {
+            let (word, bit) = word_and_bit(vk);
+            if pressed {
+                word.fetch_or(bit, Ordering::Relaxed);
+            } else {
+                word.fetch_and(!bit, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// Whether this is the release of a key the game saw go down; clears it when so.
+    pub(super) fn release_owed(msg: u32, wparam: WPARAM) -> bool {
+        match key(msg, wparam) {
+            Some((vk, false)) => {
+                let (word, bit) = word_and_bit(vk);
+                word.fetch_and(!bit, Ordering::Relaxed) & bit != 0
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Queue an egui event, only while the overlay is shown: nothing drains the queue while it is
+/// hidden, and a 1000 Hz mouse would grow it without end.
+fn push(events: &mut Vec<Event>, event: Event) {
+    if shared::is_visible() {
+        events.push(event);
+    }
+}
+
 /// Translate one message. Returns whether it was an input message, which decides whether a
 /// capturing overlay swallows it.
 fn record(msg: u32, wparam: WPARAM, lparam: LPARAM, capturing: bool) -> bool {
@@ -253,7 +338,7 @@ fn record(msg: u32, wparam: WPARAM, lparam: LPARAM, capturing: bool) -> bool {
             if !guard.relative {
                 guard.pointer = client_position(lparam);
                 let pos = guard.pointer;
-                guard.events.push(Event::PointerMoved(pos));
+                push(&mut guard.events, Event::PointerMoved(pos));
             }
             true
         }
@@ -267,7 +352,7 @@ fn record(msg: u32, wparam: WPARAM, lparam: LPARAM, capturing: bool) -> bool {
                     let moved =
                         (guard.pointer + delta).clamp(Pos2::ZERO, Pos2::new(screen.x, screen.y));
                     guard.pointer = moved;
-                    guard.events.push(Event::PointerMoved(moved));
+                    push(&mut guard.events, Event::PointerMoved(moved));
                 }
             }
             true
@@ -284,12 +369,15 @@ fn record(msg: u32, wparam: WPARAM, lparam: LPARAM, capturing: bool) -> bool {
             };
             let mut guard = pending();
             let (pos, modifiers) = (guard.pointer, guard.modifiers);
-            guard.events.push(Event::PointerButton {
-                pos,
-                button,
-                pressed,
-                modifiers,
-            });
+            push(
+                &mut guard.events,
+                Event::PointerButton {
+                    pos,
+                    button,
+                    pressed,
+                    modifiers,
+                },
+            );
             true
         }
         WM_MOUSEWHEEL => {
@@ -298,12 +386,15 @@ fn record(msg: u32, wparam: WPARAM, lparam: LPARAM, capturing: bool) -> bool {
             let ticks = f32::from((wparam.0 >> 16) as i16) / 120.0;
             let mut guard = pending();
             let modifiers = guard.modifiers;
-            guard.events.push(Event::MouseWheel {
-                unit: egui::MouseWheelUnit::Line,
-                delta: Vec2::new(0.0, ticks),
-                modifiers,
-                phase: egui::TouchPhase::Move,
-            });
+            push(
+                &mut guard.events,
+                Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Line,
+                    delta: Vec2::new(0.0, ticks),
+                    modifiers,
+                    phase: egui::TouchPhase::Move,
+                },
+            );
             true
         }
         WM_KEYDOWN | WM_SYSKEYDOWN | WM_KEYUP | WM_SYSKEYUP => {
@@ -315,7 +406,7 @@ fn record(msg: u32, wparam: WPARAM, lparam: LPARAM, capturing: bool) -> bool {
             let unit = wparam.0 as u32;
             // Control characters are covered by the key events; a lone surrogate is dropped.
             if let Some(c) = char::from_u32(unit).filter(|c| !c.is_control()) {
-                pending().events.push(Event::Text(c.to_string()));
+                push(&mut pending().events, Event::Text(c.to_string()));
             }
             true
         }
@@ -323,7 +414,7 @@ fn record(msg: u32, wparam: WPARAM, lparam: LPARAM, capturing: bool) -> bool {
             let focused = msg == WM_SETFOCUS;
             let mut guard = pending();
             guard.focused = focused;
-            guard.events.push(Event::WindowFocused(focused));
+            push(&mut guard.events, Event::WindowFocused(focused));
             if !focused {
                 // Modifier releases are missed while another window has focus.
                 guard.modifiers = Modifiers::NONE;
@@ -368,17 +459,20 @@ fn keyboard(msg: u32, wparam: WPARAM, lparam: LPARAM) {
     // egui expects the pasted text as an event rather than reading the clipboard itself.
     if pressed && modifiers.ctrl && vk == u16::from(b'V') {
         if let Some(text) = clipboard::text() {
-            guard.events.push(Event::Paste(text));
+            push(&mut guard.events, Event::Paste(text));
         }
     }
     if let Some(key) = key_of(vk) {
-        guard.events.push(Event::Key {
-            key,
-            physical_key: None,
-            pressed,
-            repeat: false,
-            modifiers,
-        });
+        push(
+            &mut guard.events,
+            Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers,
+            },
+        );
     }
 }
 
@@ -441,7 +535,7 @@ fn centre_pointer() {
     let screen = guard.screen;
     guard.pointer = Pos2::new(screen.x / 2.0, screen.y / 2.0);
     let pos = guard.pointer;
-    guard.events.push(Event::PointerMoved(pos));
+    push(&mut guard.events, Event::PointerMoved(pos));
 }
 
 fn update_modifiers(modifiers: &mut Modifiers, vk: u16, pressed: bool) {

@@ -159,6 +159,10 @@ unsafe extern "C" fn widget(
     text: Str,
     value: *mut UiValue,
 ) -> Status {
+    // Outside the draw callback nothing is dereferenced: the pointers may be stale.
+    if !ui::frame::is_current(frame, owner) {
+        return Status::WRONG_PHASE;
+    }
     // SAFETY: valid for the call, per the ABI.
     let text = unsafe { read_str(text) };
     let value = if value.is_null() {

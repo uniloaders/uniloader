@@ -31,7 +31,7 @@ load-bearing rules carry over and are repeated below.
 - Run `scripts/gate.sh`. It runs inside `build-box` and keeps every step's full output in
   `target/gate-logs/`. Never filter build output without keeping the full log.
 - Files ≤ 1000 lines (enforced by `crates/uniloader-core/tests/size_limits.rs`), functions ≤
-  100 lines (clippy `too_many_lines`). No `unwrap`/`expect` outside tests.
+  200 lines (clippy `too_many_lines`, `clippy.toml`). No `unwrap`/`expect` outside tests.
 - Lint configuration only in `[workspace.lints]`.
 
 ## Conventions

@@ -150,17 +150,6 @@ fn install_slot(
     }
 }
 
-/// Forget the originals, so a call already in flight after the loader restored the slots
-/// goes nowhere new. The loader removes the hooks themselves.
-pub(crate) fn uninstall() {
-    for slots in [&REAL_PRESENT, &REAL_PRESENT1, &REAL_RESIZE] {
-        for slot in slots {
-            slot.store(0, Ordering::Release);
-        }
-    }
-    super::d3d12::uninstall();
-}
-
 unsafe extern "system" fn probe_procedure(
     hwnd: HWND,
     msg: u32,

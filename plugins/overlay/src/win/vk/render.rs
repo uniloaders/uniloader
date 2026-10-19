@@ -240,6 +240,17 @@ impl Renderer {
         };
         if let Err(e) = submitted {
             log::warn!("Vulkan overlay submit failed: {e}");
+            // The fence may be reset with nothing to signal it; a fresh signalled one keeps
+            // the next present of this image from waiting out the timeout every time.
+            let info = vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
+            // SAFETY: this device; the old fence has no submission pending (the submit
+            // failed, and the one before it was waited for above).
+            unsafe {
+                if let Ok(fresh) = self.gpu.device.create_fence(&info, None) {
+                    self.gpu.device.destroy_fence(slot.fence, None);
+                    slot.fence = fresh;
+                }
+            }
             return None;
         }
         slot.pending = Some(frame);

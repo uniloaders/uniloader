@@ -46,6 +46,15 @@ pub(crate) fn with<R>(
     ui: &mut egui::Ui,
     body: impl FnOnce() -> R,
 ) -> R {
+    /// Puts the previous body back however `body` ends: a faulting or panicking consumer
+    /// must not leave a pointer to a dead stack frame behind its token.
+    struct Restore(Option<Current>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let previous = self.0.take();
+            CURRENT.with(|c| c.set(previous));
+        }
+    }
     let previous = CURRENT.with(|c| {
         c.replace(Some(Current {
             token,
@@ -53,10 +62,23 @@ pub(crate) fn with<R>(
             ui: core::ptr::from_mut(ui),
         }))
     });
+    let _restore = Restore(previous);
     OWNER_NAME.with_borrow_mut(|name| owner_name.clone_into(name));
-    let result = body();
-    CURRENT.with(|c| c.set(previous));
-    result
+    body()
+}
+
+/// A token no earlier body had, for the life of the process (a rebuilt renderer included).
+pub(crate) fn next_token() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Whether `token` is the body being filled on this thread for `owner`: checked before any
+/// argument of a `widget` call is read, as the ABI promises.
+pub(crate) fn is_current(token: u64, owner: PluginHandle) -> bool {
+    CURRENT.with(Cell::get).is_some_and(|current| {
+        token != 0 && token == current.token && owner == current.owner && !current.ui.is_null()
+    })
 }
 
 /// Take the setting writes queued during the frame.

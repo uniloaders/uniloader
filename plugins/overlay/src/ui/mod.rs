@@ -77,8 +77,6 @@ pub(crate) struct Gui {
     /// Whether the console was drawn last frame, so opening it can take the keyboard.
     console_shown: bool,
     scale: f32,
-    /// Hands out the tokens that stand in for a panel body.
-    next_token: u64,
     /// `overlay.mouse`'s binding for the hint, and when it was read.
     mouse_binding: (Instant, String),
 }
@@ -93,7 +91,6 @@ impl Gui {
             console: console::ConsolePanel::default(),
             console_shown: false,
             scale: 1.0,
-            next_token: 1,
             mouse_binding: (Instant::now(), String::new()),
         }
     }
@@ -186,7 +183,7 @@ impl Gui {
                 }
             }
             for panel in panels.iter().filter(|p| p.open) {
-                self.panel(host, &ctx, panel, after);
+                Self::panel(host, &ctx, panel, after);
             }
             if editor_open {
                 let chrome = chrome::Chrome {
@@ -222,15 +219,14 @@ impl Gui {
     }
 
     /// Draw one plugin panel, its body filled by the owner.
-    fn panel(&mut self, host: &Host, ctx: &Context, panel: &registry::Panel, after: &mut After) {
+    fn panel(host: &Host, ctx: &Context, panel: &registry::Panel, after: &mut After) {
         let chrome = chrome::Chrome {
             id: &panel.id,
             title: &panel.title,
             default_size: [320.0, 240.0],
             saved: saved(&panel.id),
         };
-        let token = self.next_token;
-        self.next_token = self.next_token.wrapping_add(1).max(1);
+        let token = frame::next_token();
         let placed = chrome::show(ctx, &chrome, |ui| {
             if !calls::panel(host, panel, ui, token) {
                 ui.label("This panel's plugin is not running.");

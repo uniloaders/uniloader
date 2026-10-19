@@ -80,11 +80,6 @@ pub(crate) fn install(host: &Host) {
     }
 }
 
-/// Forget the trampoline: the loader removes the detour itself.
-pub(crate) fn uninstall() {
-    REAL_SWAP.store(0, Ordering::Release);
-}
-
 fn opengl32() -> Option<HMODULE> {
     let name: Vec<u16> = "opengl32.dll".encode_utf16().chain(Some(0)).collect();
     // SAFETY: a NUL-terminated name; the handle is not reference counted, which is fine

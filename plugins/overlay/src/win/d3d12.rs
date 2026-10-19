@@ -141,7 +141,7 @@ pub(super) fn hook_queue(host: &Host, queue: &ID3D12CommandQueue) {
 
 /// Stops forwarding, and lets go of the queue.
 pub(super) fn uninstall() {
-    REAL_EXECUTE.store(0, Ordering::Release);
+    // `REAL_EXECUTE` stays: the detour may still be entered, and must still execute.
     let queue = QUEUE.swap(0, Ordering::AcqRel);
     if queue != 0 {
         // SAFETY: the reference taken in `execute_command_lists`, given back once.
@@ -168,7 +168,8 @@ unsafe extern "system" fn execute_command_lists(
     if address == 0 {
         return;
     }
-    if QUEUE.load(Ordering::Acquire) == 0 {
+    // Not after `stop`, which released the reference this would take again.
+    if QUEUE.load(Ordering::Acquire) == 0 && crate::host().is_some() {
         // SAFETY: `this` is the queue the game called through; borrowed for the call.
         if let Some(queue) = unsafe { ID3D12CommandQueue::from_raw_borrowed(&this) } {
             // SAFETY: a live queue; only its description is read.

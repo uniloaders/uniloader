@@ -182,8 +182,9 @@ fn dialog(ctx: &Context, entry: &Entry, kind: UiDialog, buffer: &str, outcome: &
     if text != buffer {
         outcome.typed.push((entry.id, text));
     }
-    // Escape and the window's close button both mean no.
-    if !open || ctx.input(|i| i.key_pressed(Key::Escape)) {
+    // Escape and the window's close button both mean no. Escape is consumed, so one press
+    // answers one dialog, not every one that is open.
+    if !open || ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape)) {
         outcome.answered.push((entry.id, UiAnswer::CANCELLED));
     }
 }
