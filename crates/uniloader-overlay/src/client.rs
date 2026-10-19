@@ -12,7 +12,7 @@ use core::ffi::c_void;
 use core::marker::PhantomData;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-use uniloader_sdk::api::{PluginHandle, Status, Str};
+use uniloader_sdk::api::{Caller, Status, Str};
 use uniloader_sdk::{read_str, Host, PluginError, PluginRef};
 
 use crate::abi::{
@@ -54,14 +54,15 @@ pub struct Card<'a> {
 #[derive(Clone, Copy)]
 pub struct Overlay {
     api: &'static OverlayApi,
-    owner: PluginHandle,
+    /// This plugin's loader context, which tells the provider who is calling.
+    caller: Caller,
     provider: PluginRef,
 }
 
 impl core::fmt::Debug for Overlay {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Overlay")
-            .field("owner", &self.owner)
+            .field("caller", &self.caller)
             .finish_non_exhaustive()
     }
 }
@@ -69,7 +70,7 @@ impl core::fmt::Debug for Overlay {
 /// What a panel callback needs to hand a [`Ui`] to the closure.
 struct PanelCtx<F> {
     api: &'static OverlayApi,
-    owner: PluginHandle,
+    caller: Caller,
     draw: F,
 }
 
@@ -89,7 +90,7 @@ where
     let panel = unsafe { &*ctx.cast::<PanelCtx<F>>() };
     let mut ui = Ui {
         api: panel.api,
-        owner: panel.owner,
+        caller: panel.caller,
         frame,
         _frame: PhantomData,
     };
@@ -143,7 +144,7 @@ impl Overlay {
         }
         Some(Overlay {
             api: service.table,
-            owner: host.me().raw(),
+            caller: host.context(),
             provider: service.provider,
         })
     }
@@ -171,7 +172,7 @@ impl Overlay {
     {
         let ctx = Box::into_raw(Box::new(PanelCtx {
             api: self.api,
-            owner: self.owner,
+            caller: self.caller,
             draw,
         }));
         let desc = PanelDesc {
@@ -183,7 +184,7 @@ impl Overlay {
         // SAFETY: `desc` outlives the call; `ctx` matches `draw_panel::<F>`.
         let status = unsafe {
             (self.api.panel_add)(
-                self.owner,
+                self.caller,
                 &raw const desc,
                 Some(draw_panel::<F>),
                 ctx.cast(),
@@ -202,7 +203,7 @@ impl Overlay {
     /// No such panel.
     pub fn remove_panel(&self, name: &str) -> Result<(), PluginError> {
         // SAFETY: plain values; `name` outlives the call.
-        check(unsafe { (self.api.panel_remove)(self.owner, Str::new(name)) })
+        check(unsafe { (self.api.panel_remove)(self.caller, Str::new(name)) })
     }
 
     /// Open or close one of this plugin's panels.
@@ -211,7 +212,7 @@ impl Overlay {
     /// No such panel.
     pub fn set_open(&self, name: &str, open: bool) -> Result<(), PluginError> {
         // SAFETY: plain values; `name` outlives the call.
-        check(unsafe { (self.api.panel_set_open)(self.owner, Str::new(name), open) })
+        check(unsafe { (self.api.panel_set_open)(self.caller, Str::new(name), open) })
     }
 
     /// Flip one of this plugin's panels.
@@ -220,7 +221,7 @@ impl Overlay {
     /// No such panel.
     pub fn toggle(&self, name: &str) -> Result<(), PluginError> {
         // SAFETY: plain values; `name` outlives the call.
-        check(unsafe { (self.api.panel_toggle)(self.owner, Str::new(name)) })
+        check(unsafe { (self.api.panel_toggle)(self.caller, Str::new(name)) })
     }
 
     /// Whether one of this plugin's panels is open; `false` for an unknown one.
@@ -228,7 +229,8 @@ impl Overlay {
     pub fn is_open(&self, name: &str) -> bool {
         let mut open = false;
         // SAFETY: `open` is a valid out-pointer and `name` outlives the call.
-        let status = unsafe { (self.api.panel_is_open)(self.owner, Str::new(name), &raw mut open) };
+        let status =
+            unsafe { (self.api.panel_is_open)(self.caller, Str::new(name), &raw mut open) };
         status.is_ok() && open
     }
 
@@ -269,7 +271,7 @@ impl Overlay {
             level: card.level,
         };
         // SAFETY: `desc` and the strings it points to outlive the call.
-        check(unsafe { (self.api.card_set)(self.owner, Str::new(name), &raw const desc) })
+        check(unsafe { (self.api.card_set)(self.caller, Str::new(name), &raw const desc) })
     }
 
     /// Take this plugin's card `name` out of the showcase.
@@ -278,7 +280,7 @@ impl Overlay {
     /// No such card, or no showcase.
     pub fn remove_card(&self, name: &str) -> Result<(), PluginError> {
         // SAFETY: `name` outlives the call.
-        check(unsafe { (self.api.card_remove)(self.owner, Str::new(name)) })
+        check(unsafe { (self.api.card_remove)(self.caller, Str::new(name)) })
     }
 
     fn notice_of(
@@ -299,7 +301,7 @@ impl Overlay {
         };
         let mut id = 0u64;
         // SAFETY: `desc` and `id` outlive the call.
-        check(unsafe { (self.api.notice_show)(self.owner, &raw const desc, &raw mut id) })?;
+        check(unsafe { (self.api.notice_show)(self.caller, &raw const desc, &raw mut id) })?;
         Ok(id)
     }
 
@@ -335,7 +337,7 @@ impl Overlay {
         // SAFETY: `desc` and `id` outlive the call; `ctx` matches `answer_dialog::<F>`.
         let status = unsafe {
             (self.api.dialog_open)(
-                self.owner,
+                self.caller,
                 &raw const desc,
                 Some(answer_dialog::<F>),
                 ctx.cast(),
@@ -356,7 +358,7 @@ impl Overlay {
     /// No such id, or another plugin's.
     pub fn close(&self, id: u64) -> Result<(), PluginError> {
         // SAFETY: plain values.
-        check(unsafe { (self.api.close)(self.owner, id) })
+        check(unsafe { (self.api.close)(self.caller, id) })
     }
 
     /// Run `callback` on the render thread before every present.
@@ -370,7 +372,7 @@ impl Overlay {
         let ctx = Box::into_raw(Box::new(callback));
         // SAFETY: `ctx` matches `on_present::<F>`.
         let status =
-            unsafe { (self.api.present_subscribe)(self.owner, Some(on_present::<F>), ctx.cast()) };
+            unsafe { (self.api.present_subscribe)(self.caller, Some(on_present::<F>), ctx.cast()) };
         if !status.is_ok() {
             // SAFETY: refused, so the overlay kept no copy of the pointer.
             drop(unsafe { Box::from_raw(ctx) });
@@ -389,7 +391,7 @@ impl Overlay {
 /// A panel body being filled. Only exists inside a panel's draw closure.
 pub struct Ui<'frame> {
     api: &'static OverlayApi,
-    owner: PluginHandle,
+    caller: Caller,
     frame: u64,
     _frame: PhantomData<&'frame mut ()>,
 }
@@ -398,7 +400,7 @@ impl Ui<'_> {
     fn widget(&mut self, kind: UiWidget, text: &str, value: &mut UiValue) -> Status {
         // SAFETY: `value` and `text` outlive the call, and `frame` is the token of the call
         // this `Ui` lives in.
-        unsafe { (self.api.widget)(self.owner, self.frame, kind, Str::new(text), value) }
+        unsafe { (self.api.widget)(self.caller, self.frame, kind, Str::new(text), value) }
     }
 
     /// A line of text.

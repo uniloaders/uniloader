@@ -14,7 +14,7 @@ use uniloader_overlay::{
     CardDesc, DialogDesc, DialogFn, NoticeDesc, OverlayApi, PanelDesc, PanelFn, PresentFn, UiValue,
     UiWidget,
 };
-use uniloader_sdk::api::{PluginHandle, Status, Str};
+use uniloader_sdk::api::{Caller, PluginHandle, Status, Str};
 use uniloader_sdk::{read_str, PluginRef};
 
 use crate::{cards, notices, registry, shared, ui};
@@ -54,6 +54,12 @@ unsafe fn read_desc<T: Copy>(ptr: *const T) -> Option<T> {
     Some(unsafe { *ptr })
 }
 
+/// The plugin behind `caller`, as the loader says: a consumer cannot act in another's name.
+/// `None` for a context that is no plugin's.
+fn owner_of(caller: Caller) -> Option<PluginHandle> {
+    crate::host()?.plugin_of(caller).map(PluginRef::raw)
+}
+
 /// The name of the plugin behind a handle, for qualified ids.
 fn owner_name(owner: PluginHandle) -> Option<String> {
     let host = crate::host()?;
@@ -65,11 +71,14 @@ fn owner_name(owner: PluginHandle) -> Option<String> {
 }
 
 unsafe extern "C" fn panel_add(
-    owner: PluginHandle,
+    caller: Caller,
     desc: *const PanelDesc,
     draw: Option<PanelFn>,
     ctx: *mut c_void,
 ) -> Status {
+    let Some(owner) = owner_of(caller) else {
+        return Status::NOT_FOUND;
+    };
     // SAFETY: the ABI requires a valid descriptor or null.
     let (Some(desc), Some(draw)) = (unsafe { read_desc(desc) }, draw) else {
         return Status::INVALID_ARGUMENT;
@@ -102,7 +111,10 @@ unsafe extern "C" fn panel_add(
     Status::OK
 }
 
-unsafe extern "C" fn panel_remove(owner: PluginHandle, name: Str) -> Status {
+unsafe extern "C" fn panel_remove(caller: Caller, name: Str) -> Status {
+    let Some(owner) = owner_of(caller) else {
+        return Status::NOT_FOUND;
+    };
     // SAFETY: valid for the call, per the ABI.
     let name = unsafe { read_str(name) };
     if !registry::remove(owner, &name) {
@@ -124,17 +136,26 @@ unsafe fn set_open_with(owner: PluginHandle, name: Str, f: impl FnOnce(bool) -> 
     Status::OK
 }
 
-unsafe extern "C" fn panel_set_open(owner: PluginHandle, name: Str, open: bool) -> Status {
+unsafe extern "C" fn panel_set_open(caller: Caller, name: Str, open: bool) -> Status {
+    let Some(owner) = owner_of(caller) else {
+        return Status::NOT_FOUND;
+    };
     // SAFETY: `name` comes straight from the caller, under the same ABI promise.
     unsafe { set_open_with(owner, name, |_| open) }
 }
 
-unsafe extern "C" fn panel_toggle(owner: PluginHandle, name: Str) -> Status {
+unsafe extern "C" fn panel_toggle(caller: Caller, name: Str) -> Status {
+    let Some(owner) = owner_of(caller) else {
+        return Status::NOT_FOUND;
+    };
     // SAFETY: as above.
     unsafe { set_open_with(owner, name, |open| !open) }
 }
 
-unsafe extern "C" fn panel_is_open(owner: PluginHandle, name: Str, out: *mut bool) -> Status {
+unsafe extern "C" fn panel_is_open(caller: Caller, name: Str, out: *mut bool) -> Status {
+    let Some(owner) = owner_of(caller) else {
+        return Status::NOT_FOUND;
+    };
     if out.is_null() {
         return Status::INVALID_ARGUMENT;
     }
@@ -153,12 +174,15 @@ unsafe extern "C" fn panel_is_open(owner: PluginHandle, name: Str, out: *mut boo
 }
 
 unsafe extern "C" fn widget(
-    owner: PluginHandle,
+    caller: Caller,
     frame: u64,
     kind: UiWidget,
     text: Str,
     value: *mut UiValue,
 ) -> Status {
+    let Some(owner) = owner_of(caller) else {
+        return Status::NOT_FOUND;
+    };
     // Outside the draw callback nothing is dereferenced: the pointers may be stale.
     if !ui::frame::is_current(frame, owner) {
         return Status::WRONG_PHASE;
@@ -180,10 +204,13 @@ unsafe extern "C" fn widget(
 }
 
 unsafe extern "C" fn notice_show(
-    owner: PluginHandle,
+    caller: Caller,
     desc: *const NoticeDesc,
     out_id: *mut u64,
 ) -> Status {
+    let Some(owner) = owner_of(caller) else {
+        return Status::NOT_FOUND;
+    };
     // SAFETY: the ABI requires a valid descriptor or null.
     let Some(desc) = (unsafe { read_desc(desc) }) else {
         return Status::INVALID_ARGUMENT;
@@ -207,12 +234,15 @@ unsafe extern "C" fn notice_show(
 }
 
 unsafe extern "C" fn dialog_open(
-    owner: PluginHandle,
+    caller: Caller,
     desc: *const DialogDesc,
     answer: Option<DialogFn>,
     ctx: *mut c_void,
     out_id: *mut u64,
 ) -> Status {
+    let Some(owner) = owner_of(caller) else {
+        return Status::NOT_FOUND;
+    };
     // SAFETY: the ABI requires a valid descriptor or null.
     let Some(desc) = (unsafe { read_desc(desc) }) else {
         return Status::INVALID_ARGUMENT;
@@ -248,7 +278,10 @@ unsafe extern "C" fn dialog_open(
     Status::OK
 }
 
-unsafe extern "C" fn close(owner: PluginHandle, id: u64) -> Status {
+unsafe extern "C" fn close(caller: Caller, id: u64) -> Status {
+    let Some(owner) = owner_of(caller) else {
+        return Status::NOT_FOUND;
+    };
     match notices::take_owned(owner, id) {
         Err(()) => Status::NOT_FOUND,
         Ok(answered) => {
@@ -263,10 +296,13 @@ unsafe extern "C" fn close(owner: PluginHandle, id: u64) -> Status {
 }
 
 unsafe extern "C" fn present_subscribe(
-    owner: PluginHandle,
+    caller: Caller,
     callback: Option<PresentFn>,
     ctx: *mut c_void,
 ) -> Status {
+    let Some(owner) = owner_of(caller) else {
+        return Status::NOT_FOUND;
+    };
     let Some(callback) = callback else {
         return Status::INVALID_ARGUMENT;
     };
@@ -282,7 +318,10 @@ unsafe extern "C" fn is_capturing() -> bool {
     shared::is_capturing()
 }
 
-unsafe extern "C" fn card_set(owner: PluginHandle, name: Str, desc: *const CardDesc) -> Status {
+unsafe extern "C" fn card_set(caller: Caller, name: Str, desc: *const CardDesc) -> Status {
+    let Some(owner) = owner_of(caller) else {
+        return Status::NOT_FOUND;
+    };
     // SAFETY: the ABI requires a valid descriptor or null, and a valid name.
     let (Some(desc), name) = (unsafe { read_desc(desc) }, unsafe { read_str(name) }) else {
         return Status::INVALID_ARGUMENT;
@@ -306,7 +345,10 @@ unsafe extern "C" fn card_set(owner: PluginHandle, name: Str, desc: *const CardD
     Status::OK
 }
 
-unsafe extern "C" fn card_remove(owner: PluginHandle, name: Str) -> Status {
+unsafe extern "C" fn card_remove(caller: Caller, name: Str) -> Status {
+    let Some(owner) = owner_of(caller) else {
+        return Status::NOT_FOUND;
+    };
     // SAFETY: the ABI requires a valid name.
     let name = unsafe { read_str(name) };
     if cards::remove(owner, &name) {

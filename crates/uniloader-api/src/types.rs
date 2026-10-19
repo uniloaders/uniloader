@@ -66,6 +66,14 @@ impl Bytes {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Caller(pub *mut core::ffi::c_void);
 
+// SAFETY: the pointer is only ever compared, never dereferenced, so sharing it between
+// threads cannot race on anything.
+#[allow(unsafe_code)]
+unsafe impl Send for Caller {}
+// SAFETY: see the `Send` impl.
+#[allow(unsafe_code)]
+unsafe impl Sync for Caller {}
+
 /// Opaque identifier the loader assigns to each loaded plugin.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

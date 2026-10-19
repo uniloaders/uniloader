@@ -1,10 +1,12 @@
-//! The `#[repr(C)]` layout of the service. Every function takes the caller's own plugin
-//! handle as `owner`; the overlay files what it is asked for under that handle, takes it all
-//! down when that plugin stops, and calls back into it under the loader's fault guard.
+//! The `#[repr(C)]` layout of the service. Every function takes the caller's loader context
+//! (`Host::context`) as `caller`; the provider asks the loader whose it is
+//! (`Host::plugin_of`), files what it is asked for under that plugin, takes it all down when
+//! that plugin stops, and calls back into it under the loader's fault guard. A plugin cannot
+//! act in another's name.
 
 use core::ffi::c_void;
 
-use uniloader_sdk::api::{PluginHandle, Status, Str};
+use uniloader_sdk::api::{Caller, Status, Str};
 
 /// How important a toast, notice or dialog is, which decides its colour.
 #[repr(transparent)]
@@ -260,40 +262,36 @@ pub struct OverlayApi {
     /// Add a panel. `draw(ctx, ...)` fills it each frame it is open. Returns
     /// [`Status::ALREADY_EXISTS`] for a name the owner already used.
     pub panel_add: unsafe extern "C" fn(
-        owner: PluginHandle,
+        caller: Caller,
         desc: *const PanelDesc,
         draw: Option<PanelFn>,
         ctx: *mut c_void,
     ) -> Status,
     /// Remove one of the owner's panels.
-    pub panel_remove: unsafe extern "C" fn(owner: PluginHandle, name: Str) -> Status,
+    pub panel_remove: unsafe extern "C" fn(caller: Caller, name: Str) -> Status,
     /// Open or close one of the owner's panels.
-    pub panel_set_open: unsafe extern "C" fn(owner: PluginHandle, name: Str, open: bool) -> Status,
+    pub panel_set_open: unsafe extern "C" fn(caller: Caller, name: Str, open: bool) -> Status,
     /// Flip one of the owner's panels open or closed.
-    pub panel_toggle: unsafe extern "C" fn(owner: PluginHandle, name: Str) -> Status,
+    pub panel_toggle: unsafe extern "C" fn(caller: Caller, name: Str) -> Status,
     /// Whether one of the owner's panels is open.
-    pub panel_is_open:
-        unsafe extern "C" fn(owner: PluginHandle, name: Str, out: *mut bool) -> Status,
+    pub panel_is_open: unsafe extern "C" fn(caller: Caller, name: Str, out: *mut bool) -> Status,
     /// Add a widget to the panel body being filled. `frame` is the token the draw callback
     /// received; outside that call it is refused with [`Status::WRONG_PHASE`] and nothing is
     /// dereferenced. A widget this overlay does not know is [`Status::UNSUPPORTED`].
     pub widget: unsafe extern "C" fn(
-        owner: PluginHandle,
+        caller: Caller,
         frame: u64,
         kind: UiWidget,
         text: Str,
         value: *mut UiValue,
     ) -> Status,
     /// Show a toast or notice; its id goes to `out_id`, which may be null.
-    pub notice_show: unsafe extern "C" fn(
-        owner: PluginHandle,
-        desc: *const NoticeDesc,
-        out_id: *mut u64,
-    ) -> Status,
+    pub notice_show:
+        unsafe extern "C" fn(caller: Caller, desc: *const NoticeDesc, out_id: *mut u64) -> Status,
     /// Open a modal dialog. `answer(ctx, ...)` is called exactly once, after the frame it was
     /// answered in — unless the owner stops first.
     pub dialog_open: unsafe extern "C" fn(
-        owner: PluginHandle,
+        caller: Caller,
         desc: *const DialogDesc,
         answer: Option<DialogFn>,
         ctx: *mut c_void,
@@ -301,10 +299,10 @@ pub struct OverlayApi {
     ) -> Status,
     /// Take down one of the owner's toasts, notices or dialogs early. A dialog answers
     /// [`UiAnswer::CLOSED`].
-    pub close: unsafe extern "C" fn(owner: PluginHandle, id: u64) -> Status,
+    pub close: unsafe extern "C" fn(caller: Caller, id: u64) -> Status,
     /// Be called on every present, on the render thread.
     pub present_subscribe: unsafe extern "C" fn(
-        owner: PluginHandle,
+        caller: Caller,
         callback: Option<PresentFn>,
         ctx: *mut c_void,
     ) -> Status,
@@ -314,8 +312,7 @@ pub struct OverlayApi {
     // has them; one built with them needs a provider that has them (the size check).
     /// Set (add or replace) the owner's card `name` in the showcase. A provider without a
     /// showcase answers [`Status::UNSUPPORTED`].
-    pub card_set:
-        unsafe extern "C" fn(owner: PluginHandle, name: Str, desc: *const CardDesc) -> Status,
+    pub card_set: unsafe extern "C" fn(caller: Caller, name: Str, desc: *const CardDesc) -> Status,
     /// Take the owner's card `name` out of the showcase.
-    pub card_remove: unsafe extern "C" fn(owner: PluginHandle, name: Str) -> Status,
+    pub card_remove: unsafe extern "C" fn(caller: Caller, name: Str) -> Status,
 }

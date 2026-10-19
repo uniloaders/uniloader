@@ -26,8 +26,9 @@ pub use client::{Card, Overlay, Ui};
 
 /// Name the overlay registers its service under.
 pub const SERVICE: &str = "overlay";
-/// Version of [`OverlayApi`] this crate describes.
-pub const VERSION: u32 = 1;
+/// Version of [`OverlayApi`] this crate describes. 2: callers pass their loader context, not
+/// a handle.
+pub const VERSION: u32 = 2;
 /// Name of the egui plugin that provides the service. Prefer a dependency on [`SERVICE`],
 /// which any provider satisfies.
 pub const PLUGIN: &str = "overlay";
