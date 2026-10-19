@@ -132,6 +132,9 @@ fn draw(ui: &mut egui::Ui, kind: UiWidget, text: &str, value: Option<&mut UiValu
         }
         (UiWidget::SETTING, _) => return setting(ui, text),
         (UiWidget::BUTTON, Some(out)) => out.boolean = ui.button(text).clicked(),
+        (UiWidget::SELECTABLE, Some(out)) => {
+            out.boolean = ui.selectable_label(out.boolean, text).clicked();
+        }
         (UiWidget::CHECKBOX, Some(out)) => {
             ui.checkbox(&mut out.boolean, text);
         }
@@ -150,6 +153,7 @@ fn draw(ui: &mut egui::Ui, kind: UiWidget, text: &str, value: Option<&mut UiValu
         }
         (
             UiWidget::BUTTON
+            | UiWidget::SELECTABLE
             | UiWidget::CHECKBOX
             | UiWidget::SLIDER
             | UiWidget::SLIDER_INT

@@ -497,4 +497,32 @@ impl Ui<'_> {
         *bits = value.integer;
         changed
     }
+
+    /// One row of a list, highlighted when `selected`; whether it was clicked this frame.
+    /// A provider without list rows gets a button, the selected one marked.
+    pub fn selectable(&mut self, text: &str, selected: bool) -> bool {
+        let mut value = UiValue {
+            boolean: selected,
+            ..UiValue::default()
+        };
+        match self.widget(UiWidget::SELECTABLE, text, &mut value) {
+            Status::UNSUPPORTED if selected => self.button(&format!("> {text}")),
+            Status::UNSUPPORTED => self.button(text),
+            status => status.is_ok() && value.boolean,
+        }
+    }
+
+    /// An engine texture beside the panel, `width` × `height` points, captioned `text`;
+    /// whether the provider shows it (only one drawing with the host engine can).
+    /// `texture` is the texture object's address in that engine.
+    pub fn texture(&mut self, text: &str, texture: usize, width: f32, height: f32) -> bool {
+        let mut value = UiValue {
+            #[allow(clippy::cast_possible_wrap, reason = "an address carried bit for bit")]
+            integer: texture as i64,
+            min: f64::from(width),
+            max: f64::from(height),
+            ..UiValue::default()
+        };
+        self.widget(UiWidget::TEXTURE, text, &mut value).is_ok()
+    }
 }

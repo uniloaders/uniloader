@@ -98,6 +98,14 @@ impl UiWidget {
     /// A labelled row of checkboxes, one per bit of `value.integer`. `value.max` is how many
     /// (1 to 32), `value.min` the label column width in points (0 for the default).
     pub const TOGGLES: UiWidget = UiWidget(9);
+    /// One row of a list, highlighted when `value.boolean` is set on the way in; sets
+    /// `value.boolean` to whether it was clicked this frame. Uses `text`.
+    pub const SELECTABLE: UiWidget = UiWidget(10);
+    /// An engine texture beside the panel (a preview of what the panel picks): `value.integer`
+    /// is the texture object's address in the host engine, `value.min` × `value.max` its
+    /// size in points. Only a provider drawing with that engine can show one; the others
+    /// return `UNSUPPORTED`. Uses `text` as the caption.
+    pub const TEXTURE: UiWidget = UiWidget(11);
 }
 
 /// The value a widget reads, writes, or both. Fields a widget does not use are ignored.
