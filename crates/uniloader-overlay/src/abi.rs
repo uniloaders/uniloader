@@ -213,6 +213,8 @@ impl GraphicsApi {
     pub const DXGI: GraphicsApi = GraphicsApi(1);
     /// `OpenGL` through WGL: called from `wglSwapBuffers` with the game's context current.
     pub const OPENGL: GraphicsApi = GraphicsApi(2);
+    /// Vulkan: called from `vkQueuePresentKHR`, before the overlay's own submission.
+    pub const VULKAN: GraphicsApi = GraphicsApi(3);
 }
 
 /// One frame about to be presented.
@@ -224,12 +226,13 @@ pub struct PresentInfo {
     /// Which API `swapchain` and `device` belong to.
     pub api: GraphicsApi,
     /// For DXGI, the `IDXGISwapChain*` being presented. Borrowed for the call. For `OpenGL`,
-    /// the `HDC` passed to `wglSwapBuffers`.
+    /// the `HDC` passed to `wglSwapBuffers`. For Vulkan, the `VkSwapchainKHR` (the first
+    /// one of the present).
     pub swapchain: *mut c_void,
     /// For DXGI, the `ID3D11Device*` behind it, or null when it is not a `Direct3D` 11 one.
-    /// For `OpenGL`, the current `HGLRC`.
+    /// For `OpenGL`, the current `HGLRC`. For Vulkan, the swapchain's `VkDevice`.
     pub device: *mut c_void,
-    /// The window it presents to.
+    /// The window it presents to; null for a Vulkan surface made before the overlay loaded.
     pub hwnd: *mut c_void,
     /// Backbuffer width in pixels.
     pub width: u32,

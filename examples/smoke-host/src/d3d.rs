@@ -5,8 +5,8 @@
 // FFI module: window and device creation.
 #![allow(unsafe_code)]
 
-use windows::core::{BOOL, PCWSTR};
-use windows::Win32::Foundation::{HMODULE, HWND, LPARAM, LRESULT, WPARAM};
+use windows::core::BOOL;
+use windows::Win32::Foundation::{HMODULE, HWND};
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
 use windows::Win32::Graphics::Direct3D11::{
     D3D11CreateDeviceAndSwapChain, ID3D11Device, ID3D11DeviceContext, ID3D11RenderTargetView,
@@ -19,54 +19,13 @@ use windows::Win32::Graphics::Dxgi::{
     IDXGISwapChain, DXGI_PRESENT, DXGI_SWAP_CHAIN_DESC, DXGI_SWAP_EFFECT_DISCARD,
     DXGI_USAGE_RENDER_TARGET_OUTPUT,
 };
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, PeekMessageW,
-    RegisterClassExW, TranslateMessage, MSG, PM_REMOVE, WINDOW_EX_STYLE, WNDCLASSEXW,
-    WS_OVERLAPPEDWINDOW,
+    DestroyWindow, DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
 };
-
-unsafe extern "system" fn procedure(
-    hwnd: HWND,
-    msg: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
-    // SAFETY: forwarding our own arguments to the default procedure.
-    unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
-}
 
 /// Present `frames` frames about 60 times a second. Returns how many presents succeeded.
 pub(crate) fn present_frames(frames: u32) -> windows::core::Result<u32> {
-    let class: Vec<u16> = "smoke-host".encode_utf16().chain(Some(0)).collect();
-    // SAFETY: the process image's module handle.
-    let instance = unsafe { GetModuleHandleW(PCWSTR::null()) }?;
-    let wc = WNDCLASSEXW {
-        cbSize: u32::try_from(core::mem::size_of::<WNDCLASSEXW>()).unwrap_or(0),
-        lpfnWndProc: Some(procedure),
-        hInstance: instance.into(),
-        lpszClassName: PCWSTR(class.as_ptr()),
-        ..WNDCLASSEXW::default()
-    };
-    // SAFETY: a complete class description whose name outlives its use.
-    unsafe { RegisterClassExW(&raw const wc) };
-    // SAFETY: a window of the class just registered, never shown.
-    let hwnd = unsafe {
-        CreateWindowExW(
-            WINDOW_EX_STYLE::default(),
-            PCWSTR(class.as_ptr()),
-            PCWSTR(class.as_ptr()),
-            WS_OVERLAPPEDWINDOW,
-            0,
-            0,
-            1280,
-            720,
-            None,
-            None,
-            Some(instance.into()),
-            None,
-        )
-    }?;
+    let hwnd = crate::window::hidden("smoke-host")?;
     let result = present_on(hwnd, frames);
     // SAFETY: the window created above.
     unsafe {
@@ -78,8 +37,8 @@ pub(crate) fn present_frames(frames: u32) -> windows::core::Result<u32> {
 fn present_on(hwnd: HWND, frames: u32) -> windows::core::Result<u32> {
     let desc = DXGI_SWAP_CHAIN_DESC {
         BufferDesc: DXGI_MODE_DESC {
-            Width: 1280,
-            Height: 720,
+            Width: crate::window::WIDTH.cast_unsigned(),
+            Height: crate::window::HEIGHT.cast_unsigned(),
             RefreshRate: DXGI_RATIONAL {
                 Numerator: 60,
                 Denominator: 1,

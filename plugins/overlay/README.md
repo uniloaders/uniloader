@@ -106,12 +106,25 @@ every piece of state it changes beforehand and puts it back afterwards, because 
 on with the same context. A context the game replaces gets a new painter. Present subscribers
 get `GraphicsApi::OPENGL`, with the `HDC` as `swapchain` and the `HGLRC` as `device`.
 
-The plan for the rest keeps the split that is already there. `ui` builds an egui frame and
-knows nothing about devices; `win` owns the renderers. Each new API is one more behind the
-same `Gui::run`:
+Vulkan (`win/vk`) is drawn from a detour on the driver's `vkQueuePresentKHR`. Which function
+that is comes from a throwaway instance and device made once `vulkan-1.dll` is loaded (at
+start, or within the first minute): every device of a driver gets the same functions, so
+detouring them sees the game's calls whether it went through the loader's exports or
+`vkGetDeviceProcAddr`. The overlay needs to know which device a queue belongs to and a
+swapchain's format and window, so it also detours `vkCreateDevice`, `vkGetDeviceQueue(2)`,
+`vkCreateWin32SurfaceKHR`, `vkCreateSwapchainKHR` and their destroy calls, and records them
+as the game makes them. A game that made its device before the overlay loaded is therefore
+not drawn (it says so once). Inside the present, a command buffer of the overlay's waits for
+the game's semaphores, draws egui into the image with its own render pass and pipeline
+(`win/vk/render.rs`, SPIR-V built from `shaders/` by `shaders/build.sh`), and signals a
+semaphore the present then waits for instead. The image stays in `PRESENT_SRC_KHR` throughout.
+Under Proton every `Direct3D` game presents through Vulkan as well (DXVK, vkd3d-proton);
+while DXGI presents are coming in, the Vulkan path stands aside, so those frames are drawn
+once, by the DXGI hook. Present subscribers get `GraphicsApi::VULKAN`, with the
+`VkSwapchainKHR` as `swapchain` and the `VkDevice` as `device`.
 
-- **Vulkan**: hook `vkQueuePresentKHR` and `vkCreateSwapchainKHR` via the loader's
-  `vkGetDeviceProcAddr`, and render with an egui Vulkan backend into the swapchain image.
+`ui` builds an egui frame and knows nothing about devices; `win` owns the renderers, each one
+behind the same `Gui::run`.
 
 ## VR
 

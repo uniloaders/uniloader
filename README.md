@@ -31,8 +31,8 @@ too, so a game that needs neither ships without a runtime or a present hook.
 
 The overlay (`plugins/overlay`) draws a console, a settings editor for every plugin's
 settings and hotkeys, and whatever panels, toasts and dialogs other plugins put up through
-its `overlay` service. It hooks DXGI universally; the API coverage and the plan for the rest
-are in its [README](plugins/overlay/README.md).
+its `overlay` service. It draws on Direct3D 11 and 12 (through DXGI), OpenGL and Vulkan; the
+details per API are in its [README](plugins/overlay/README.md).
 
 `.asi` files work both ways: uniloader loads the `.asi` mods of the Ultimate ASI Loader
 ecosystem from `plugins/`, and it can itself be loaded as an `.asi` (under any name that is
@@ -96,7 +96,7 @@ Command line: `--loader-console` opens a console window, `--noplugins` loads not
 | `plugins/overlay` | The in-game overlay: console, settings editor, the `overlay` service. |
 | `examples/hello-plugin` | The smallest useful plugin. |
 | `examples/kitchen-sink` | Uses every host function and the overlay service, and checks the results. |
-| `examples/smoke-host` | A stand-in game for `scripts/smoke.sh`: imports `version.dll`, presents Direct3D 11 frames. |
+| `examples/smoke-host` | A stand-in game for `scripts/smoke.sh`: imports `version.dll`, presents Direct3D 11, OpenGL and Vulkan frames. |
 
 ## Building
 
@@ -112,8 +112,9 @@ scripts/smoke.sh         # end to end under Wine with a stand-in game, no real g
 
 The smoke test runs the stand-in host under GE-Proton's Wine with DXVK, in a private prefix.
 It checks forwarding, the plugins, Lua, `.asi` loading and the kitchen sink's self-test. It
-also checks that the overlay drew: the host reads its last frame back, counts the pixels the
-overlay changed, and saves the frame as `target/smoke/capture.bmp`.
+also checks that the overlay drew on each graphics API: the host reads its last frame back,
+counts the pixels the overlay changed, and saves the frame as `target/smoke/capture.bmp`
+(`capture-gl.bmp`, `capture-vk.bmp`).
 
 ## License
 

@@ -90,7 +90,8 @@ if [[ -n "$log" ]]; then
     # through the service, a present subscriber, and a dialog answer delivered after a frame.
     for expected in 'hooked IDXGISwapChain::Present' 'overlay ready (Direct3D 11)' \
         'kitchen panel drawn' 'kitchen saw a present' 'kitchen dialog answered 2' \
-        'hooked wglSwapBuffers' 'overlay ready (OpenGL)'; do
+        'hooked wglSwapBuffers' 'overlay ready (OpenGL)' \
+        'hooked vkQueuePresentKHR (Vulkan)' 'overlay ready (Vulkan)'; do
         grep -q "$expected" "$log" || { echo "FAIL: overlay: no '$expected'"; fail=1; }
     done
 fi
@@ -103,6 +104,16 @@ grep -qE '^swapped [1-9]' "$STAGE/run.log" || { echo "FAIL: the host swapped no 
 gl_drawn="$(awk '/^gl drawn pixels/ {print $4}' "$STAGE/run.log")"
 (( ${gl_drawn:-0} > 10000 )) || { echo "FAIL: the OpenGL overlay drew ${gl_drawn:-no} pixels"; fail=1; }
 echo "== OpenGL overlay drew ${gl_drawn:-0} pixels; see $STAGE/capture-gl.bmp"
+grep -qE '^vk presented [1-9]' "$STAGE/run.log" || { echo "FAIL: the host presented no Vulkan frames"; fail=1; }
+# Read back from a re-acquired image: an implementation that does not keep its contents is
+# reported, not failed.
+if grep -q '^vk read back unreliable' "$STAGE/run.log"; then
+    echo "== Vulkan overlay: $(grep -m1 '^vk read back' "$STAGE/run.log")"
+else
+    vk_drawn="$(awk '/^vk drawn pixels/ {print $4}' "$STAGE/run.log")"
+    (( ${vk_drawn:-0} > 10000 )) || { echo "FAIL: the Vulkan overlay drew ${vk_drawn:-no} pixels"; fail=1; }
+    echo "== Vulkan overlay drew ${vk_drawn:-0} pixels; see $STAGE/capture-vk.bmp"
+fi
 if (( status != 0 )) && (( fail == 0 )); then
     echo "FAIL: smoke-host exited with $status"
     fail=1

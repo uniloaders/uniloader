@@ -5,8 +5,7 @@
 // FFI module: window, pixel format and WGL calls.
 #![allow(unsafe_code)]
 
-use windows::core::PCWSTR;
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Gdi::{GetDC, ReleaseDC, HDC};
 use windows::Win32::Graphics::OpenGL::{
     glClear, glClearColor, glFinish, glReadBuffer, glReadPixels, wglCreateContext,
@@ -14,60 +13,16 @@ use windows::Win32::Graphics::OpenGL::{
     GL_COLOR_BUFFER_BIT, GL_RGBA, GL_UNSIGNED_BYTE, HGLRC, PFD_DOUBLEBUFFER, PFD_DRAW_TO_WINDOW,
     PFD_MAIN_PLANE, PFD_SUPPORT_OPENGL, PFD_TYPE_RGBA, PIXELFORMATDESCRIPTOR,
 };
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, RegisterClassExW,
-    WINDOW_EX_STYLE, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
-};
+use windows::Win32::UI::WindowsAndMessaging::{DestroyWindow, GetClientRect};
 
 use crate::capture::Frame;
 
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 720;
 /// The colour every frame is cleared to, as bytes.
 const CLEAR: [u8; 4] = [0, 64, 128, 255];
 
-unsafe extern "system" fn procedure(
-    hwnd: HWND,
-    msg: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
-    // SAFETY: forwarding our own arguments to the default procedure.
-    unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
-}
-
 /// Present `frames` frames about 60 times a second. Returns how many swaps succeeded.
 pub(crate) fn present_frames(frames: u32) -> windows::core::Result<u32> {
-    let class: Vec<u16> = "smoke-host-gl".encode_utf16().chain(Some(0)).collect();
-    // SAFETY: the process image's module handle.
-    let instance = unsafe { GetModuleHandleW(PCWSTR::null()) }?;
-    let wc = WNDCLASSEXW {
-        cbSize: u32::try_from(core::mem::size_of::<WNDCLASSEXW>()).unwrap_or(0),
-        lpfnWndProc: Some(procedure),
-        hInstance: instance.into(),
-        lpszClassName: PCWSTR(class.as_ptr()),
-        ..WNDCLASSEXW::default()
-    };
-    // SAFETY: a complete class description whose name outlives its use.
-    unsafe { RegisterClassExW(&raw const wc) };
-    // SAFETY: a window of the class just registered, never shown.
-    let hwnd = unsafe {
-        CreateWindowExW(
-            WINDOW_EX_STYLE::default(),
-            PCWSTR(class.as_ptr()),
-            PCWSTR(class.as_ptr()),
-            WS_OVERLAPPEDWINDOW,
-            0,
-            0,
-            WIDTH,
-            HEIGHT,
-            None,
-            None,
-            Some(instance.into()),
-            None,
-        )
-    }?;
+    let hwnd = crate::window::hidden("smoke-host-gl")?;
     let mut client = RECT::default();
     // SAFETY: the window created above and a valid out-pointer.
     unsafe { GetClientRect(hwnd, &raw mut client) }?;

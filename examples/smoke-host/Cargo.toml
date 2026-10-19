@@ -8,6 +8,7 @@ license.workspace = true
 publish = false
 
 [target.'cfg(windows)'.dependencies]
+ash = { version = "0.38", default-features = false, features = ["std", "debug"] }
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Direct3D",

@@ -1,5 +1,5 @@
 //! The Windows half: the DXGI hook, the `Direct3D` 11 renderer (also over `Direct3D` 12),
-//! the `OpenGL` one (`gl`), window input and clipboard.
+//! the `OpenGL` one (`gl`), the Vulkan one (`vk`), window input and clipboard.
 //!
 //! Everything that touches the device runs on the thread that calls `Present`, which is why
 //! the renderer lives in a thread local: the immediate context is not thread safe, and this
@@ -10,11 +10,13 @@ mod d3d12;
 mod gl;
 mod hooks;
 mod render;
+mod vk;
 mod wnd;
 
 use core::ffi::c_void;
 use std::cell::{Cell, RefCell};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::LazyLock;
 use std::time::Instant;
 
 use egui::{Pos2, Rect, Vec2};
@@ -34,6 +36,22 @@ static ON12_FAILED: AtomicBool = AtomicBool::new(false);
 /// Set once a swapchain this overlay can draw on was presented, and said through the
 /// `drawing` setting.
 static DRAWABLE: AtomicBool = AtomicBool::new(false);
+/// When DXGI last presented, in milliseconds since [`EPOCH`] plus one; zero for never.
+static DXGI_PRESENTED: AtomicU64 = AtomicU64::new(0);
+static EPOCH: LazyLock<Instant> = LazyLock::new(Instant::now);
+/// How recent a DXGI present keeps the Vulkan path aside.
+const DXGI_RECENT_MS: u64 = 2000;
+
+/// DXGI presented within the last two seconds: under Proton the Vulkan present that follows
+/// is DXVK's or vkd3d's for the same frame, which the DXGI hook already drew.
+fn dxgi_recent() -> bool {
+    let at = DXGI_PRESENTED.load(Ordering::Relaxed);
+    at != 0 && millis_since_epoch().saturating_sub(at - 1) < DXGI_RECENT_MS
+}
+
+fn millis_since_epoch() -> u64 {
+    u64::try_from(EPOCH.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
 
 /// Says through the `drawing` setting whether the overlay draws in this game.
 fn announce(host: &Host, drawing: bool) {
@@ -86,14 +104,18 @@ enum Backend {
 
 /// Hook DXGI. Called from the plugin's `start`.
 pub(crate) fn install(host: &Host) {
+    // Started before any present can arrive, so the first one measures from it.
+    LazyLock::force(&EPOCH);
     hooks::install(host);
     gl::install(host);
+    vk::install(host);
 }
 
 /// Let go of the game: the window procedure goes back, and the hooks stop forwarding to us.
 pub(crate) fn uninstall() {
     hooks::uninstall();
     gl::uninstall();
+    vk::uninstall();
     wnd::unsubclass();
 }
 
@@ -105,6 +127,7 @@ pub(crate) fn frame(swapchain: *mut c_void, sync_interval: u32, flags: u32) {
     if flags & DXGI_PRESENT_TEST.0 != 0 || IN_FRAME.with(Cell::get) {
         return;
     }
+    DXGI_PRESENTED.store(millis_since_epoch() + 1, Ordering::Relaxed);
     let Some(host) = crate::host() else { return };
     let Some(chain) = render::swapchain_of(swapchain) else {
         return;

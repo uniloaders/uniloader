@@ -6,11 +6,11 @@
 //! have started the plugins by the time the process has run for a moment.
 //!
 //! Then, like a game, it presents frames through a `Direct3D` 11 swapchain (on a hidden
-//! window), which is what the overlay hooks and draws on, and then through `OpenGL`
-//! (`SwapBuffers` on another hidden window).
+//! window), which is what the overlay hooks and draws on, then through `OpenGL`
+//! (`SwapBuffers` on another hidden window), then through Vulkan.
 //!
-//! Prints `forwarded <size>`, `presented <n>` and `swapped <n>`, and exits 0 when the
-//! forwarded call answers.
+//! Prints `forwarded <size>`, `presented <n>`, `swapped <n>` and `vk presented <n>`, and
+//! exits 0 when the forwarded call answers.
 
 #[cfg(windows)]
 mod capture;
@@ -18,6 +18,10 @@ mod capture;
 mod d3d;
 #[cfg(windows)]
 mod gl;
+#[cfg(windows)]
+mod vk;
+#[cfg(windows)]
+mod window;
 
 #[cfg(windows)]
 fn main() -> std::process::ExitCode {
@@ -42,6 +46,10 @@ fn main() -> std::process::ExitCode {
     match gl::present_frames(120) {
         Ok(n) => println!("swapped {n}"),
         Err(e) => println!("no opengl: {e}"),
+    }
+    match vk::present_frames(120) {
+        Ok(n) => println!("vk presented {n}"),
+        Err(e) => println!("no vulkan: {e}"),
     }
     std::thread::sleep(std::time::Duration::from_millis(500));
     if size == 0 {
