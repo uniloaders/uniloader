@@ -26,6 +26,10 @@ pub use client::{Card, Overlay, Ui};
 
 /// Name the overlay registers its service under.
 pub const SERVICE: &str = "overlay";
+/// The same API for panels in the game's own UI (its menus), offered by such a provider
+/// even when another plugin has [`SERVICE`]: a plugin's panels can then be in both places
+/// ([`Overlay::connect_all`]).
+pub const GAME_SERVICE: &str = "overlay.game";
 /// Version of [`OverlayApi`] this crate describes. 2: callers pass their loader context, not
 /// a handle.
 pub const VERSION: u32 = 2;

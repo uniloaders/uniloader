@@ -129,9 +129,28 @@ impl Overlay {
     /// layout does. Declare `Dependency::service(SERVICE)` so it is running by `start`.
     #[must_use]
     pub fn connect(host: &Host) -> Option<Overlay> {
-        // SAFETY: `OverlayApi` is the layout the service `overlay` promises at this version;
+        Self::connect_to(host, crate::SERVICE)
+    }
+
+    /// Every overlay to show panels in: the one of [`SERVICE`](crate::SERVICE), then the
+    /// game's own UI ([`GAME_SERVICE`](crate::GAME_SERVICE)) when another plugin provides
+    /// it. Register a panel on each to have it in both places.
+    #[must_use]
+    pub fn connect_all(host: &Host) -> Vec<Overlay> {
+        let mut all: Vec<Overlay> = Self::connect(host).into_iter().collect();
+        if let Some(game) = Self::connect_to(host, crate::GAME_SERVICE) {
+            if all.iter().all(|o| o.provider != game.provider) {
+                all.push(game);
+            }
+        }
+        all
+    }
+
+    /// The overlay API under the service `name` (one of this crate's).
+    fn connect_to(host: &Host, name: &str) -> Option<Overlay> {
+        // SAFETY: `OverlayApi` is the layout the overlay services promise at this version;
         // the version and size are checked before the table is used.
-        let service = unsafe { host.service::<OverlayApi>(crate::SERVICE) }?;
+        let service = unsafe { host.service::<OverlayApi>(name) }?;
         if service.version != crate::VERSION
             || service.table.struct_size < core::mem::size_of::<OverlayApi>()
         {
