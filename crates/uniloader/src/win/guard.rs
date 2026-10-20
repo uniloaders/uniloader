@@ -50,20 +50,25 @@ pub(crate) const CONTAINS_HARDWARE_FAULTS: bool = cfg!(all(windows, target_env =
 /// `f` performs the FFI call; its own safety requirements are the caller's to uphold.
 pub(crate) unsafe fn call<R>(f: impl FnOnce() -> R) -> Result<R, Fault> {
     let mut slot: Option<R> = None;
+    let mut panicked = false;
     // `protect` needs `FnMut` because the handler may be entered more than once by the ABI
     // it wraps; taking the `FnOnce` out of an `Option` keeps the single call guarantee.
     let mut once = Some(f);
-    let outcome = catch_unwind(AssertUnwindSafe(|| {
-        inner::protect(|| {
-            if let Some(f) = once.take() {
-                slot = Some(f());
+    // `catch_unwind` goes inside the structured handler: microseh calls the closure through
+    // a C frame that cannot unwind, so a panic that reached it aborted the process (found
+    // 2026-10-20 by running the Windows test binaries in the Windows VM).
+    let outcome = inner::protect(|| {
+        if let Some(f) = once.take() {
+            match catch_unwind(AssertUnwindSafe(f)) {
+                Ok(value) => slot = Some(value),
+                Err(_) => panicked = true,
             }
-        })
-    }));
+        }
+    });
     match outcome {
-        Ok(Ok(())) => slot.ok_or(Fault::Panic),
-        Ok(Err((code, address))) => Err(Fault::Exception(code, address)),
-        Err(_) => Err(Fault::Panic),
+        Ok(()) if panicked => Err(Fault::Panic),
+        Ok(()) => slot.ok_or(Fault::Panic),
+        Err((code, address)) => Err(Fault::Exception(code, address)),
     }
 }
 
