@@ -525,4 +525,18 @@ impl Ui<'_> {
         };
         self.widget(UiWidget::TEXTURE, text, &mut value).is_ok()
     }
+
+    /// A texture of the game's graphics device, `width` × `height` points, captioned
+    /// `text`; whether the provider shows it. `native` is its handle (an `ID3D12Resource*`
+    /// under `Direct3D` 12), alive for this call; the overlay takes its own reference.
+    pub fn gpu_texture(&mut self, text: &str, native: usize, width: f32, height: f32) -> bool {
+        let mut value = UiValue {
+            #[allow(clippy::cast_possible_wrap, reason = "a handle carried bit for bit")]
+            integer: native as i64,
+            min: f64::from(width),
+            max: f64::from(height),
+            ..UiValue::default()
+        };
+        self.widget(UiWidget::GPU_TEXTURE, text, &mut value).is_ok()
+    }
 }

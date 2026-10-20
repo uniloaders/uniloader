@@ -106,6 +106,12 @@ impl UiWidget {
     /// size in points. Only a provider drawing with that engine can show one; the others
     /// return `UNSUPPORTED`. Uses `text` as the caption.
     pub const TEXTURE: UiWidget = UiWidget(11);
+    /// A texture of the game's graphics device in the panel (a preview the plugin renders):
+    /// `value.integer` is its native handle (an `ID3D12Resource*` under `Direct3D` 12),
+    /// `value.min` × `value.max` its size in points, `text` a caption. The overlay keeps a
+    /// reference of its own while it shows it. A provider that cannot draw that device's
+    /// textures returns `UNSUPPORTED`. The texture holds gamma-encoded, premultiplied RGBA.
+    pub const GPU_TEXTURE: UiWidget = UiWidget(12);
 }
 
 /// The value a widget reads, writes, or both. Fields a widget does not use are ignored.

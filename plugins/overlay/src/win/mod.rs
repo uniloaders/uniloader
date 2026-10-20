@@ -15,6 +15,7 @@ mod wnd;
 
 use core::ffi::c_void;
 use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::LazyLock;
 use std::time::Instant;
@@ -23,10 +24,10 @@ use egui::{Pos2, Rect, Vec2};
 use uniloader_overlay::{GraphicsApi, PresentInfo};
 use uniloader_sdk::Host;
 use windows::core::Interface;
-use windows::Win32::Graphics::Direct3D11::ID3D11Device;
+use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11Resource};
 use windows::Win32::Graphics::Dxgi::{IDXGISwapChain, DXGI_PRESENT_TEST, DXGI_SWAP_CHAIN_DESC};
 
-use crate::ui::{calls, FrameInput, Gui};
+use crate::ui::{calls, native, FrameInput, Gui};
 use crate::{registry, shared};
 
 /// Set once a swapchain turned out to be neither `Direct3D` 11 nor 12, so it is said once.
@@ -86,9 +87,66 @@ thread_local! {
 struct Overlay {
     gui: Gui,
     renderer: egui_directx11::Renderer,
+    /// Before `backend`: the wrapped textures go before the device that wrapped them.
+    natives: Natives,
     backend: Backend,
     started: Instant,
     last_drawn: Instant,
+}
+
+/// Game textures panels show (`GPU_TEXTURE`), wrapped for the renderer while asked for.
+#[derive(Default)]
+struct Natives {
+    shown: HashMap<usize, Native>,
+    /// Handles that could not be wrapped (said once), not tried again while asked for.
+    refused: HashSet<usize>,
+}
+
+/// One wrapped game texture: its `Direct3D` 11 resource (holding a reference to the
+/// game's) and its id in the renderer.
+struct Native {
+    resource: ID3D11Resource,
+    id: egui::TextureId,
+}
+
+impl Natives {
+    /// After a pass: wraps what was asked for anew, lets go of what no longer is, tells
+    /// the next passes what they can draw, and returns what this frame must acquire.
+    fn prepare(
+        &mut self,
+        on12: &d3d12::On12,
+        renderer: &mut egui_directx11::Renderer,
+        asked: &[usize],
+    ) -> Vec<Option<ID3D11Resource>> {
+        self.shown.retain(|handle, native| {
+            let keep = asked.contains(handle);
+            if !keep {
+                renderer.unregister_user_texture(native.id);
+            }
+            keep
+        });
+        self.refused.retain(|handle| asked.contains(handle));
+        for &handle in asked {
+            if self.shown.contains_key(&handle) || self.refused.contains(&handle) {
+                continue;
+            }
+            match on12.wrap_texture(handle) {
+                Ok((resource, view)) => {
+                    let id = renderer.register_user_texture(view);
+                    self.shown.insert(handle, Native { resource, id });
+                }
+                Err(e) => {
+                    log::warn!("a panel's game texture cannot be shown: {e}");
+                    self.refused.insert(handle);
+                }
+            }
+        }
+        native::set_registered(self.shown.iter().map(|(&h, n)| (h, n.id)).collect());
+        self.shown
+            .values()
+            .map(|n| Some(n.resource.clone()))
+            .collect()
+    }
 }
 
 /// How long a hidden `Direct3D` 12 overlay keeps its renderer.
@@ -262,9 +320,12 @@ fn create(chain: &IDXGISwapChain) -> Option<Overlay> {
         Backend::D3D12(_) => "Direct3D 12, through 11 on 12",
     };
     log::info!("overlay ready ({api})");
+    // Ids a renderer let go of earlier mean nothing to this one.
+    native::set_registered(HashMap::new());
     Some(Overlay {
         gui: Gui::new(),
         renderer,
+        natives: Natives::default(),
         backend,
         started: Instant::now(),
         last_drawn: Instant::now(),
@@ -273,31 +334,39 @@ fn create(chain: &IDXGISwapChain) -> Option<Overlay> {
 
 impl Overlay {
     fn draw(&mut self, host: &Host, chain: &IDXGISwapChain) -> windows::core::Result<()> {
-        match &self.backend {
+        let Self {
+            gui,
+            renderer,
+            backend,
+            natives,
+            started,
+            ..
+        } = self;
+        match backend {
             Backend::D3D11(device) => {
                 let target = render::target(chain, device)?;
                 let Some(context) = render::context(device) else {
                     return Ok(());
                 };
-                let output = gui_pass(&mut self.gui, self.started, host, target.size);
+                // Game textures are only wrapped over Direct3D 12.
+                native::begin(false);
+                let output = gui_pass(gui, *started, host, target.size);
                 // The game keeps drawing with this context: its state goes back as it was.
                 let saved = render::save(&context);
-                let result =
-                    self.renderer
-                        .render(&context, &target.view, self.gui.context(), output);
+                let result = renderer.render(&context, &target.view, gui.context(), output);
                 render::restore(&context, &saved);
                 result
             }
             Backend::D3D12(on12) => {
                 let wrapped = on12.wrap(chain)?;
-                let output = gui_pass(&mut self.gui, self.started, host, wrapped.target.size);
+                native::begin(true);
+                let output = gui_pass(gui, *started, host, wrapped.target.size);
+                let textures = natives.prepare(on12, renderer, &native::asked());
+                on12.acquire(&textures);
                 // Our own context: no game state on it to put back.
-                let result = self.renderer.render(
-                    &on12.context,
-                    &wrapped.target.view,
-                    self.gui.context(),
-                    output,
-                );
+                let result =
+                    renderer.render(&on12.context, &wrapped.target.view, gui.context(), output);
+                on12.release(&textures);
                 // Hands the buffer back before `Present`.
                 drop(wrapped);
                 result

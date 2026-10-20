@@ -12,6 +12,7 @@ mod console;
 mod controls;
 pub(crate) mod frame;
 mod icons;
+pub(crate) mod native;
 mod paint;
 mod recorder;
 mod settings_panel;
@@ -228,9 +229,11 @@ impl Gui {
         };
         let token = frame::next_token();
         let placed = chrome::show(ctx, &chrome, |ui| {
-            if !calls::panel(host, panel, ui, token) {
-                ui.label("This panel's plugin is not running.");
-            }
+            native::panel(ui, &panel.id, |ui| {
+                if !calls::panel(host, panel, ui, token) {
+                    ui.label("This panel's plugin is not running.");
+                }
+            });
         });
         place(&mut after.placements, &panel.id, &placed);
         if !placed.open {

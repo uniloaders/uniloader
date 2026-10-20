@@ -24,15 +24,16 @@ use windows::core::{s, w, IUnknown, Interface, GUID, HRESULT};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Direct3D::{D3D_FEATURE_LEVEL, D3D_FEATURE_LEVEL_11_0};
 use windows::Win32::Graphics::Direct3D11::{
-    ID3D11Device, ID3D11DeviceContext, ID3D11Resource, ID3D11Texture2D, D3D11_BIND_RENDER_TARGET,
-    D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+    ID3D11Device, ID3D11DeviceContext, ID3D11Resource, ID3D11ShaderResourceView, ID3D11Texture2D,
+    D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
 };
 use windows::Win32::Graphics::Direct3D11on12::{
     D3D11On12CreateDevice, ID3D11On12Device, D3D11_RESOURCE_FLAGS,
 };
 use windows::Win32::Graphics::Direct3D12::{
     ID3D12CommandQueue, ID3D12Device, ID3D12Resource, D3D12_COMMAND_LIST_TYPE_DIRECT,
-    D3D12_COMMAND_QUEUE_DESC, D3D12_RESOURCE_STATE_PRESENT,
+    D3D12_COMMAND_QUEUE_DESC, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+    D3D12_RESOURCE_STATE_PRESENT,
 };
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::{
@@ -297,6 +298,66 @@ impl On12 {
             resource,
             target: ManuallyDrop::new(target),
         })
+    }
+}
+
+impl On12 {
+    /// Wraps a texture of the game's device (a panel's `GPU_TEXTURE`, an
+    /// `ID3D12Resource*` the plugin handed over) for sampling: its `Direct3D` 11 resource,
+    /// which holds a reference to it, and a view to draw it through. It is taken to be in
+    /// the pixel shader resource state, as the engine leaves textures it samples.
+    pub(super) fn wrap_texture(
+        &self,
+        handle: usize,
+    ) -> windows::core::Result<(ID3D11Resource, ID3D11ShaderResourceView)> {
+        let raw = handle as *mut c_void;
+        // SAFETY: the plugin hands over a live resource of the game's device for the frame
+        // it asked in; `cloned` takes our own reference before that frame ends.
+        let resource = unsafe { ID3D12Resource::from_raw_borrowed(&raw) }
+            .cloned()
+            .ok_or_else(windows::core::Error::empty)?;
+        let flags = D3D11_RESOURCE_FLAGS {
+            BindFlags: D3D11_BIND_SHADER_RESOURCE.0.cast_unsigned(),
+            ..D3D11_RESOURCE_FLAGS::default()
+        };
+        let mut texture: Option<ID3D11Texture2D> = None;
+        // SAFETY: a live resource of the device under the layer, and valid flags.
+        unsafe {
+            self.layer.CreateWrappedResource(
+                &resource,
+                &raw const flags,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                &raw mut texture,
+            )
+        }?;
+        let texture = texture.ok_or_else(windows::core::Error::empty)?;
+        let mut view = None;
+        // SAFETY: a live texture of this device; the default view of the whole texture.
+        unsafe {
+            self.device
+                .CreateShaderResourceView(&texture, None, Some(&raw mut view))
+        }?;
+        Ok((
+            texture.cast()?,
+            view.ok_or_else(windows::core::Error::empty)?,
+        ))
+    }
+
+    /// Hands wrapped textures to `Direct3D` 11 for a frame's drawing.
+    pub(super) fn acquire(&self, resources: &[Option<ID3D11Resource>]) {
+        if !resources.is_empty() {
+            // SAFETY: resources wrapped by this layer, released by `release` after the frame.
+            unsafe { self.layer.AcquireWrappedResources(resources) };
+        }
+    }
+
+    /// Hands them back to `Direct3D` 12 after the frame.
+    pub(super) fn release(&self, resources: &[Option<ID3D11Resource>]) {
+        if !resources.is_empty() {
+            // SAFETY: the resources `acquire` took for this frame.
+            unsafe { self.layer.ReleaseWrappedResources(resources) };
+        }
     }
 }
 

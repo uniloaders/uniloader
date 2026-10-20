@@ -135,6 +135,24 @@ fn draw(ui: &mut egui::Ui, kind: UiWidget, text: &str, value: Option<&mut UiValu
         (UiWidget::SELECTABLE, Some(out)) => {
             out.boolean = ui.selectable_label(out.boolean, text).clicked();
         }
+        (UiWidget::GPU_TEXTURE, Some(out)) => {
+            #[allow(
+                clippy::cast_sign_loss,
+                clippy::cast_possible_truncation,
+                reason = "a handle carried bit for bit; sizes in points"
+            )]
+            let (handle, size) = (
+                out.integer as usize,
+                egui::vec2(out.min as f32, out.max as f32),
+            );
+            let fits = (1.0..=2000.0).contains(&size.x) && (1.0..=2000.0).contains(&size.y);
+            if !fits {
+                return Status::INVALID_ARGUMENT;
+            }
+            if !super::native::show(handle, size, text) {
+                return Status::UNSUPPORTED;
+            }
+        }
         (UiWidget::CHECKBOX, Some(out)) => {
             ui.checkbox(&mut out.boolean, text);
         }
@@ -154,6 +172,7 @@ fn draw(ui: &mut egui::Ui, kind: UiWidget, text: &str, value: Option<&mut UiValu
         (
             UiWidget::BUTTON
             | UiWidget::SELECTABLE
+            | UiWidget::GPU_TEXTURE
             | UiWidget::CHECKBOX
             | UiWidget::SLIDER
             | UiWidget::SLIDER_INT
