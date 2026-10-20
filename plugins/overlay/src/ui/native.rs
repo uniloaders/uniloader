@@ -6,6 +6,10 @@
 //! other widgets (as the game's own menus do), drawn once the backend registered it on an
 //! earlier frame and an empty box of its size until then. After the pass the backend
 //! registers what was asked for and drops what no longer is.
+//!
+//! The handle is only known alive during the widget call (the plugin keeps it so for
+//! that long), so the call itself takes a reference of ours; everything after works on
+//! that, never on the address.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -17,8 +21,8 @@ use egui::TextureId;
 pub(crate) struct Natives {
     /// The backend can show this device's textures (set before each pass).
     pub(crate) supported: bool,
-    /// Handles asked for during this pass.
-    pub(crate) asked: Vec<usize>,
+    /// Handles asked for during this pass, each with our reference to it.
+    pub(crate) asked: Vec<(usize, Owned)>,
     /// Registered textures by handle.
     pub(crate) ids: HashMap<usize, TextureId>,
     /// The panel being drawn's pictures, for the column beside it.
@@ -31,6 +35,12 @@ pub(crate) struct Picture {
     size: egui::Vec2,
     caption: String,
 }
+
+/// Our reference to a native texture.
+#[cfg(windows)]
+pub(crate) type Owned = windows::Win32::Graphics::Direct3D12::ID3D12Resource;
+#[cfg(not(windows))]
+pub(crate) type Owned = ();
 
 thread_local! {
     pub(crate) static NATIVES: RefCell<Natives> = RefCell::new(Natives::default());
@@ -47,9 +57,9 @@ pub(crate) fn begin(supported: bool) {
     });
 }
 
-/// The handles asked for in the pass that just ran.
-pub(crate) fn asked() -> Vec<usize> {
-    NATIVES.with_borrow(|n| n.asked.clone())
+/// The handles asked for in the pass that just ran, with our references to them.
+pub(crate) fn take_asked() -> Vec<(usize, Owned)> {
+    NATIVES.with_borrow_mut(|n| std::mem::take(&mut n.asked))
 }
 
 /// After registering: what the next passes can draw.
@@ -58,13 +68,17 @@ pub(crate) fn set_registered(ids: HashMap<usize, TextureId>) {
 }
 
 /// The widget: puts `handle` at `size` with `caption` in the panel's picture column;
-/// `false` when the backend cannot show native textures.
+/// `false` when the backend cannot show native textures. `handle` must be alive for
+/// this call; a reference of ours is taken in it.
 pub(crate) fn show(handle: usize, size: egui::Vec2, caption: &str) -> bool {
     NATIVES.with_borrow_mut(|n| {
-        if !n.supported || handle == 0 {
+        if !n.supported {
             return false;
         }
-        n.asked.push(handle);
+        let Some(owned) = retain(handle) else {
+            return false;
+        };
+        n.asked.push((handle, owned));
         n.aside.push(Picture {
             handle,
             size,
@@ -72,6 +86,21 @@ pub(crate) fn show(handle: usize, size: egui::Vec2, caption: &str) -> bool {
         });
         true
     })
+}
+
+/// Our own reference to the texture at `handle` (alive for this call), when there is one.
+#[cfg(windows)]
+fn retain(handle: usize) -> Option<Owned> {
+    let raw = handle as *mut std::ffi::c_void;
+    // SAFETY: the plugin keeps the resource alive for the widget call this runs in
+    // (`GPU_TEXTURE`'s contract); `cloned` takes our reference before the call returns.
+    #[allow(unsafe_code)]
+    unsafe { <Owned as windows::core::Interface>::from_raw_borrowed(&raw) }.cloned()
+}
+
+#[cfg(not(windows))]
+fn retain(_handle: usize) -> Option<Owned> {
+    None
 }
 
 /// A panel body: `body` draws the widgets (scrolling when they outgrow the window), and

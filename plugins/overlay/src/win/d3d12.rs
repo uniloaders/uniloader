@@ -302,20 +302,14 @@ impl On12 {
 }
 
 impl On12 {
-    /// Wraps a texture of the game's device (a panel's `GPU_TEXTURE`, an
-    /// `ID3D12Resource*` the plugin handed over) for sampling: its `Direct3D` 11 resource,
-    /// which holds a reference to it, and a view to draw it through. It is taken to be in
-    /// the pixel shader resource state, as the engine leaves textures it samples.
+    /// Wraps a texture of the game's device (a panel's `GPU_TEXTURE`) for sampling: its
+    /// `Direct3D` 11 resource, which holds a reference to it, and a view to draw it
+    /// through. It is taken to be in the pixel shader resource state, as the engine
+    /// leaves textures it samples.
     pub(super) fn wrap_texture(
         &self,
-        handle: usize,
+        resource: &ID3D12Resource,
     ) -> windows::core::Result<(ID3D11Resource, ID3D11ShaderResourceView)> {
-        let raw = handle as *mut c_void;
-        // SAFETY: the plugin hands over a live resource of the game's device for the frame
-        // it asked in; `cloned` takes our own reference before that frame ends.
-        let resource = unsafe { ID3D12Resource::from_raw_borrowed(&raw) }
-            .cloned()
-            .ok_or_else(windows::core::Error::empty)?;
         let flags = D3D11_RESOURCE_FLAGS {
             BindFlags: D3D11_BIND_SHADER_RESOURCE.0.cast_unsigned(),
             ..D3D11_RESOURCE_FLAGS::default()
@@ -324,7 +318,7 @@ impl On12 {
         // SAFETY: a live resource of the device under the layer, and valid flags.
         unsafe {
             self.layer.CreateWrappedResource(
-                &resource,
+                resource,
                 &raw const flags,
                 D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,

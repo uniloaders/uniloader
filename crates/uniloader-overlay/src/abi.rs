@@ -108,8 +108,10 @@ impl UiWidget {
     pub const TEXTURE: UiWidget = UiWidget(11);
     /// A texture of the game's graphics device in the panel (a preview the plugin renders):
     /// `value.integer` is its native handle (an `ID3D12Resource*` under `Direct3D` 12),
-    /// `value.min` × `value.max` its size in points, `text` a caption. The overlay keeps a
-    /// reference of its own while it shows it. A provider that cannot draw that device's
+    /// `value.min` × `value.max` its size in points, `text` a caption. The caller keeps
+    /// the texture alive for the call (holding a reference of its own across it, and
+    /// never letting it go on another thread meanwhile); the overlay takes its own
+    /// reference during the call and touches the handle at no other time. A provider that cannot draw that device's
     /// textures returns `UNSUPPORTED`. The texture holds gamma-encoded, premultiplied RGBA.
     pub const GPU_TEXTURE: UiWidget = UiWidget(12);
 }

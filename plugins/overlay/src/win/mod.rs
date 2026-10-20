@@ -116,21 +116,23 @@ impl Natives {
         &mut self,
         on12: &d3d12::On12,
         renderer: &mut egui_directx11::Renderer,
-        asked: &[usize],
+        asked: &[(usize, native::Owned)],
     ) -> Vec<Option<ID3D11Resource>> {
+        let is_asked = |handle: &usize| asked.iter().any(|(h, _)| h == handle);
         self.shown.retain(|handle, native| {
-            let keep = asked.contains(handle);
+            let keep = is_asked(handle);
             if !keep {
                 renderer.unregister_user_texture(native.id);
             }
             keep
         });
-        self.refused.retain(|handle| asked.contains(handle));
-        for &handle in asked {
+        self.refused.retain(|handle| is_asked(handle));
+        for (handle, resource) in asked {
+            let handle = *handle;
             if self.shown.contains_key(&handle) || self.refused.contains(&handle) {
                 continue;
             }
-            match on12.wrap_texture(handle) {
+            match on12.wrap_texture(resource) {
                 Ok((resource, view)) => {
                     let id = renderer.register_user_texture(view);
                     self.shown.insert(handle, Native { resource, id });
@@ -361,7 +363,7 @@ impl Overlay {
                 let wrapped = on12.wrap(chain)?;
                 native::begin(true);
                 let output = gui_pass(gui, *started, host, wrapped.target.size);
-                let textures = natives.prepare(on12, renderer, &native::asked());
+                let textures = natives.prepare(on12, renderer, &native::take_asked());
                 on12.acquire(&textures);
                 // Our own context: no game state on it to put back.
                 let result =

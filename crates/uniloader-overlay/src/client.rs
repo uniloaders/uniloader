@@ -528,7 +528,8 @@ impl Ui<'_> {
 
     /// A texture of the game's graphics device, `width` × `height` points, captioned
     /// `text`; whether the provider shows it. `native` is its handle (an `ID3D12Resource*`
-    /// under `Direct3D` 12), alive for this call; the overlay takes its own reference.
+    /// under `Direct3D` 12), which the caller keeps alive for this call, also against its
+    /// other threads; the overlay takes its own reference during the call.
     pub fn gpu_texture(&mut self, text: &str, native: usize, width: f32, height: f32) -> bool {
         let mut value = UiValue {
             #[allow(clippy::cast_possible_wrap, reason = "a handle carried bit for bit")]
