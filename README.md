@@ -118,6 +118,29 @@ after every plugin has started; `exec name` runs `config/name.cfg`.
 One command buffer runs everything in order: a bind and a typed command never interleave, and
 `wait [ms]` runs the rest of a script a tick (16 ms) or `ms` later.
 
+A setting a plugin marks secret (`Setting::secret()`) is shown as `<set>` or `<unset>`
+everywhere, a command that sets one is echoed and logged as `set name <redacted>`, and a bind
+or alias may not hold one.
+
+### Remote console (RCON)
+
+The loader speaks Source RCON, so `mcrcon`, `rcon-cli`, ARRCON or Python's `rcon` can run
+console scripts in the game as if typed there. Whoever has the password can do anything the
+console can, plugins' commands included, so it is off by default:
+
+```text
+set uniloader.rcon_password "at least twelve characters"   // stored as an Argon2id hash
+set uniloader.rcon true                                     // listens on 127.0.0.1:48622
+```
+
+`uniloader.rcon_bind` (`127.0.0.1`; `0.0.0.0` for the network), `uniloader.rcon_port`
+(48622) and `uniloader.rcon_allow` (addresses or networks, `192.168.2.0/24, 100.64.0.0/10`)
+restart the server when changed. RCON itself cannot change these settings, nor bind or alias
+anything that mentions them. The password crosses the network in clear text: use a VPN such as
+Tailscale, never an open port. Four connections at most; three failed logins from one address
+within 10 minutes ban it for 15. Logins and scripts (redacted, without their output) are
+written to `logs/rcon.log`.
+
 ## Game speed
 
 The loader can run any game faster or slower, the way Cheat Engine's speedhack does: it
