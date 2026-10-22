@@ -38,6 +38,7 @@ pub(crate) fn desc(key: &str) -> settings::Desc {
         restart_required: false,
         advanced: false,
         transient: false,
+        secret: false,
     }
 }
 

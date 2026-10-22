@@ -1,4 +1,5 @@
-//! The loader's own entry in the plugin list, and the game speed setting it carries.
+//! The loader's own entry in the plugin list, and the game speed setting it carries. The
+//! remote console's settings are on it too (see `rcon`).
 //!
 //! The loader registers itself as the plugin `uniloader`, so its settings, hotkeys and
 //! commands are read, set, rebound, listed, saved and shown in the overlay's settings editor
@@ -85,6 +86,7 @@ fn speed_setting() -> settings::Desc {
         restart_required: false,
         advanced: false,
         transient: false,
+        secret: false,
     }
 }
 
@@ -99,12 +101,16 @@ pub fn builtin(file: &str) -> (Described, Builtin) {
         title: "uniloader".to_owned(),
         version: env!("CARGO_PKG_VERSION").to_owned(),
         authors: String::new(),
-        description: "The loader itself: game speed.".to_owned(),
+        description: "The loader itself: game speed and the remote console.".to_owned(),
     };
     let actions = Action::ALL.iter().map(|(_, name, help)| (*name, *help));
     let builtin = Builtin {
         file: file.to_owned(),
-        settings: vec![speed_setting()],
+        settings: [speed_setting()]
+            .into_iter()
+            .chain(crate::rcon::settings())
+            .collect(),
+        hashed: vec![crate::rcon::keys::PASSWORD.to_owned()],
         hotkeys: actions
             .clone()
             .map(|(name, help)| (name.to_owned(), help.trim_end_matches('.').to_owned()))

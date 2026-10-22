@@ -69,6 +69,31 @@ pub(crate) fn key(ui: &mut Ui, entry: &SettingEntry, label: &str) -> Option<Stri
     (cleared && entry.value != "none").then(|| "none".to_owned())
 }
 
+/// A password or token: a masked field that starts empty, because the loader never hands the
+/// value out, beside `<set>` or `<unset>`. Written when the field loses focus with text in it.
+pub(crate) fn secret(ui: &mut Ui, entry: &SettingEntry, label: &str) -> Option<String> {
+    let id = ui.id().with(("secret-draft", qualified(entry)));
+    let mut draft: String = ui.data_mut(|d| d.get_temp(id)).unwrap_or_default();
+    let response = ui
+        .horizontal(|ui| {
+            let response = ui.add(
+                TextEdit::singleline(&mut draft)
+                    .password(true)
+                    .desired_width(140.0),
+            );
+            ui.label(RichText::new(&entry.value).monospace().weak());
+            ui.label(label);
+            response
+        })
+        .inner;
+    if response.lost_focus() && !draft.is_empty() {
+        ui.data_mut(|d| d.remove::<String>(id));
+        return Some(draft);
+    }
+    ui.data_mut(|d| d.insert_temp(id, draft));
+    None
+}
+
 /// A colour: a swatch that opens a picker. Written once the mouse is let go, not for every
 /// step of a drag.
 pub(crate) fn colour(ui: &mut Ui, entry: &SettingEntry, label: &str) -> Option<String> {

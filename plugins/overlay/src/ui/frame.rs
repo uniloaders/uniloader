@@ -285,6 +285,9 @@ pub(crate) fn row(ui: &mut egui::Ui, entry: &SettingEntry, label: &str) -> Optio
 /// The control for one setting kind; the new value when the user changed it.
 fn control(ui: &mut egui::Ui, entry: &SettingEntry, label: &str) -> Option<String> {
     let current = entry.value.as_str();
+    if entry.secret {
+        return super::controls::secret(ui, entry, label);
+    }
     match entry.kind {
         SettingKind::Bool => {
             let mut on = current == "true";

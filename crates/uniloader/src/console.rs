@@ -24,6 +24,8 @@ pub enum Source {
     Key,
     /// A cfg file the loader runs by itself (`autoexec.cfg`).
     Startup,
+    /// The RCON server.
+    Rcon,
 }
 
 /// The context a command runs in.
@@ -106,6 +108,14 @@ pub(crate) fn print_all(state: &mut State, lines: Vec<String>, when_empty: &str)
     Outcome::default()
 }
 
+/// Whether `name` is one of the RCON server's own settings, which RCON may not change: a
+/// remote client must not be able to open the server wider or lock the owner out.
+pub(crate) fn rcon_owned(name: &str) -> bool {
+    name.strip_prefix(crate::speed::NAME)
+        .and_then(|rest| rest.strip_prefix('.'))
+        .is_some_and(|key| key.starts_with("rcon"))
+}
+
 /// The length of a tick, what `wait` without an argument waits.
 pub const TICK_MS: u64 = 16;
 
@@ -113,7 +123,8 @@ pub const TICK_MS: u64 = 16;
 /// to the state's console buffer.
 pub fn execute(state: &mut State, ctx: &Ctx, text: &str) -> Outcome {
     if !text.trim().is_empty() {
-        state.console_print(format!("> {}", text.trim()));
+        let echo = crate::secret::redact(state, ctx, text);
+        state.console_print(format!("> {echo}"));
     }
     let parsed = match console::parse(text) {
         Ok(p) => p,
@@ -256,7 +267,7 @@ fn plugin_op(state: &mut State, op: PluginOp, name: Option<&str>) -> Outcome {
 }
 
 pub(crate) fn get(state: &mut State, caller: Option<PluginHandle>, name: &str) -> Outcome {
-    match state.get_setting(caller, name) {
+    match state.shown_setting(caller, name) {
         Ok(value) => {
             state.console_print(format!("{name} = {value}"));
             Outcome::default()
@@ -267,9 +278,16 @@ pub(crate) fn get(state: &mut State, caller: Option<PluginHandle>, name: &str) -
 
 pub(crate) fn set(state: &mut State, ctx: &Ctx, name: &str, value: &str) -> Outcome {
     let caller = ctx.caller;
+    if ctx.source == Source::Rcon && rcon_owned(name) {
+        return fail(
+            state,
+            Status::INVALID_ARGUMENT,
+            format!("{name} cannot be changed over RCON"),
+        );
+    }
     match state.set_setting(caller, name, value) {
         Ok(changed) => {
-            if let Ok(v) = state.get_setting(caller, name) {
+            if let Ok(v) = state.shown_setting(caller, name) {
                 state.console_print(format!("{name} = {v}"));
             }
             Outcome {
@@ -362,6 +380,11 @@ fn list(state: &mut State, prefix: Option<&str>) -> Outcome {
     let mut lines = Vec::new();
     for record in &state.plugins {
         for (desc, value) in record.settings.iter() {
+            let value = if desc.secret {
+                crate::secret::shown(value)
+            } else {
+                value
+            };
             lines.push(format!("{}.{} = {value}", record.name(), desc.key));
         }
         for (cmd, info) in &record.commands {

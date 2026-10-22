@@ -22,6 +22,7 @@ mod lifecycle;
 mod plugin_hooks;
 mod plugins;
 pub(crate) mod proxy;
+mod rcon;
 mod speed;
 
 use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -178,6 +179,7 @@ fn init() -> bool {
     // After the plugins started: one that holds the speed at 1 has had its say.
     speed::apply_stored();
     exec::autoexec();
+    rcon::reconfigure();
     // Last, so a command typed or a key pressed in the first instant cannot race the
     // registries.
     console::start_input();

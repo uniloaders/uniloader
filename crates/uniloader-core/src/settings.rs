@@ -38,6 +38,9 @@ pub enum Kind {
 }
 
 /// Everything the loader knows about one setting.
+// Four independent yes/no properties mirroring the ABI's `SettingFlags` bits; each is read
+// by name all over the loader and the editors, which a bit set would only make noisier.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Desc {
     /// Key within the plugin namespace.
@@ -66,6 +69,9 @@ pub struct Desc {
     pub advanced: bool,
     /// Never persisted.
     pub transient: bool,
+    /// A password or token: never printed, listed or logged by the console, which shows
+    /// `<set>` or `<unset>` instead.
+    pub secret: bool,
 }
 
 /// Why a value or descriptor was rejected.
@@ -324,6 +330,7 @@ mod tests {
             restart_required: false,
             advanced: false,
             transient: false,
+            secret: false,
         }
     }
 

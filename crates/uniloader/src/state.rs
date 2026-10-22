@@ -91,6 +91,8 @@ pub struct Builtin {
     pub hotkeys: Vec<(String, String, String)>,
     /// Its console commands.
     pub commands: Vec<(String, CommandInfo)>,
+    /// Keys of its settings stored as a hash (see [`State::hashed`]).
+    pub hashed: Vec<String>,
 }
 
 /// A DLL the loader loaded that is not a uniloader plugin: an `.asi` file, or a library listed
@@ -249,6 +251,9 @@ pub struct State {
     /// The stored values of the plugin starting now, read before its start so that each
     /// [`State::register_setting`] does not read the file again under the lock.
     pub start_values: Option<(PluginHandle, BTreeMap<String, String>)>,
+    /// Settings (`plugin.key`) stored as an Argon2id hash of what is set, because the loader
+    /// only ever verifies them: the RCON password.
+    pub hashed: BTreeSet<String>,
     /// The last [`Persist::seq`] handed out.
     persist_seq: u64,
 }
@@ -293,6 +298,7 @@ impl State {
             hook_lines: no_hooks,
             quit: no_quit,
             start_values: None,
+            hashed: BTreeSet::new(),
             persist_seq: 0,
         }
     }
@@ -349,6 +355,12 @@ impl State {
         for (name, info) in builtin.commands {
             self.register_command(handle, &name, info)?;
         }
+        let owner = self
+            .plugin(handle)
+            .map(|p| p.name().to_owned())
+            .unwrap_or_default();
+        self.hashed
+            .extend(builtin.hashed.iter().map(|key| format!("{owner}.{key}")));
         Ok(())
     }
 
@@ -446,6 +458,22 @@ impl State {
         self.plugin(handle)?.settings.desc(&key)
     }
 
+    /// A setting as the console shows it: its value, or `<set>`/`<unset>` for a secret.
+    ///
+    /// # Errors
+    /// [`Status::NOT_FOUND`] for an unknown setting.
+    pub fn shown_setting(
+        &self,
+        caller: Option<PluginHandle>,
+        name: &str,
+    ) -> Result<String, Status> {
+        let value = self.get_setting(caller, name)?;
+        if self.setting_desc(caller, name).is_some_and(|d| d.secret) {
+            return Ok(crate::secret::shown(&value).to_owned());
+        }
+        Ok(value)
+    }
+
     /// Read a setting as text.
     ///
     /// # Errors
@@ -479,6 +507,25 @@ impl State {
             .map(|p| p.name().to_owned())
             .unwrap_or_default();
         let config_path = self.paths.plugin_config(&owner);
+        let hashed;
+        let value = if self.hashed.contains(&format!("{owner}.{key}"))
+            && !value.is_empty()
+            && !crate::secret::is_hash(value)
+        {
+            if value.chars().count() < crate::rcon::MIN_PASSWORD {
+                return Err((
+                    Status::INVALID_ARGUMENT,
+                    format!(
+                        "{name}: use at least {} characters",
+                        crate::rcon::MIN_PASSWORD
+                    ),
+                ));
+            }
+            hashed = crate::secret::hash(value).map_err(|e| (Status::ERROR, e))?;
+            hashed.as_str()
+        } else {
+            value
+        };
         let record = self
             .plugin_mut(handle)
             .ok_or((Status::NOT_FOUND, String::new()))?;

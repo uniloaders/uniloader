@@ -78,6 +78,9 @@ unsafe extern "C" fn collect_console(ctx: *mut c_void, line: *const ConsoleLine)
 }
 
 /// One setting of any plugin, with its value.
+// Four independent yes/no properties mirroring the ABI's `SettingFlags` bits; each is read
+// by name all over the loader and the editors, which a bit set would only make noisier.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct SettingEntry {
     /// Owning plugin.
@@ -106,6 +109,8 @@ pub struct SettingEntry {
     pub transient: bool,
     /// Hidden behind an "advanced" toggle in editors.
     pub advanced: bool,
+    /// A password or token: `value` is `<set>` or `<unset>`; editors show a password field.
+    pub secret: bool,
 }
 
 /// One hotkey action.
@@ -262,6 +267,7 @@ impl From<&SettingInfo> for SettingEntry {
                 .contains(uniloader_api::SettingFlags::RESTART_REQUIRED),
             transient: s.flags.contains(uniloader_api::SettingFlags::TRANSIENT),
             advanced: s.flags.contains(uniloader_api::SettingFlags::ADVANCED),
+            secret: s.flags.contains(uniloader_api::SettingFlags::SECRET),
         }
     }
 }

@@ -1,0 +1,13 @@
+[package]
+name = "source-rcon"
+description = "The Source RCON wire format: packet encoding, size-capped decoding and response splitting. No I/O policy, no async runtime."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+
+[lints]
+workspace = true

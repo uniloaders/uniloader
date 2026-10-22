@@ -15,7 +15,7 @@ use crate::state::State;
 pub(super) fn execute(state: &mut State, ctx: &Ctx, line: Line) -> Outcome {
     match line {
         Line::Bind(chord, None) => show_bind(state, &chord),
-        Line::Bind(chord, Some(script)) => bind(state, &chord, &script),
+        Line::Bind(chord, Some(script)) => bind(state, ctx, &chord, &script),
         Line::Unbind(chord) => unbind(state, &chord),
         Line::UnbindAll => {
             state.binds.unbind_all();
@@ -35,7 +35,7 @@ pub(super) fn execute(state: &mut State, ctx: &Ctx, line: Line) -> Outcome {
             }
             None => fail(state, Status::NOT_FOUND, format!("no alias named {name}")),
         },
-        Line::Alias(name, Some(body)) => alias(state, &name, &body),
+        Line::Alias(name, Some(body)) => alias(state, ctx, &name, &body),
         Line::Aliases => {
             let lines = state
                 .binds
@@ -113,12 +113,15 @@ fn show_bind(state: &mut State, text: &str) -> Outcome {
     print_all(state, lines, &format!("{chord} is not bound"))
 }
 
-fn bind(state: &mut State, text: &str, body: &str) -> Outcome {
+fn bind(state: &mut State, ctx: &Ctx, text: &str, body: &str) -> Outcome {
     let Some(chord) = parse_chord(state, text) else {
         return invalid();
     };
     if let Err(e) = script::commands(body) {
         return fail(state, Status::INVALID_ARGUMENT, e.to_string());
+    }
+    if let Some(refused) = refused_body(state, ctx, body) {
+        return refused;
     }
     state.binds.bind(chord, body);
     state.console_print(format!("{chord} = {}", script::quote(body)));
@@ -199,7 +202,7 @@ fn rebind(state: &mut State, name: &str, text: &str) -> Outcome {
     saved(state)
 }
 
-fn alias(state: &mut State, name: &str, body: &str) -> Outcome {
+fn alias(state: &mut State, ctx: &Ctx, name: &str, body: &str) -> Outcome {
     let builtin = BUILTIN_NAMES
         .iter()
         .any(|b| b.split(' ').next() == Some(name));
@@ -213,6 +216,9 @@ fn alias(state: &mut State, name: &str, body: &str) -> Outcome {
     if let Err(e) = script::commands(body) {
         return fail(state, Status::INVALID_ARGUMENT, e.to_string());
     }
+    if let Some(refused) = refused_body(state, ctx, body) {
+        return refused;
+    }
     if let Err(e) = state.binds.alias(name, body) {
         return fail(state, Status::INVALID_ARGUMENT, e.to_string());
     }
@@ -222,6 +228,19 @@ fn alias(state: &mut State, name: &str, body: &str) -> Outcome {
         state.console_print(format!("alias {name} {}", script::quote(body)));
     }
     saved(state)
+}
+
+/// Why a bind or alias may not hold `body`, as the failed outcome: it would carry a secret's
+/// value, or (made over RCON, and so run later as the user's) touch the RCON settings.
+fn refused_body(state: &mut State, ctx: &Ctx, body: &str) -> Option<Outcome> {
+    let message = if crate::secret::carries_secret(state, ctx, body) {
+        "a bind or alias cannot hold a secret setting's value; set it in the console"
+    } else if ctx.source == super::Source::Rcon && body.to_ascii_lowercase().contains("rcon") {
+        "over RCON, a bind or alias cannot mention the rcon settings"
+    } else {
+        return None;
+    };
+    Some(fail(state, Status::INVALID_ARGUMENT, message.to_owned()))
 }
 
 /// `action <plugin.action>`, also reached by a dotted name that is no setting or command.

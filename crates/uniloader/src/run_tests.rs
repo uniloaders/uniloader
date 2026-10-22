@@ -175,3 +175,62 @@ fn a_dotted_hotkey_action_fires_and_a_command_of_that_name_wins() {
     assert_eq!(f.calls(), ["hotkey plugin.menu"]);
     assert_eq!(f.run("action plugin.nope").status, Status::NOT_FOUND);
 }
+
+#[test]
+fn rcon_cannot_touch_its_own_settings_even_through_binds_aliases_or_cfg() {
+    let (f, _) = fake();
+    f.with_state(|s| {
+        let (info, builtin) = crate::speed::builtin("uniloader.dll");
+        s.add_builtin(info, builtin)
+            .unwrap_or_else(|e| panic!("{e:?}"));
+    });
+    let rcon = |text: &str| {
+        run(
+            &f,
+            Job::new(Ctx::from(Source::Rcon), text).unwrap_or_else(|e| panic!("{e}")),
+        )
+    };
+    assert_eq!(
+        rcon("set uniloader.rcon_bind 0.0.0.0").status,
+        Status::INVALID_ARGUMENT
+    );
+    assert_eq!(
+        rcon("uniloader.rcon false").status,
+        Status::INVALID_ARGUMENT
+    );
+    assert_eq!(
+        rcon("toggle uniloader.rcon").status,
+        Status::INVALID_ARGUMENT
+    );
+    assert_eq!(
+        rcon("reset uniloader.rcon_port").status,
+        Status::INVALID_ARGUMENT
+    );
+    assert_eq!(
+        rcon(r#"bind f1 "set uniloader.rcon_bind 0.0.0.0""#).status,
+        Status::INVALID_ARGUMENT
+    );
+    assert_eq!(
+        rcon(r#"alias open "uniloader.rcon_allow x""#).status,
+        Status::INVALID_ARGUMENT
+    );
+    // Everything else is allowed, as if typed.
+    assert_eq!(
+        rcon("set uniloader.speed 2; plugin.setting 3").status,
+        Status::OK
+    );
+    // The same lines typed by the user work; the password needs 12 characters.
+    assert_eq!(f.run("set uniloader.rcon_port 40000").status, Status::OK);
+    assert_eq!(
+        f.run("set uniloader.rcon_password short").status,
+        Status::INVALID_ARGUMENT
+    );
+    assert_eq!(
+        f.run("set uniloader.rcon_password long enough pass").status,
+        Status::OK
+    );
+    assert_eq!(
+        f.run("uniloader.rcon_password").printed,
+        ["uniloader.rcon_password = <set>"]
+    );
+}

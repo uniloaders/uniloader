@@ -136,6 +136,9 @@ fn flags_of(desc: &settings::Desc) -> SettingFlags {
     if desc.transient {
         bits |= SettingFlags::TRANSIENT.0;
     }
+    if desc.secret {
+        bits |= SettingFlags::SECRET.0;
+    }
     if desc.advanced {
         bits |= SettingFlags::ADVANCED.0;
     }
@@ -161,7 +164,14 @@ pub(super) unsafe extern "C" fn setting_enumerate(
             .flat_map(|p| {
                 p.settings
                     .iter()
-                    .map(|(desc, value)| (p.name().to_owned(), desc.clone(), value.to_owned()))
+                    .map(|(desc, value)| {
+                        let value = if desc.secret {
+                            crate::secret::shown(value)
+                        } else {
+                            value
+                        };
+                        (p.name().to_owned(), desc.clone(), value.to_owned())
+                    })
                     .collect::<Vec<_>>()
             })
             .collect()

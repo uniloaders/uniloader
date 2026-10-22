@@ -21,6 +21,11 @@ thiserror.workspace = true
 serde.workspace = true
 toml.workspace = true
 simplelog = "0.12"
+source-rcon.workspace = true
+# The RCON password is stored as an Argon2id hash, never as text. RustCrypto's crates are
+# pure Rust; `getrandom` gives the salt from the OS.
+argon2 = { version = "0.5", features = ["std"] }
+password-hash = { version = "0.5", features = ["getrandom"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [

@@ -216,6 +216,7 @@ unsafe extern "C" fn setting_register(
         restart_required: d.flags.contains(SettingFlags::RESTART_REQUIRED),
         advanced: d.flags.contains(SettingFlags::ADVANCED),
         transient: d.flags.contains(SettingFlags::TRANSIENT),
+        secret: d.flags.contains(SettingFlags::SECRET),
     };
     state()
         .register_setting(plugin, desc)
@@ -264,7 +265,7 @@ unsafe extern "C" fn setting_set(
             Status::OK
         }
         Err((status, message)) => {
-            log::warn!("set {name} = {value:?}: {message}");
+            log::warn!("set {name}: {message}");
             status
         }
     }

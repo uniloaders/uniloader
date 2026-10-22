@@ -70,6 +70,9 @@ impl SettingKind {
 }
 
 /// A setting a plugin registers. Build with the constructors, tweak with the `with_*` methods.
+// Four independent yes/no properties mirroring the ABI's `SettingFlags` bits; each is read
+// by name all over the loader and the editors, which a bit set would only make noisier.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Setting {
     pub(crate) key: String,
@@ -83,6 +86,7 @@ pub struct Setting {
     pub(crate) restart_required: bool,
     pub(crate) advanced: bool,
     pub(crate) transient: bool,
+    pub(crate) secret: bool,
 }
 
 impl Setting {
@@ -99,6 +103,7 @@ impl Setting {
             restart_required: false,
             advanced: false,
             transient: false,
+            secret: false,
         }
     }
 
@@ -222,6 +227,14 @@ impl Setting {
     #[must_use]
     pub fn transient(mut self) -> Self {
         self.transient = true;
+        self
+    }
+
+    /// Mark the setting as a password or token: the console, settings lists and the log show
+    /// `<set>` or `<unset>` instead of its value. [`crate::Host::get`] still returns it.
+    #[must_use]
+    pub fn secret(mut self) -> Self {
+        self.secret = true;
         self
     }
 

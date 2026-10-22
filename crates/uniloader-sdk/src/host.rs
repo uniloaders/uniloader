@@ -263,6 +263,9 @@ impl Host {
         if setting.advanced {
             flags |= SettingFlags::ADVANCED.0;
         }
+        if setting.secret {
+            flags |= SettingFlags::SECRET.0;
+        }
         let desc = SettingDesc {
             struct_size: core::mem::size_of::<SettingDesc>(),
             key: Str::new(&setting.key),

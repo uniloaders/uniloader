@@ -275,6 +275,9 @@ impl SettingFlags {
     pub const TRANSIENT: SettingFlags = SettingFlags(2);
     /// Hidden from settings lists until the user turns advanced settings on.
     pub const ADVANCED: SettingFlags = SettingFlags(4);
+    /// A password or token. The console, the settings list and the log never show its
+    /// value, only `<set>` or `<unset>`; `setting_get` still returns it to plugins.
+    pub const SECRET: SettingFlags = SettingFlags(8);
 
     /// Whether every bit of `other` is set.
     #[must_use]

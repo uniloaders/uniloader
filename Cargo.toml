@@ -6,6 +6,7 @@ members = [
     "crates/uniloader-sdk",
     "crates/uniloader",
     "crates/uniloader-overlay",
+    "crates/source-rcon",
     "examples/hello-plugin",
     "examples/smoke-host",
     "examples/kitchen-sink",
@@ -24,6 +25,7 @@ uniloader-api = { path = "crates/uniloader-api" }
 uniloader-core = { path = "crates/uniloader-core" }
 uniloader-sdk = { path = "crates/uniloader-sdk" }
 uniloader-overlay = { path = "crates/uniloader-overlay" }
+source-rcon = { path = "crates/source-rcon" }
 # The overlay's UI library. Pure Rust (nothing for clang-cl to compile) and it emits plain
 # meshes, which is what lets a panel be drawn by any renderer, or onto a VR quad.
 # `egui-directx11` pins egui 0.35, hence the exact minor.
@@ -53,3 +55,9 @@ codegen-units = 1
 debug = "line-tables-only"
 # Never "abort": a plugin panic must unwind so the loader can catch it at the boundary.
 panic = "unwind"
+
+# Password hashing is deliberately slow; unoptimised it takes seconds per hash in tests.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3

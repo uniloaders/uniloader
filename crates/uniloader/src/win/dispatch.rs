@@ -96,6 +96,8 @@ pub(crate) fn deliver(notifications: Vec<Notify>) {
         if Some(handle) == super::speed::owner() {
             if key == crate::speed::SPEED {
                 super::speed::apply(&value);
+            } else if key.starts_with("rcon") {
+                super::rcon::reconfigure();
             }
             continue;
         }

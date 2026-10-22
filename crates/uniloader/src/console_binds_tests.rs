@@ -126,3 +126,48 @@ fn plus_minus_aliases_and_alias_listing() {
     f.run(r#"alias +fast """#);
     assert_eq!(f.run("aliases").printed.len(), 1);
 }
+
+#[test]
+fn secrets_never_reach_the_console_binds_or_files() {
+    let (f, h) = fake();
+    f.with_state(|s| {
+        s.phase = crate::state::Phase::Starting(h);
+        let mut desc = crate::state::tests::desc("token");
+        desc.kind = uniloader_core::settings::Kind::String;
+        desc.default = String::new();
+        desc.secret = true;
+        s.register_setting(h, desc)
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        s.hashed.insert("plugin.token".to_owned());
+        s.phase = crate::state::Phase::Running;
+    });
+    assert_eq!(f.run("plugin.token").printed, ["plugin.token = <unset>"]);
+    let ran = f.run("set plugin.token hunter2hunter2");
+    assert_eq!(ran.printed, ["plugin.token = <set>"]);
+    f.run("plugin.token hunter2hunter2; list plugin.t");
+    assert_eq!(
+        f.run(r#"bind f1 "set plugin.token x""#).status,
+        Status::INVALID_ARGUMENT
+    );
+    assert_eq!(
+        f.run(r#"alias a "plugin.token x""#).status,
+        Status::INVALID_ARGUMENT
+    );
+    let everything: Vec<String> =
+        f.with_state(|s| s.console.iter().map(|l| l.text.clone()).collect());
+    assert!(
+        everything.iter().all(|l| !l.contains("hunter2")),
+        "{everything:?}"
+    );
+    assert!(everything.contains(&"> set plugin.token <redacted>".to_owned()));
+    // Stored as a hash, in memory and on disk.
+    let stored = f.with_state(|s| s.get_setting(None, "plugin.token"));
+    let stored = stored.unwrap_or_default();
+    assert!(crate::secret::verify(&stored, "hunter2hunter2"));
+    let file = std::fs::read_to_string(f.config_dir().join("plugin.toml")).unwrap_or_default();
+    assert!(
+        !file.contains("hunter2") && file.contains("$argon2id"),
+        "{file}"
+    );
+    assert!(!saved(&f).contains("hunter2"));
+}
