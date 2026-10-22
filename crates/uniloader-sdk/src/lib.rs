@@ -29,6 +29,7 @@
 //!
 //! Derived from the DayZ loader's `dayz-plugin-sdk` (`eaebd9b`).
 
+pub mod args;
 mod deps;
 mod ffi;
 mod host;

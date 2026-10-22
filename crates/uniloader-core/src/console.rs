@@ -6,6 +6,8 @@
 
 use thiserror::Error;
 
+use crate::script::{self, ScriptError};
+
 /// What `plugin <op>` asks for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PluginOp {
@@ -102,6 +104,9 @@ pub enum ParseError {
     /// A `plugin` operation that acts on one plugin, without its name.
     #[error("usage: plugin {0} <name>")]
     PluginNeedsName(&'static str),
+    /// The command's quoting is broken.
+    #[error(transparent)]
+    Script(#[from] ScriptError),
 }
 
 /// Split the first whitespace separated word from the rest.
@@ -113,7 +118,8 @@ fn split_word(text: &str) -> (&str, &str) {
     }
 }
 
-/// Parse one line. Identifiers are lower-cased; values and arguments keep their case.
+/// Parse one command, as [`script::commands`] split it from a script. Identifiers are
+/// lower-cased; values and arguments keep their case.
 ///
 /// # Errors
 /// See [`ParseError`].
@@ -122,7 +128,9 @@ pub fn parse(line: &str) -> Result<Line, ParseError> {
     if text.is_empty() || text.starts_with('#') || text.starts_with("//") {
         return Ok(Line::Empty);
     }
-    let (word, rest) = split_word(text);
+    let Some((word, rest)) = script::split_first(text)? else {
+        return Ok(Line::Empty);
+    };
     let word = word.to_ascii_lowercase();
     let optional = |s: &str| (!s.is_empty()).then(|| s.to_ascii_lowercase());
     Ok(match word.as_str() {
@@ -157,10 +165,10 @@ pub fn parse(line: &str) -> Result<Line, ParseError> {
             if value.is_empty() {
                 return Err(ParseError::SetNeedsValue);
             }
-            Line::Set(name.to_ascii_lowercase(), value.to_owned())
+            Line::Set(name.to_ascii_lowercase(), script::value(value))
         }
         _ if word.contains('.') => Line::Command(word, rest.to_owned()),
-        _ => Line::Variable(word, optional(rest).map(|_| rest.to_owned())),
+        _ => Line::Variable(word, optional(rest).map(|_| script::value(rest))),
     })
 }
 
@@ -250,6 +258,16 @@ mod tests {
             parse("set a.b Hello World"),
             Ok(Line::Set("a.b".into(), "Hello World".into()))
         );
+        assert_eq!(
+            parse(r#"set a.b "x;y""#),
+            Ok(Line::Set("a.b".into(), "x;y".into())),
+            "one quoted word loses its quotes"
+        );
+        assert_eq!(
+            parse(r#""SET" a.b 1"#),
+            Ok(Line::Set("a.b".into(), "1".into()))
+        );
+        assert!(matches!(parse(r#""echo x"#), Err(ParseError::Script(_))));
         assert_eq!(parse("set a.b"), Err(ParseError::SetNeedsValue));
         assert_eq!(parse("get"), Err(ParseError::NeedsName("get")));
         assert_eq!(parse("EXIT"), Ok(Line::Quit));

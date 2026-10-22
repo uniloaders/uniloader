@@ -13,6 +13,7 @@ pub mod hotkeys;
 pub mod keys;
 pub mod names;
 pub mod pe;
+pub mod script;
 pub mod settings;
 pub mod store;
 pub mod thunk;
