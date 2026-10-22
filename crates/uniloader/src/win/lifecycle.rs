@@ -112,7 +112,9 @@ fn perform_now(op: PluginOp, name: &str) -> (Status, Vec<String>) {
         PluginOp::Stop => stop(name),
         PluginOp::Enable | PluginOp::Disable => delivery(op, name),
         // The console answers the rest without reaching the platform layer.
-        PluginOp::List | PluginOp::Deps | PluginOp::Reload => (Status::UNSUPPORTED, Vec::new()),
+        PluginOp::List | PluginOp::Deps | PluginOp::Info | PluginOp::Reload => {
+            (Status::UNSUPPORTED, Vec::new())
+        }
     }
 }
 

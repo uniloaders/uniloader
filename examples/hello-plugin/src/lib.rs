@@ -3,7 +3,7 @@
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use uniloader_sdk::{export_plugin, Host, Plugin, PluginError, PluginRef, Setting};
+use uniloader_sdk::{export_plugin, Author, Host, Plugin, PluginError, PluginRef, Setting};
 
 /// Greets on a hotkey and counts how often it did.
 pub struct Hello {
@@ -22,8 +22,10 @@ impl Plugin for Hello {
     const NAME: &'static str = "hello";
     const TITLE: &'static str = "Hello";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
-    const AUTHORS: &'static str = "Bluscream";
     const DESCRIPTION: &'static str = "Greets on a hotkey.";
+    const AUTHORS: &'static [Author] =
+        &[Author::new("Bluscream").url("https://github.com/Bluscream")];
+    const HOMEPAGE: &'static str = "https://github.com/uniloaders/uniloader";
 
     fn start(host: Host) -> Result<Self, PluginError> {
         host.setting(

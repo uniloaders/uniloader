@@ -76,8 +76,48 @@ fn provides<P: Plugin>() -> (*const Str, usize) {
     (list.as_ptr(), list.len())
 }
 
+/// The authors in ABI form, leaked like the dependencies.
+fn authors<P: Plugin>() -> (*const api::Author, usize) {
+    leak(
+        P::AUTHORS
+            .iter()
+            .map(|a| api::Author {
+                name: Str::new(a.name),
+                url: Str::new(a.link),
+            })
+            .collect(),
+    )
+}
+
+/// The target filters in ABI form, leaked like the dependencies, values included.
+fn targets<P: Plugin>() -> (*const api::TargetFilter, usize) {
+    leak(
+        P::TARGETS
+            .iter()
+            .map(|t| {
+                let (values, value_count) =
+                    leak(t.values.iter().map(|v| Str::new(v)).collect::<Vec<_>>());
+                api::TargetFilter {
+                    property: Str::new(t.property),
+                    values,
+                    value_count,
+                }
+            })
+            .collect(),
+    )
+}
+
+/// Leak a list for the ABI: a pointer and length, or null and 0 when it is empty.
+fn leak<T: 'static>(list: Vec<T>) -> (*const T, usize) {
+    if list.is_empty() {
+        return (core::ptr::null(), 0);
+    }
+    let list: &'static [T] = Vec::leak(list);
+    (list.as_ptr(), list.len())
+}
+
 // SAFETY: every `Str` inside points at a `&'static str` compiled into the plugin and the
-// dependency array is leaked, so everything reachable is immutable and lives for the whole
+// arrays are leaked, so everything reachable is immutable and lives for the whole
 // process; reading it from any thread is safe.
 unsafe impl Sync for StaticInfo {}
 // SAFETY: see the `Sync` impl; `OnceLock` additionally requires `Send` of its contents.
@@ -90,14 +130,31 @@ pub fn describe<P: Plugin>() -> *const PluginInfo {
     let info = INFO.get_or_init(|| {
         let (dependencies, dependency_count) = dependencies::<P>();
         let (provides, provides_count) = provides::<P>();
+        let (authors, author_count) = authors::<P>();
+        let (targets, target_count) = targets::<P>();
         StaticInfo(PluginInfo {
             struct_size: core::mem::size_of::<PluginInfo>(),
             api_version: API_VERSION,
             name: Str::new(P::NAME),
             title: Str::new(P::TITLE),
             version: Str::new(P::VERSION),
-            authors: Str::new(P::AUTHORS),
             description: Str::new(P::DESCRIPTION),
+            authors,
+            author_count,
+            homepage: Str::new(P::HOMEPAGE),
+            issues: Str::new(P::ISSUES),
+            download: Str::new(P::DOWNLOAD),
+            update: api::UpdateSource {
+                github: Str::new(P::UPDATE_GITHUB),
+                url: Str::new(P::UPDATE_URL),
+            },
+            targets,
+            target_count,
+            target_policy: if P::REFUSE_ON_MISMATCH {
+                api::TargetPolicy::REFUSE
+            } else {
+                api::TargetPolicy::WARN
+            },
             dependencies,
             dependency_count,
             provides,

@@ -43,8 +43,8 @@ use std::sync::OnceLock;
 
 use uniloader_overlay::{UiLevel, UiNotice};
 use uniloader_sdk::{
-    export_plugin, topics, Host, NotRunningEvent, Plugin, PluginError, PluginRef, PluginState,
-    PluginStateEvent, Setting,
+    export_plugin, topics, Author, Host, NotRunningEvent, Plugin, PluginError, PluginRef,
+    PluginState, PluginStateEvent, Setting,
 };
 
 /// How long the notice that a plugin is not running stays.
@@ -75,9 +75,14 @@ impl Plugin for OverlayPlugin {
     const NAME: &'static str = "overlay";
     const TITLE: &'static str = "Overlay";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
-    const AUTHORS: &'static str = "Bluscream";
     const DESCRIPTION: &'static str =
         "In-game console and settings editor, and the overlay service plugins draw through.";
+    const AUTHORS: &'static [Author] =
+        &[Author::new("Bluscream").url("https://github.com/Bluscream")];
+    const HOMEPAGE: &'static str = "https://github.com/uniloaders/uniloader";
+    const ISSUES: &'static str = "https://github.com/uniloaders/uniloader/issues";
+    const DOWNLOAD: &'static str = "https://github.com/uniloaders/uniloader/releases/latest";
+    const UPDATE_GITHUB: &'static str = "uniloaders/uniloader";
     const PROVIDES: &'static [&'static str] = &[uniloader_overlay::SERVICE];
 
     // Providing the service is unsafe: the table layout is a promise the compiler cannot check.

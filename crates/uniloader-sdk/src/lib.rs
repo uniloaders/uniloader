@@ -34,16 +34,18 @@ mod deps;
 mod ffi;
 mod host;
 mod logger;
+mod meta;
 mod plugin;
 mod registry;
 mod settings;
 
 pub use deps::Dependency;
 pub use host::{read_str, Arg, CommandLine, Hook, Host, PluginError, PluginRef};
+pub use meta::{Author, Target};
 pub use plugin::Plugin;
 pub use registry::{
-    ConsoleEntry, HotkeyEntry, ModuleEntry, NotRunningEvent, PluginStateEvent, Service,
-    SettingEntry,
+    AuthorEntry, ConsoleEntry, HotkeyEntry, ModuleEntry, NotRunningEvent, PluginStateEvent,
+    Service, SettingEntry,
 };
 pub use settings::{Setting, SettingKind};
 pub use uniloader_api as api;

@@ -15,6 +15,8 @@ pub enum PluginOp {
     List,
     /// `plugin deps [name]`: declared dependencies.
     Deps,
+    /// `plugin info <name>`: authors, links, target filters and update state.
+    Info,
     /// `plugin load <name>`: load and start a DLL from the plugin directory.
     Load,
     /// `plugin stop <name>`: call the plugin's stop export and silence it.
@@ -40,6 +42,7 @@ impl PluginOp {
         match self {
             PluginOp::List => "list",
             PluginOp::Deps => "deps",
+            PluginOp::Info => "info",
             PluginOp::Load => "load",
             PluginOp::Stop => "stop",
             PluginOp::Enable => "enable",
@@ -52,6 +55,7 @@ impl PluginOp {
         Some(match word {
             "list" | "ls" => PluginOp::List,
             "deps" | "dependencies" => PluginOp::Deps,
+            "info" | "about" => PluginOp::Info,
             "load" => PluginOp::Load,
             "stop" | "unload" => PluginOp::Stop,
             "enable" => PluginOp::Enable,
@@ -295,6 +299,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "list",
     "plugins",
     "plugin deps",
+    "plugin info",
     "plugin load",
     "plugin stop",
     "plugin enable",
@@ -335,6 +340,10 @@ pub const BUILTIN_HELP: &[(&str, &str)] = &[
     (
         "plugin deps [name]",
         "Show what plugins declared they need.",
+    ),
+    (
+        "plugin info <name>",
+        "Show a plugin's authors, links, target and update state.",
     ),
     (
         "plugin load <name>",

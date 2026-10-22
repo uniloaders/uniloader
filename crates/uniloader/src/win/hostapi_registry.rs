@@ -10,9 +10,9 @@
 use core::ffi::c_void;
 
 use uniloader_api::{
-    ConsoleKind, ConsoleLine, ConsoleLineFn, GuardedFn, HotkeyInfo, HotkeyInfoFn, KeyModifiers,
-    LineFn, LogLevel, ModuleKind, PluginEntry, PluginEntryFn, PluginHandle, PluginState,
-    ServiceInfo, SettingFlags, SettingInfo, SettingInfoFn, SettingKind, Status, Str,
+    Author, ConsoleKind, ConsoleLine, ConsoleLineFn, GuardedFn, HotkeyInfo, HotkeyInfoFn,
+    KeyModifiers, LineFn, LogLevel, ModuleKind, PluginEntry, PluginEntryFn, PluginHandle,
+    PluginState, ServiceInfo, SettingFlags, SettingInfo, SettingInfoFn, SettingKind, Status, Str,
 };
 use uniloader_core::keys::Modifiers;
 use uniloader_core::settings;
@@ -20,13 +20,17 @@ use uniloader_core::settings;
 use super::hostapi::text;
 use super::{plugins, state};
 use crate::scrollback;
+use crate::state::{Described, Latest};
 
 /// An owned [`PluginEntry`].
 struct Entry {
     handle: PluginHandle,
     kind: ModuleKind,
     state: PluginState,
-    fields: [String; 6],
+    info: Described,
+    file: String,
+    latest: Option<Latest>,
+    mismatch: String,
 }
 
 fn collect_entries() -> Vec<Entry> {
@@ -39,28 +43,25 @@ fn collect_entries() -> Vec<Entry> {
             handle: PluginHandle(u32::try_from(i + 1).unwrap_or(0)),
             kind: ModuleKind::PLUGIN,
             state: p.state(),
-            fields: [
-                p.info.name.clone(),
-                p.info.title.clone(),
-                p.info.version.clone(),
-                p.info.authors.clone(),
-                p.info.description.clone(),
-                p.file.clone(),
-            ],
+            info: p.info.clone(),
+            file: p.file.clone(),
+            latest: p.latest.clone(),
+            mismatch: p.mismatch.join("\n"),
         })
         .collect();
     out.extend(guard.pending.iter().map(|(name, reason)| Entry {
         handle: PluginHandle::NONE,
         kind: ModuleKind::PLUGIN,
         state: PluginState::WAITING,
-        fields: [
-            name.clone(),
-            name.clone(),
-            String::new(),
-            String::new(),
-            reason.clone(),
-            String::new(),
-        ],
+        info: Described {
+            name: name.clone(),
+            title: name.clone(),
+            description: reason.clone(),
+            ..Described::default()
+        },
+        file: String::new(),
+        latest: None,
+        mismatch: String::new(),
     }));
     out.extend(guard.foreign.iter().map(|f| Entry {
         handle: PluginHandle::NONE,
@@ -70,14 +71,15 @@ fn collect_entries() -> Vec<Entry> {
             ModuleKind::LIBRARY
         },
         state: PluginState::RUNNING,
-        fields: [
-            f.name.clone(),
-            f.name.clone(),
-            f.version.clone(),
-            String::new(),
-            String::new(),
-            f.file.clone(),
-        ],
+        info: Described {
+            name: f.name.clone(),
+            title: f.name.clone(),
+            version: f.version.clone(),
+            ..Described::default()
+        },
+        file: f.file.clone(),
+        latest: None,
+        mismatch: String::new(),
     }));
     out
 }
@@ -91,20 +93,41 @@ pub(super) unsafe extern "C" fn plugin_enumerate(
         return Status::INVALID_ARGUMENT;
     };
     for e in collect_entries() {
-        let [name, title, version, authors, description, file] = &e.fields;
+        let info = &e.info;
+        let authors: Vec<Author> = info
+            .authors
+            .iter()
+            .map(|(name, url)| Author {
+                name: Str::new(name),
+                url: Str::new(url),
+            })
+            .collect();
+        let (latest, download, newer) = match &e.latest {
+            Some(l) if !l.download.is_empty() => (l.version.as_str(), l.download.as_str(), l.newer),
+            Some(l) => (l.version.as_str(), info.links.download.as_str(), l.newer),
+            None => ("", info.links.download.as_str(), false),
+        };
         let entry = PluginEntry {
             struct_size: core::mem::size_of::<PluginEntry>(),
             handle: e.handle,
             kind: e.kind,
             state: e.state,
-            name: Str::new(name),
-            title: Str::new(title),
-            version: Str::new(version),
-            authors: Str::new(authors),
-            description: Str::new(description),
-            file: Str::new(file),
+            name: Str::new(&info.name),
+            title: Str::new(&info.title),
+            version: Str::new(&info.version),
+            description: Str::new(&info.description),
+            file: Str::new(&e.file),
+            authors: authors.as_ptr(),
+            author_count: authors.len(),
+            homepage: Str::new(&info.links.homepage),
+            issues: Str::new(&info.links.issues),
+            download: Str::new(download),
+            latest: Str::new(latest),
+            update_available: u32::from(newer),
+            mismatch: Str::new(&e.mismatch),
         };
-        // SAFETY: `entry` and its strings live until the sink returns, as documented.
+        // SAFETY: `entry`, `authors` and their strings live until the sink returns, as
+        // documented.
         unsafe { sink(ctx, &raw const entry) };
     }
     Status::OK

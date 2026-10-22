@@ -6,7 +6,7 @@
 
 use core::ffi::c_void;
 
-use crate::types::{LogLevel, PluginHandle, PluginState, SettingFlags, SettingKind, Str};
+use crate::types::{Author, LogLevel, PluginHandle, PluginState, SettingFlags, SettingKind, Str};
 
 /// What kind of module a [`PluginEntry`] describes.
 #[repr(transparent)]
@@ -40,12 +40,29 @@ pub struct PluginEntry {
     pub title: Str,
     /// Version text; for other modules the product version of their version resource.
     pub version: Str,
-    /// Authors, comma separated.
-    pub authors: Str,
     /// One-line description, or why a waiting plugin waits.
     pub description: Str,
     /// File, relative to the game directory.
     pub file: Str,
+    /// Authors, or null when `author_count` is 0.
+    pub authors: *const Author,
+    /// Number of entries in `authors`.
+    pub author_count: usize,
+    /// Home page, or empty.
+    pub homepage: Str,
+    /// Where to report problems, or empty.
+    pub issues: Str,
+    /// Where to download the latest release: what the update check found, else what the
+    /// plugin declared, or empty.
+    pub download: Str,
+    /// The latest version the update check found, or empty when it did not look or found
+    /// nothing.
+    pub latest: Str,
+    /// Non-zero when `latest` is newer than `version`.
+    pub update_available: u32,
+    /// Why the running game does not match the plugin's target filters (one line per filter
+    /// that failed), or empty when it matches or declares none.
+    pub mismatch: Str,
 }
 
 /// Receives one [`PluginEntry`].

@@ -4,6 +4,7 @@ use uniloader_api::StopReason;
 
 use crate::deps::Dependency;
 use crate::host::{Host, PluginError, PluginRef};
+use crate::meta::{Author, Target};
 
 /// A loader plugin. Every callback has a no-op default.
 ///
@@ -22,10 +23,27 @@ pub trait Plugin: Sized + Send + Sync + 'static {
     const TITLE: &'static str = Self::NAME;
     /// Version, dot separated numbers first.
     const VERSION: &'static str;
-    /// Authors, comma separated.
-    const AUTHORS: &'static str = "";
     /// One-line description.
     const DESCRIPTION: &'static str;
+    /// Authors, each with an optional link.
+    const AUTHORS: &'static [Author] = &[];
+    /// Home page, or empty.
+    const HOMEPAGE: &'static str = "";
+    /// Where to report problems, or empty.
+    const ISSUES: &'static str = "";
+    /// Where to download the latest release, or empty.
+    const DOWNLOAD: &'static str = "";
+    /// GitHub repository (`owner/name`) whose latest release tag is the latest version, for
+    /// the opt-in update check; empty for none.
+    const UPDATE_GITHUB: &'static str = "";
+    /// URL answering with the latest version (plain text, or JSON with `version` or
+    /// `tag_name` and optionally `url`), for the opt-in update check; empty for none.
+    const UPDATE_URL: &'static str = "";
+    /// Which game this plugin is meant for; empty for any. A mismatch is logged and shown to
+    /// the user, and the plugin still starts unless [`Plugin::REFUSE_ON_MISMATCH`].
+    const TARGETS: &'static [Target] = &[];
+    /// Do not start when [`Plugin::TARGETS`] do not match.
+    const REFUSE_ON_MISMATCH: bool = false;
     /// What must be present before this plugin starts: other plugins, libraries or files.
     /// The loader checks the list and logs why it skipped the plugin, rather than letting
     /// the plugin discover the problem at run time.

@@ -34,10 +34,31 @@ pub struct Described {
     pub title: String,
     /// Version text.
     pub version: String,
-    /// Authors, comma separated.
-    pub authors: String,
     /// One-line description.
     pub description: String,
+    /// Authors: name and URL (or empty).
+    pub authors: Vec<(String, String)>,
+    /// Home page, issue tracker and download page, each possibly empty.
+    pub links: Links,
+    /// GitHub `owner/name` for the update check, or empty.
+    pub update_github: String,
+    /// URL answering with the latest version, or empty.
+    pub update_url: String,
+    /// Which game the plugin is meant for; empty for any.
+    pub targets: Vec<uniloader_core::target::Filter>,
+    /// Refuse to start it when the targets do not match, instead of warning.
+    pub refuse_mismatch: bool,
+}
+
+/// Where to read about, report problems with, and download a plugin.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Links {
+    /// Home page.
+    pub homepage: String,
+    /// Issue tracker.
+    pub issues: String,
+    /// Latest release download.
+    pub download: String,
 }
 
 /// Everything the loader tracks about one plugin DLL.
@@ -60,6 +81,21 @@ pub struct PluginRecord {
     /// [`PluginState::STOPPED`] or [`PluginState::FAULTED`] once it ended: for good this
     /// session, unlike a pause (`plugin disable`), so it is never enabled again.
     pub ended: Option<PluginState>,
+    /// Why the running game does not match its target filters; empty when it does.
+    pub mismatch: Vec<String>,
+    /// What the update check found: the latest version and where to download it.
+    pub latest: Option<Latest>,
+}
+
+/// A plugin's latest release, as the update check found it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Latest {
+    /// Its version.
+    pub version: String,
+    /// Where to download it, or empty.
+    pub download: String,
+    /// Whether it is newer than the running one.
+    pub newer: bool,
 }
 
 impl PluginRecord {
@@ -329,6 +365,8 @@ impl State {
             dependencies: Vec::new(),
             enabled: false,
             ended: None,
+            mismatch: Vec::new(),
+            latest: None,
         });
         Ok(PluginHandle(
             u32::try_from(self.plugins.len()).map_err(|_| Status::ERROR)?,

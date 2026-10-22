@@ -100,8 +100,12 @@ pub fn builtin(file: &str) -> (Described, Builtin) {
         name: NAME.to_owned(),
         title: "uniloader".to_owned(),
         version: env!("CARGO_PKG_VERSION").to_owned(),
-        authors: String::new(),
         description: "The loader itself: game speed and the remote console.".to_owned(),
+        authors: vec![(
+            "Bluscream".to_owned(),
+            "https://github.com/Bluscream".to_owned(),
+        )],
+        ..Described::default()
     };
     let actions = Action::ALL.iter().map(|(_, name, help)| (*name, *help));
     let builtin = Builtin {

@@ -18,8 +18,8 @@ use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::sync::Mutex;
 
 use uniloader_api::{
-    topics, DescribeFn, PluginCallbacks, PluginHandle, PluginState, StartFn, Status, StopFn,
-    StopReason, API_VERSION, DESCRIBE_EXPORT, START_EXPORT, STOP_EXPORT,
+    topics, DescribeFn, PluginCallbacks, PluginHandle, PluginInfo, PluginState, StartFn, Status,
+    StopFn, StopReason, TargetPolicy, API_VERSION, DESCRIBE_EXPORT, START_EXPORT, STOP_EXPORT,
 };
 use uniloader_core::deps::{self, Candidate, PluginReq};
 use windows::core::{PCSTR, PCWSTR};
@@ -347,6 +347,13 @@ pub(super) fn describe_one(file: &Path) -> Result<Described, String> {
             info.api_version
         ));
     }
+    if info.struct_size < core::mem::size_of::<PluginInfo>() {
+        return Err(format!(
+            "its describe struct is {} bytes, API version {API_VERSION} has {}",
+            info.struct_size,
+            core::mem::size_of::<PluginInfo>()
+        ));
+    }
     let text = super::hostapi::text;
     let name = text(info.name);
     let title = text(info.title);
@@ -361,12 +368,59 @@ pub(super) fn describe_one(file: &Path) -> Result<Described, String> {
             },
             name,
             version: text(info.version),
-            authors: text(info.authors),
             description: text(info.description),
+            authors: authors(info),
+            links: crate::state::Links {
+                homepage: text(info.homepage),
+                issues: text(info.issues),
+                download: text(info.download),
+            },
+            update_github: text(info.update.github),
+            update_url: text(info.update.url),
+            targets: targets(info),
+            refuse_mismatch: info.target_policy == TargetPolicy::REFUSE,
         },
         declared: external::declared(info),
         exports,
     })
+}
+
+/// A list from the describe struct: `count` entries at `ptr`, or none for a null pointer.
+///
+/// # Safety
+/// A non-null `ptr` must point at `count` valid entries, as the ABI requires of the describe
+/// struct's lists while the DLL is loaded.
+unsafe fn list<'a, T>(ptr: *const T, count: usize) -> &'a [T] {
+    if ptr.is_null() || count == 0 {
+        return &[];
+    }
+    // SAFETY: the caller's contract.
+    unsafe { core::slice::from_raw_parts(ptr, count) }
+}
+
+fn authors(info: &PluginInfo) -> Vec<(String, String)> {
+    let text = super::hostapi::text;
+    // SAFETY: the describe struct's lists are valid while the DLL is loaded.
+    unsafe { list(info.authors, info.author_count) }
+        .iter()
+        .map(|a| (text(a.name), text(a.url)))
+        .collect()
+}
+
+fn targets(info: &PluginInfo) -> Vec<uniloader_core::target::Filter> {
+    let text = super::hostapi::text;
+    // SAFETY: as in `authors`.
+    unsafe { list(info.targets, info.target_count) }
+        .iter()
+        .map(|t| uniloader_core::target::Filter {
+            property: text(t.property),
+            // SAFETY: as in `authors`.
+            values: unsafe { list(t.values, t.value_count) }
+                .iter()
+                .map(|v| text(*v))
+                .collect(),
+        })
+        .collect()
 }
 
 impl Described {
@@ -442,7 +496,7 @@ pub(super) fn start_one(described: &Described) -> Result<Active, String> {
         return Err(failure);
     }
     if callbacks.struct_size < core::mem::size_of::<PluginCallbacks>() {
-        log::warn!("[{name}] was built against an older callback table");
+        log::warn!("[{name}] filled a callback table smaller than this API version's");
     }
     super::state().set_enabled(handle, true);
     Ok(Active {

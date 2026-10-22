@@ -51,12 +51,8 @@ impl Declared {
 }
 
 /// Read the dependency array out of a plugin's [`PluginInfo`].
-///
-/// A plugin built against an older ABI has no such fields, which `struct_size` detects.
 pub(crate) fn declared(info: &PluginInfo) -> Vec<Declared> {
-    let has_field =
-        info.struct_size >= field_end(core::mem::offset_of!(PluginInfo, dependency_count));
-    if !has_field || info.dependencies.is_null() || info.dependency_count == 0 {
+    if info.dependencies.is_null() || info.dependency_count == 0 {
         return Vec::new();
     }
     // SAFETY: the ABI requires `dependencies` to point at `dependency_count` entries that stay
@@ -75,19 +71,9 @@ pub(crate) fn declared(info: &PluginInfo) -> Vec<Declared> {
         .collect()
 }
 
-/// End offset of a `usize` field that starts at `offset`.
-const fn field_end(offset: usize) -> usize {
-    offset + core::mem::size_of::<usize>()
-}
-
 /// Read the provided service names out of a plugin's [`PluginInfo`].
-///
-/// The fields were appended to the struct, so a plugin built before them has a smaller
-/// `struct_size` and provides nothing as far as ordering is concerned.
 pub(crate) fn provided(info: &PluginInfo) -> Vec<String> {
-    let has_field =
-        info.struct_size >= field_end(core::mem::offset_of!(PluginInfo, provides_count));
-    if !has_field || info.provides.is_null() || info.provides_count == 0 {
+    if info.provides.is_null() || info.provides_count == 0 {
         return Vec::new();
     }
     // SAFETY: the ABI requires `provides` to point at `provides_count` entries that stay valid

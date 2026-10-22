@@ -15,7 +15,7 @@ pub mod api;
 use std::path::{Path, PathBuf};
 
 use mlua::{Function, Lua};
-use uniloader_sdk::{export_plugin, Host, Plugin, PluginError, PluginRef};
+use uniloader_sdk::{export_plugin, Author, Host, Plugin, PluginError, PluginRef};
 
 use api::Handlers;
 
@@ -77,8 +77,13 @@ impl Plugin for LuaBridge {
     const NAME: &'static str = "lua";
     const TITLE: &'static str = "Lua bridge";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
-    const AUTHORS: &'static str = "Bluscream";
     const DESCRIPTION: &'static str = "Runs Lua scripts from plugins/lua/ as plugins.";
+    const AUTHORS: &'static [Author] =
+        &[Author::new("Bluscream").url("https://github.com/Bluscream")];
+    const HOMEPAGE: &'static str = "https://github.com/uniloaders/uniloader";
+    const ISSUES: &'static str = "https://github.com/uniloaders/uniloader/issues";
+    const DOWNLOAD: &'static str = "https://github.com/uniloaders/uniloader/releases/latest";
+    const UPDATE_GITHUB: &'static str = "uniloaders/uniloader";
 
     fn start(host: Host) -> Result<Self, PluginError> {
         let lua = Lua::new();

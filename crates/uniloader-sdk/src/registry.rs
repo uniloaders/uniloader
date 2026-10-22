@@ -30,12 +30,35 @@ pub struct ModuleEntry {
     pub title: String,
     /// Version text, possibly empty.
     pub version: String,
-    /// Authors.
-    pub authors: String,
     /// Description, or why a waiting plugin waits.
     pub description: String,
     /// File relative to the game directory.
     pub file: String,
+    /// Authors.
+    pub authors: Vec<AuthorEntry>,
+    /// Home page, or empty.
+    pub homepage: String,
+    /// Where to report problems, or empty.
+    pub issues: String,
+    /// Where to download it: the update check's link when it found one, else the declared
+    /// one, or empty.
+    pub download: String,
+    /// The latest version the update check found, or empty.
+    pub latest: String,
+    /// Whether `latest` is newer than `version`.
+    pub update_available: bool,
+    /// Why the running game does not match the plugin's target filters, one line per filter;
+    /// empty when it matches.
+    pub mismatch: String,
+}
+
+/// One author of a module.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthorEntry {
+    /// Name as shown.
+    pub name: String,
+    /// A profile or home page, or empty.
+    pub url: String,
 }
 
 /// One line of console scrollback.
@@ -236,9 +259,27 @@ impl From<&PluginEntry> for ModuleEntry {
             name: str_from(e.name),
             title: str_from(e.title),
             version: str_from(e.version),
-            authors: str_from(e.authors),
             description: str_from(e.description),
             file: str_from(e.file),
+            authors: if e.authors.is_null() {
+                Vec::new()
+            } else {
+                // SAFETY: the loader passes `author_count` valid entries for the duration of
+                // the call, as documented on `PluginEntry`.
+                unsafe { core::slice::from_raw_parts(e.authors, e.author_count) }
+                    .iter()
+                    .map(|a| AuthorEntry {
+                        name: str_from(a.name),
+                        url: str_from(a.url),
+                    })
+                    .collect()
+            },
+            homepage: str_from(e.homepage),
+            issues: str_from(e.issues),
+            download: str_from(e.download),
+            latest: str_from(e.latest),
+            update_available: e.update_available != 0,
+            mismatch: str_from(e.mismatch),
         }
     }
 }

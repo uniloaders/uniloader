@@ -32,13 +32,13 @@ pub use registry::{
     ModuleKind, PluginEntry, PluginEntryFn, ServiceInfo, SettingInfo, SettingInfoFn,
 };
 pub use types::{
-    ArgEntry, BindDesc, Bytes, Caller, CommandDesc, Dependency, DependencyKind, EnvEntry,
+    ArgEntry, Author, BindDesc, Bytes, Caller, CommandDesc, Dependency, DependencyKind, EnvEntry,
     HotkeyDesc, LogLevel, PluginHandle, PluginInfo, PluginState, SettingDesc, SettingFlags,
-    SettingKind, Status, StopReason, Str,
+    SettingKind, Status, StopReason, Str, TargetFilter, TargetPolicy, UpdateSource,
 };
 
 /// Version of this ABI. The loader refuses plugins describing a different version.
-pub const API_VERSION: u32 = 1;
+pub const API_VERSION: u32 = 2;
 
 /// Name of the export every plugin must provide: `extern "C" fn() -> *const PluginInfo`.
 pub const DESCRIBE_EXPORT: &str = "uniloader_plugin_describe";
@@ -76,4 +76,12 @@ pub mod topics {
     /// A plugin that cannot work at another speed, a multiplayer session for one, sets
     /// `uniloader.speed` back to 1 when it receives this.
     pub const SPEED: &str = "loader.speed";
+    /// A plugin's target filters do not match the running game. Sent once per such plugin
+    /// after the loader's start pass, to the plugins running then, so a UI can tell the
+    /// player. Payload, NUL separated UTF-8: its name, its version, then why (one line per
+    /// filter that failed).
+    pub const PLUGIN_MISMATCH: &str = "loader.plugin_mismatch";
+    /// The update check found a newer version of a plugin. Payload, NUL separated UTF-8: its
+    /// name, its version, the latest version, then where to download it (may be empty).
+    pub const UPDATE_AVAILABLE: &str = "loader.update_available";
 }

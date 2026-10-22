@@ -241,6 +241,7 @@ fn plugin_op(state: &mut State, op: PluginOp, name: Option<&str>) -> Outcome {
             }
             print_all(state, lines, "")
         }
+        PluginOp::Info => plugin_info(state, name.unwrap_or_default()),
         PluginOp::Reload => fail(
             state,
             Status::UNSUPPORTED,
@@ -264,6 +265,59 @@ fn plugin_op(state: &mut State, op: PluginOp, name: Option<&str>) -> Outcome {
             }
         }
     }
+}
+
+/// `plugin info <name>`: everything the plugin declared about itself, and what the loader
+/// found (target mismatch, latest version).
+fn plugin_info(state: &mut State, name: &str) -> Outcome {
+    let Some(p) = state.plugins.iter().find(|p| p.name() == name) else {
+        return fail(state, Status::NOT_FOUND, format!("no plugin named {name}"));
+    };
+    let info = &p.info;
+    let mut lines = vec![format!("{} {} ({})", info.title, info.version, p.file)];
+    if !info.description.is_empty() {
+        lines.push(format!("  {}", info.description));
+    }
+    for (author, url) in &info.authors {
+        lines.push(if url.is_empty() {
+            format!("  author: {author}")
+        } else {
+            format!("  author: {author} <{url}>")
+        });
+    }
+    for (label, link) in [
+        ("homepage", &info.links.homepage),
+        ("issues", &info.links.issues),
+        ("download", &info.links.download),
+        ("updates from github", &info.update_github),
+        ("updates from", &info.update_url),
+    ] {
+        if !link.is_empty() {
+            lines.push(format!("  {label}: {link}"));
+        }
+    }
+    for filter in &info.targets {
+        lines.push(format!(
+            "  target: {} = {}",
+            filter.property,
+            filter.values.join(" | ")
+        ));
+    }
+    if !info.targets.is_empty() {
+        let policy = if info.refuse_mismatch {
+            "refuses to start"
+        } else {
+            "starts anyway"
+        };
+        lines.push(format!("  on a target mismatch it {policy}"));
+    }
+    lines.extend(p.mismatch.iter().map(|why| format!("  mismatch: {why}")));
+    match &p.latest {
+        Some(l) if l.newer => lines.push(format!("  update available: {}", l.version)),
+        Some(l) => lines.push(format!("  up to date (latest {})", l.version)),
+        None => {}
+    }
+    print_all(state, lines, "")
 }
 
 pub(crate) fn get(state: &mut State, caller: Option<PluginHandle>, name: &str) -> Outcome {

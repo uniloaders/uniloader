@@ -196,6 +196,58 @@ pub struct Dependency {
     pub optional: u32,
 }
 
+/// One author of a plugin.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct Author {
+    /// Name as shown.
+    pub name: Str,
+    /// Where to find them (a profile or home page), or empty.
+    pub url: Str,
+}
+
+/// Where the loader may look for a plugin's latest version. Both are optional; the loader
+/// only looks when the user turned the update check on (`uniloader.update_check`).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct UpdateSource {
+    /// A GitHub repository, `owner/name`: the tag of its latest release is the latest
+    /// version.
+    pub github: Str,
+    /// A URL answering with the latest version: plain text, or JSON with a `version` (or
+    /// `tag_name`) field and optionally a `url` to download it from.
+    pub url: Str,
+}
+
+/// One target filter: the game file property `property` must have one of `values`.
+///
+/// Every filter a plugin declares must match for the plugin to count as meant for the running
+/// game. Property names and the value syntax per kind of property are listed in the loader's
+/// `target` documentation (for example `exe.name`, `pe.version.CompanyName`,
+/// `pe.fixed.file_version` with ranges such as `>=4.26 <5`).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct TargetFilter {
+    /// Property name, for example `pe.version.ProductName`.
+    pub property: Str,
+    /// Accepted values; any one matches.
+    pub values: *const Str,
+    /// Number of entries in `values`.
+    pub value_count: usize,
+}
+
+/// What the loader does with a plugin whose target filters do not match the running game.
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TargetPolicy(pub u32);
+
+impl TargetPolicy {
+    /// Start it anyway; log a warning and tell the user (the overlay shows a dialog).
+    pub const WARN: TargetPolicy = TargetPolicy(0);
+    /// Do not start it; it is listed as waiting, with the mismatch as the reason.
+    pub const REFUSE: TargetPolicy = TargetPolicy(1);
+}
+
 /// Static description of a plugin, returned by the describe export.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -208,19 +260,34 @@ pub struct PluginInfo {
     pub name: Str,
     /// Human readable name for lists, for example `TSW Coop`.
     pub title: Str,
-    /// Version, dot separated numbers first (`1.2.0`, `0.3.1-dev`).
+    /// Version, semantic versioning (`1.2.0`, `0.3.1-dev`).
     pub version: Str,
-    /// Authors, comma separated.
-    pub authors: Str,
     /// One-line description.
     pub description: Str,
-    /// Requirements, or null when `dependency_count` is 0. Must stay valid while loaded.
+    /// Authors, or null when `author_count` is 0.
+    pub authors: *const Author,
+    /// Number of entries in `authors`.
+    pub author_count: usize,
+    /// Home page, or empty.
+    pub homepage: Str,
+    /// Where to report problems, or empty.
+    pub issues: Str,
+    /// Where to download the latest release, or empty.
+    pub download: Str,
+    /// Where the update check looks.
+    pub update: UpdateSource,
+    /// Which game this plugin is meant for, or null when `target_count` is 0 (any game).
+    pub targets: *const TargetFilter,
+    /// Number of entries in `targets`.
+    pub target_count: usize,
+    /// What happens when the targets do not match.
+    pub target_policy: TargetPolicy,
+    /// Requirements, or null when `dependency_count` is 0.
     pub dependencies: *const Dependency,
     /// Number of entries in `dependencies`.
     pub dependency_count: usize,
     /// Names of the services this plugin provides once started, or null when
     /// `provides_count` is 0. Lets [`DependencyKind::SERVICE`] dependants start after it.
-    /// Must stay valid while loaded. Appended: check `struct_size` before reading.
     pub provides: *const Str,
     /// Number of entries in `provides`.
     pub provides_count: usize,

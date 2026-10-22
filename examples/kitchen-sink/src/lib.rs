@@ -17,8 +17,8 @@ mod selftest;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use uniloader_sdk::{
-    export_plugin, topics, Dependency, Host, Plugin, PluginError, PluginRef, PluginState,
-    PluginStateEvent, Setting,
+    export_plugin, topics, Author, Dependency, Host, Plugin, PluginError, PluginRef, PluginState,
+    PluginStateEvent, Setting, Target,
 };
 
 /// The service this plugin provides, as its consumers would see it in a client crate.
@@ -49,8 +49,15 @@ impl Plugin for KitchenSink {
     const NAME: &'static str = "kitchen";
     const TITLE: &'static str = "Kitchen sink";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
-    const AUTHORS: &'static str = "Bluscream";
     const DESCRIPTION: &'static str = "Exercises every host function and checks the results.";
+    const AUTHORS: &'static [Author] = &[
+        Author::new("Bluscream").url("https://github.com/Bluscream"),
+        Author::new("Kitchen Sink"),
+    ];
+    const HOMEPAGE: &'static str = "https://github.com/uniloaders/uniloader";
+    const ISSUES: &'static str = "https://github.com/uniloaders/uniloader/issues";
+    // Matches every Windows game, so the filter path runs without a warning.
+    const TARGETS: &'static [Target] = &[Target::new("exe.name", &["*.exe"])];
     const DEPENDENCIES: &'static [Dependency] = &[
         Dependency::plugin("hello", ">=0.1").optional(),
         Dependency::service(uniloader_overlay::SERVICE).optional(),
