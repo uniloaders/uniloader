@@ -20,7 +20,7 @@ or run. File references are into those clones.
 **Result:** neither as framed. RaiPal describes mod loaders as JSON entries in downloadable mod
 lists, so uniloader needs **a mod list, not a fork**. Small missing features belong upstream or in
 uniloader. An own installer only makes sense if macOS or a full undo of every install is a hard
-requirement. What was done afterwards is in `PROGRESS.md` ("Installer track").
+requirement. What was done afterwards is in `tsw-plugins/tasks/done.md` (uniloader section).
 
 ## MelonLoader.Installer
 
@@ -120,4 +120,4 @@ Adding uniloader for Windows games needs no code: one custom mod list with entri
 ## Open
 
 - Whether RaiPal upstream would take a `backup` field (an outward-facing request; the owner's call,
-  see `PROGRESS.md`).
+  see `tsw-plugins/tasks/done.md`).
