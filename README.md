@@ -14,9 +14,12 @@ DayZ plugin loader (`dxgi.dll`) and the Train Sim World 7 loader in `tsw-sdk`
 From the DayZ loader, made game-agnostic:
 
 - **Settings**: typed, validated, persisted per plugin, changeable at run time.
-- **Hotkeys** in a readable grammar (`ctrl+shift+r`, `sc29`), with user overrides. They only
-  fire while the game window has focus.
-- **A console** with built-in commands plus the commands and variables plugins register.
+- **Binds** in a readable grammar (`ctrl+shift+r`, `sc29`, `mouse5`). Plugins suggest
+  default keys; the user binds any key to console script, moves or removes a plugin's
+  suggestion, and that is saved. They only fire while the game window has focus.
+- **A console** in the Counter-Strike style: built-in commands plus the commands and
+  variables plugins register, `;` between commands, `"..."` quoting, aliases, `+`/`-` hold
+  binds, cfg files and `wait`. See [Console and binds](#console-and-binds).
 - **Dependencies** and load order, with version requirements.
 - **Plugin-to-plugin messaging**: direct messages with replies, broadcast topics.
 - **Hooks the loader owns**: byte patches, vtable slots, inline detours, undone when the
@@ -50,7 +53,8 @@ not a system DLL's, it only hosts plugins and forwards nothing).
     something.asi       .asi mods
   uniloader/
     config/loader.toml  optional; see below
-    config/<plugin>.toml, hotkeys.toml   written by the loader
+    config/<plugin>.toml, binds.cfg      written by the loader
+    config/autoexec.cfg, <name>.cfg      yours: run at start / by `exec <name>`
     logs/loader.log
 ```
 
@@ -83,6 +87,36 @@ load = ["ue4ss/UE4SS.dll"]      # chain-load DLLs this one displaced, listed wit
 Command line: `--loader-console` opens a console window, `--noplugins` loads nothing,
 `--loader-log=debug` overrides the level.
 
+## Console and binds
+
+The console window, the overlay's console, cfg files, binds, aliases and a plugin's
+`console_exec` all run the same script language, the one Counter-Strike players know:
+commands separated by `;` or newlines, words by spaces, `"..."` groups words (inside quotes
+`\"` is a quote and `\\` a backslash; other backslashes are literal, so `"C:\Games"` works),
+`//` starts a comment. `help` lists the built-ins.
+
+```text
+bind A "exec plugin.command arg1 arg2"           // exec: a cfg file, or else that command
+bind CTRL+F9 "set plugin.setting value; reload"  // two commands on one key
+unbind f9                                        // removes a plugin's suggested key too
+alias +fast "set uniloader.speed 4"              // + runs on press, - on release
+alias -fast "reset uniloader.speed"
+bind mouse5 +fast
+bind add "incrementvar uniloader.speed 0.1 4 0.1"
+binds                                            // every bind and where it comes from
+binds reset all                                  // the plugins' suggestions back
+rebind tsw-coop.menu ctrl+f10                    // move a plugin's suggestion
+```
+
+Plugins suggest keys (`host.hotkey`, `host.bind_default`); when two suggest the same key, the
+first keeps it and the other is reported as shadowed. Everything the user changes is saved to
+`config/binds.cfg`, keyed by the plugin's entry name for moved or removed suggestions, so a
+removal survives a plugin changing its default. `config/autoexec.cfg`, if present, runs once
+after every plugin has started; `exec name` runs `config/name.cfg`.
+
+One command buffer runs everything in order: a bind and a typed command never interleave, and
+`wait [ms]` runs the rest of a script a tick (16 ms) or `ms` later.
+
 ## Game speed
 
 The loader can run any game faster or slower, the way Cheat Engine's speedhack does: it
@@ -101,8 +135,10 @@ including the overlay's settings editor and `uniloader/config/uniloader.toml`:
 | `uniloader.speed_reset` | Command and hotkey: back to 1. |
 
 The hotkeys are unbound by default, because games and plugins have taken most function keys;
-bind them in the overlay's settings editor or in `hotkeys.toml`
-(`"uniloader.speed_up" = "ctrl+shift+u"`). A saved speed other than 1 is applied at startup and logged as a warning.
+bind them in the overlay's settings editor or in the console (`bind ctrl+add
+uniloader.speed_up`, or `alias +fast "set uniloader.speed 4"; alias -fast "reset
+uniloader.speed"; bind mouse5 +fast` to run fast while a button is held). A saved speed other
+than 1 is applied at startup and logged as a warning.
 
 **For plugins:** the speed is the setting `uniloader.speed` (`host.get("uniloader.speed")`),
 and every change is published as the event `loader.speed` (`topics::SPEED`, payload a

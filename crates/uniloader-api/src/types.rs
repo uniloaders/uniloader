@@ -323,6 +323,24 @@ pub struct HotkeyDesc {
     pub default_binding: Str,
 }
 
+/// A bind a plugin suggests during start: a script that runs on a key until the user moves
+/// or removes it.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct BindDesc {
+    /// `size_of::<BindDesc>()`.
+    pub struct_size: usize,
+    /// Name within the plugin namespace, `[a-z0-9_]+`; the user moves it with
+    /// `rebind <plugin>.<name> <keys>`. Shares the namespace of hotkey actions.
+    pub name: Str,
+    /// Short label for UI.
+    pub title: Str,
+    /// Suggested keys in loader key grammar, comma separated; empty for none.
+    pub default_binding: Str,
+    /// Console script to run, for example `"uniloader.speed_up"` or `"set a.b 1; echo on"`.
+    pub script: Str,
+}
+
 /// A console command a plugin registers during start.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]

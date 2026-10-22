@@ -30,7 +30,7 @@ pub struct Paths {
     /// puts files into, so it sits where they can find it, while everything the loader owns
     /// stays out of the game directory's way.
     pub plugins_dir: PathBuf,
-    /// `<game>/uniloader/config`: `loader.toml`, `hotkeys.toml`, `<plugin>.toml`.
+    /// `<game>/uniloader/config`: `loader.toml`, `binds.cfg`, `autoexec.cfg`, `<plugin>.toml`.
     pub config_dir: PathBuf,
     /// `<game>/uniloader/logs`.
     pub logs_dir: PathBuf,
@@ -84,10 +84,17 @@ impl Paths {
         self.config_dir.join(format!("{plugin}.toml"))
     }
 
-    /// User hotkey overrides.
+    /// The user's binds, moves of plugin binds and aliases, written by the loader.
     #[must_use]
-    pub fn hotkeys_file(&self) -> PathBuf {
-        self.config_dir.join("hotkeys.toml")
+    pub fn binds_file(&self) -> PathBuf {
+        self.config_dir.join("binds.cfg")
+    }
+
+    /// A cfg file `exec` runs, for a name already checked by [`cfg_name`].
+    #[must_use]
+    pub fn cfg_file(&self, name: &str) -> PathBuf {
+        let name = name.strip_suffix(".cfg").unwrap_or(name);
+        self.config_dir.join(format!("{name}.cfg"))
     }
 
     /// The loader's own settings.
@@ -95,6 +102,17 @@ impl Paths {
     pub fn loader_file(&self) -> PathBuf {
         self.config_dir.join("loader.toml")
     }
+}
+
+/// Whether `name` may name a cfg file for `exec`: `[a-z0-9_.-]+`, so it can never be a path
+/// out of the config directory.
+#[must_use]
+pub fn cfg_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('.')
+        && name.bytes().all(|b| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'.' | b'-')
+        })
 }
 
 /// `loader.toml`. Every field is optional.
@@ -177,9 +195,10 @@ mod tests {
             p.plugin_config("vr"),
             Path::new("/g/uniloader/config/vr.toml")
         );
+        assert_eq!(p.binds_file(), Path::new("/g/uniloader/config/binds.cfg"));
         assert_eq!(
-            p.hotkeys_file(),
-            Path::new("/g/uniloader/config/hotkeys.toml")
+            p.cfg_file("speed.cfg"),
+            Path::new("/g/uniloader/config/speed.cfg")
         );
         assert_eq!(
             p.loader_file(),

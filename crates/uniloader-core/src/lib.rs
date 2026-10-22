@@ -6,10 +6,10 @@
 //! Taken from the DayZ plugin loader (`dayz-plugin-loader`, `crates/dayz-plugin-core` at
 //! `eaebd9b`), which this project replaces.
 
+pub mod binds;
 pub mod cmdline;
 pub mod console;
 pub mod deps;
-pub mod hotkeys;
 pub mod keys;
 pub mod names;
 pub mod pe;

@@ -10,8 +10,8 @@ use std::fmt;
 use std::path::PathBuf;
 
 use uniloader_api::{
-    ArgEntry, Bytes, Caller, CommandDesc, EnvEntry, HostApi, HotkeyDesc, LogLevel, PluginHandle,
-    PluginState, SettingDesc, SettingFlags, Status, Str,
+    ArgEntry, BindDesc, Bytes, Caller, CommandDesc, EnvEntry, HostApi, HotkeyDesc, LogLevel,
+    PluginHandle, PluginState, SettingDesc, SettingFlags, Status, Str,
 };
 pub use uniloader_core::cmdline::{Arg, CommandLine};
 
@@ -348,6 +348,30 @@ impl Host {
         };
         // SAFETY: `desc` and its strings live until the call returns.
         check(unsafe { (self.api.hotkey_register)(self.api.host, self.handle, &raw const desc) })
+    }
+
+    /// Suggest a bind: `script` runs on `default_binding` (for example `ctrl+add`) until the
+    /// user moves or removes it. `name` shares the namespace of hotkey actions. Only during
+    /// `start`.
+    ///
+    /// # Errors
+    /// Invalid name, duplicate, unparsable keys or script, or called outside `start`.
+    pub fn bind_default(
+        &self,
+        name: &str,
+        title: &str,
+        default_binding: &str,
+        script: &str,
+    ) -> Result<(), PluginError> {
+        let desc = BindDesc {
+            struct_size: core::mem::size_of::<BindDesc>(),
+            name: Str::new(name),
+            title: Str::new(title),
+            default_binding: Str::new(default_binding),
+            script: Str::new(script),
+        };
+        // SAFETY: `desc` and its strings live until the call returns.
+        check(unsafe { (self.api.bind_default)(self.api.host, self.handle, &raw const desc) })
     }
 
     /// Register a console command. Only during `start`.

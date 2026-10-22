@@ -63,7 +63,7 @@ impl PluginOp {
 }
 
 /// A parsed console line.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Line {
     /// Nothing typed (blank or comment).
     Empty,
@@ -77,8 +77,6 @@ pub enum Line {
     Set(String, String),
     /// `plugins`, or `plugin <op> [name]`: the plugin lifecycle commands.
     Plugin(PluginOp, Option<String>),
-    /// `hotkeys`: every hotkey action and what it is bound to.
-    Hotkeys,
     /// `hooks`: patches, vtable slots and detours plugins installed through the loader.
     Hooks,
     /// `<plugin.key>` alone prints the value, `<plugin.key> <value>` sets it.
@@ -87,7 +85,40 @@ pub enum Line {
     Command(String, String),
     /// `quit`: close the game the way its own menu would.
     Quit,
+    /// `bind <chord> [script]`: print or set what a chord runs.
+    Bind(String, Option<String>),
+    /// `unbind <chord>`.
+    Unbind(String),
+    /// `unbindall`.
+    UnbindAll,
+    /// `binds [filter]` (also `hotkeys`, `keys`): every bind and where it comes from.
+    Binds(Option<String>),
+    /// `binds reset <chord|plugin.name|all>`.
+    BindsReset(String),
+    /// `rebind <plugin.name> <chords|none>`: move a plugin's suggestion.
+    Rebind(String, String),
+    /// `alias <name> [script]`: print, define or (with `""`) delete an alias.
+    Alias(String, Option<String>),
+    /// `aliases`.
+    Aliases,
+    /// `exec <name> [args]`: run `config/<name>.cfg`, or the command `<name> [args]`.
+    Exec(String, String),
+    /// `action <plugin.action>`: fire a plugin's hotkey action.
+    Action(String),
+    /// `toggle <setting> [values...]`.
+    Toggle(String, Vec<String>),
+    /// `incrementvar <setting> <min> <max> <step>`.
+    IncrementVar(String, [f64; 3]),
+    /// `reset <setting>`: back to its default.
+    Reset(String),
+    /// `echo <text>`.
+    Echo(String),
+    /// `wait [ms]`: run the rest of the script a tick, or `ms` milliseconds, later.
+    Wait(Option<u64>),
 }
+
+// `IncrementVar` holds floats parsed from text, which are never NaN.
+impl Eq for Line {}
 
 /// Why a line could not be parsed.
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -107,7 +138,80 @@ pub enum ParseError {
     /// The command's quoting is broken.
     #[error(transparent)]
     Script(#[from] ScriptError),
+    /// A built-in with the wrong arguments; the text is its usage.
+    #[error("usage: {0}")]
+    Usage(&'static str),
 }
+
+/// The arguments of a bind-family built-in, or `None` for a word that is not one.
+fn parse_binds(word: &str, rest: &str) -> Option<Result<Line, ParseError>> {
+    let words = match script::words(rest) {
+        Ok(words) => words,
+        Err(e) => return Some(Err(e.into())),
+    };
+    let lower = |i: usize| words.get(i).map(|w| w.to_ascii_lowercase());
+    // The raw text after the first argument.
+    let after = script::split_first(rest)
+        .ok()
+        .flatten()
+        .map_or("", |(_, r)| r);
+    // One word after the name is the script; several are taken as written, so both
+    // `bind f6 "echo hi"` and `bind f6 echo hi` work.
+    let script_after = || match words.len() {
+        0 | 1 => None,
+        2 => words.get(1).cloned(),
+        _ => Some(after.to_owned()),
+    };
+    let usage = |text| Err(ParseError::Usage(text));
+    Some(match (word, words.len()) {
+        ("bind", 0) => usage("bind <key> [script]"),
+        ("bind", _) => Ok(Line::Bind(lower(0)?, script_after())),
+        ("unbind", 1) => Ok(Line::Unbind(lower(0)?)),
+        ("unbind", _) => usage("unbind <key>"),
+        ("unbindall", _) => Ok(Line::UnbindAll),
+        ("binds" | "hotkeys" | "keys", _) if lower(0).as_deref() == Some("reset") => {
+            match lower(1) {
+                Some(what) => Ok(Line::BindsReset(what)),
+                None => usage("binds reset <key|plugin.name|all>"),
+            }
+        }
+        ("binds" | "hotkeys" | "keys", _) => Ok(Line::Binds(lower(0))),
+        ("rebind", 2) => Ok(Line::Rebind(lower(0)?, words.get(1)?.clone())),
+        ("rebind", _) => usage("rebind <plugin.name> <keys|none>"),
+        ("alias", 0) => usage("alias <name> [script]"),
+        ("alias", _) => Ok(Line::Alias(lower(0)?, script_after())),
+        ("aliases", _) => Ok(Line::Aliases),
+        ("exec", 0) => usage("exec <name> [args]"),
+        ("exec", _) => Ok(Line::Exec(lower(0)?, after.to_owned())),
+        ("action", 1) => Ok(Line::Action(lower(0)?)),
+        ("action", _) => usage("action <plugin.action>"),
+        ("toggle", 0) => usage("toggle <plugin.key> [values...]"),
+        ("toggle", _) => Ok(Line::Toggle(lower(0)?, words[1..].to_vec())),
+        ("incrementvar", 4) => {
+            let number = |i: usize| words.get(i).and_then(|w| w.parse::<f64>().ok());
+            match (number(1), number(2), number(3)) {
+                (Some(min), Some(max), Some(step)) if min <= max => {
+                    Ok(Line::IncrementVar(lower(0)?, [min, max, step]))
+                }
+                _ => usage("incrementvar <plugin.key> <min> <max> <step>"),
+            }
+        }
+        ("incrementvar", _) => usage("incrementvar <plugin.key> <min> <max> <step>"),
+        ("reset", 1) => Ok(Line::Reset(lower(0)?)),
+        ("reset", _) => usage("reset <plugin.key>"),
+        ("echo", _) => Ok(Line::Echo(script::value(rest))),
+        ("wait", 0) => Ok(Line::Wait(None)),
+        ("wait", 1) => match words[0].parse::<u64>() {
+            Ok(ms) if ms <= MAX_WAIT_MS => Ok(Line::Wait(Some(ms))),
+            _ => usage("wait [milliseconds, at most 60000]"),
+        },
+        ("wait", _) => usage("wait [milliseconds, at most 60000]"),
+        _ => return None,
+    })
+}
+
+/// Longest `wait`, in milliseconds.
+pub const MAX_WAIT_MS: u64 = 60_000;
 
 /// Split the first whitespace separated word from the rest.
 fn split_word(text: &str) -> (&str, &str) {
@@ -148,7 +252,6 @@ pub fn parse(line: &str) -> Result<Line, ParseError> {
             }
             Line::Plugin(op, name)
         }
-        "hotkeys" | "keys" => Line::Hotkeys,
         "hooks" => Line::Hooks,
         "quit" | "exit" => Line::Quit,
         "get" => {
@@ -167,9 +270,21 @@ pub fn parse(line: &str) -> Result<Line, ParseError> {
             }
             Line::Set(name.to_ascii_lowercase(), script::value(value))
         }
-        _ if word.contains('.') => Line::Command(word, rest.to_owned()),
-        _ => Line::Variable(word, optional(rest).map(|_| script::value(rest))),
+        _ => match parse_binds(&word, rest) {
+            Some(line) => line?,
+            None => plain(word, rest),
+        },
     })
+}
+
+/// A word that is no built-in: a dotted name is a setting or a command, anything else an
+/// alias or a bare variable, which the executor tells apart.
+fn plain(word: String, rest: &str) -> Line {
+    match word {
+        _ if word.contains('.') => Line::Command(word, rest.to_owned()),
+        _ if rest.is_empty() => Line::Variable(word, None),
+        _ => Line::Variable(word, Some(script::value(rest))),
+    }
 }
 
 /// Every built-in word a console line can start with, plus the `plugin` sub-commands, for
@@ -185,11 +300,25 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "plugin enable",
     "plugin disable",
     "plugin list",
-    "hotkeys",
     "hooks",
     "get",
     "set",
     "quit",
+    "bind",
+    "unbind",
+    "unbindall",
+    "binds",
+    "binds reset",
+    "rebind",
+    "alias",
+    "aliases",
+    "exec",
+    "action",
+    "toggle",
+    "incrementvar",
+    "reset",
+    "echo",
+    "wait",
 ];
 
 /// Help text for the built-in commands, one entry per line.
@@ -219,7 +348,6 @@ pub const BUILTIN_HELP: &[(&str, &str)] = &[
         "plugin enable|disable <name>",
         "Resume or pause callback delivery.",
     ),
-    ("hotkeys", "List every hotkey action and its binding."),
     (
         "hooks",
         "List the hooks plugins installed through the loader.",
@@ -229,6 +357,46 @@ pub const BUILTIN_HELP: &[(&str, &str)] = &[
     ("set <plugin.key> <value>", "Change a setting."),
     ("<plugin.key> [value]", "Shorthand for get / set."),
     ("<plugin.command> [args]", "Run a plugin command."),
+    ("bind <key> [script]", "Show or set what a key runs."),
+    (
+        "unbind <key>",
+        "Make a key run nothing, plugin defaults included.",
+    ),
+    ("unbindall", "Unbind every key."),
+    ("binds [filter]", "List every bind and where it comes from."),
+    (
+        "binds reset <key|plugin.name|all>",
+        "Go back to the plugins' suggestions.",
+    ),
+    (
+        "rebind <plugin.name> <keys|none>",
+        "Move a plugin's suggested bind to other keys.",
+    ),
+    (
+        "alias <name> [script]",
+        "Show, define or (\"\") delete an alias.",
+    ),
+    ("aliases", "List the aliases."),
+    (
+        "exec <name> [args]",
+        "Run config/<name>.cfg, or else the command <name> [args].",
+    ),
+    ("action <plugin.action>", "Fire a plugin's hotkey action."),
+    (
+        "toggle <plugin.key> [values]",
+        "Flip a switch, or cycle through values.",
+    ),
+    (
+        "incrementvar <plugin.key> <min> <max> <step>",
+        "Add step, wrapping within min..max.",
+    ),
+    ("reset <plugin.key>", "Set a setting back to its default."),
+    ("echo <text>", "Print text."),
+    (
+        "wait [ms]",
+        "Run the rest of the script a tick (or ms) later.",
+    ),
+    ("a; b", "Run several commands; \"...\" groups words."),
 ];
 
 #[cfg(test)]
@@ -251,7 +419,7 @@ mod tests {
         );
         assert_eq!(parse("ls jump"), Ok(Line::List(Some("jump".into()))));
         assert_eq!(parse("plugins"), Ok(Line::Plugin(PluginOp::List, None)));
-        assert_eq!(parse("hotkeys"), Ok(Line::Hotkeys));
+        assert_eq!(parse("hotkeys"), Ok(Line::Binds(None)));
         assert_eq!(parse("hooks"), Ok(Line::Hooks));
         assert_eq!(parse("get A.B"), Ok(Line::Get("a.b".into())));
         assert_eq!(
@@ -312,6 +480,60 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn bind_family() {
+        let ok = |l: &str| parse(l).unwrap_or_else(|e| panic!("{l}: {e}"));
+        assert_eq!(
+            ok(r#"bind A "exec plugin.command arg1 arg2""#),
+            Line::Bind("a".into(), Some("exec plugin.command arg1 arg2".into()))
+        );
+        assert_eq!(
+            ok(r#"bind CTRL+F9 "set plugin.setting value;reload""#),
+            Line::Bind(
+                "ctrl+f9".into(),
+                Some("set plugin.setting value;reload".into())
+            )
+        );
+        assert_eq!(
+            ok("bind f6 echo hi there"),
+            Line::Bind("f6".into(), Some("echo hi there".into()))
+        );
+        assert_eq!(ok("bind f6"), Line::Bind("f6".into(), None));
+        assert_eq!(ok("unbind A"), Line::Unbind("a".into()));
+        assert_eq!(ok("binds reset ALL"), Line::BindsReset("all".into()));
+        assert_eq!(ok("binds coop"), Line::Binds(Some("coop".into())));
+        assert_eq!(
+            ok("rebind tsw-coop.menu none"),
+            Line::Rebind("tsw-coop.menu".into(), "none".into())
+        );
+        assert_eq!(
+            ok(r#"alias +fast "set uniloader.speed 4""#),
+            Line::Alias("+fast".into(), Some("set uniloader.speed 4".into()))
+        );
+        assert_eq!(
+            ok(r#"alias x """#),
+            Line::Alias("x".into(), Some(String::new()))
+        );
+        assert_eq!(
+            ok("exec plugin.command arg1 arg2"),
+            Line::Exec("plugin.command".into(), "arg1 arg2".into())
+        );
+        assert_eq!(
+            ok("incrementvar uniloader.speed 0.1 4 0.1"),
+            Line::IncrementVar("uniloader.speed".into(), [0.1, 4.0, 0.1])
+        );
+        assert!(parse("incrementvar a.b 4 1 1").is_err(), "min above max");
+        assert_eq!(
+            ok("toggle a.b x y"),
+            Line::Toggle("a.b".into(), vec!["x".into(), "y".into()])
+        );
+        assert_eq!(ok("wait"), Line::Wait(None));
+        assert_eq!(ok("wait 250"), Line::Wait(Some(250)));
+        assert!(parse("wait 60001").is_err());
+        assert_eq!(ok(r#"echo "a;b""#), Line::Echo("a;b".into()));
+        assert_eq!(parse("unbind"), Err(ParseError::Usage("unbind <key>")));
     }
 
     #[test]

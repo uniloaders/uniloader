@@ -1,4 +1,5 @@
-//! Keyboard state, focus checks and the thread that polls hotkeys.
+//! Keyboard state, focus checks and the input thread, which polls binds and runs the
+//! command buffer.
 //!
 //! From the DayZ loader's `win/input.rs` (`eaebd9b`). There the hotkeys were polled once per
 //! `Present`; a generic loader has no frame to hang off, so a thread polls instead.
@@ -8,7 +9,7 @@
 
 use std::time::Duration;
 
-use uniloader_core::hotkeys::KeyState;
+use uniloader_core::binds::KeyState;
 use uniloader_core::keys::Modifiers;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, MapVirtualKeyW, MAPVK_VSC_TO_VK_EX, VK_CONTROL, VK_MENU, VK_SHIFT,
@@ -74,7 +75,8 @@ pub(crate) fn start_polling() {
         .name("uniloader-hotkeys".to_owned())
         .spawn(|| loop {
             super::tick();
-            std::thread::sleep(POLL);
+            // Woken early when a script is queued, so a busy caller waits microseconds.
+            super::exec::BUFFER.wait_for_work(POLL);
         });
     if let Err(e) = spawned {
         log::error!("hotkeys disabled, cannot start their thread: {e}");

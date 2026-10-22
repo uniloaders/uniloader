@@ -85,7 +85,7 @@ pub(crate) const HINT: &str = "Press a key: Escape cancels, Delete clears.";
 
 /// What a key press stands for.
 ///
-/// A key the grammar can name is recorded by name, which reads well in `hotkeys.toml`;
+/// A key the grammar can name is recorded by name, which reads well in `binds.cfg`;
 /// anything else — the key under Escape reports `0xFC` under Wine — by position, so the
 /// binding stays on that key whatever the layout calls it.
 fn recorded(vk: u16, scancode: u16, modifiers: Modifiers) -> Recorded {

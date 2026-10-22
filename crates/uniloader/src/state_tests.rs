@@ -207,14 +207,20 @@ fn rebinding_persists_only_differences_from_the_default() {
     let a = started(&mut s, "a");
     s.register_hotkey(a, "go", "Go", "f5")
         .unwrap_or_else(|e| panic!("{e:?}"));
-    assert_eq!(s.rebind_hotkey("a.go", "ctrl+f6, f7"), Ok(()));
-    assert_eq!(s.hotkey_overrides["a.go"], "ctrl+f6, f7");
-    assert_eq!(
-        store::read(&s.paths.hotkeys_file()).unwrap_or_default()["a.go"],
-        "ctrl+f6, f7"
-    );
-    assert_eq!(s.rebind_hotkey("a.go", "f5"), Ok(()));
-    assert!(!s.hotkey_overrides.contains_key("a.go"));
+    let save = s
+        .rebind_hotkey("a.go", "ctrl+f6, f7")
+        .unwrap_or_else(|e| panic!("{e:?}"));
+    save.write();
+    let text = std::fs::read_to_string(s.paths.binds_file()).unwrap_or_default();
+    assert!(text.contains("rebind a.go \"ctrl+f6, f7\"\n"), "{text}");
+    // Read back by the next start.
+    let next = State::new(s.paths.clone(), LoaderConfig::default());
+    assert!(next.binds.save().contains("rebind a.go"));
+    s.rebind_hotkey("a.go", "f5")
+        .unwrap_or_else(|e| panic!("{e:?}"))
+        .write();
+    let text = std::fs::read_to_string(s.paths.binds_file()).unwrap_or_default();
+    assert!(!text.contains("rebind a.go"), "{text}");
     assert_eq!(s.rebind_hotkey("a.nope", "f5"), Err(Status::NOT_FOUND));
     assert_eq!(
         s.rebind_hotkey("a.go", "nokey"),
@@ -285,27 +291,47 @@ fn a_capturing_plugin_keeps_only_its_own_hotkeys() {
     let (Ok(overlay), Ok(other)) = (overlay, other) else {
         panic!("plugins added");
     };
-    let fired = || vec!["overlay.mouse".to_owned(), "other.jump".to_owned()];
-    assert_eq!(s.allowed_hotkeys(fired()).len(), 2, "nobody captures");
+    let event = |owner: Option<&str>, edge| uniloader_core::binds::Event {
+        chord: uniloader_core::binds::chord("f1").unwrap_or_else(|e| panic!("{e}")),
+        edge,
+        fire: uniloader_core::binds::Fire::Script(String::new()),
+        owner: owner.map(str::to_owned),
+    };
+    let press = uniloader_core::binds::Edge::Press;
+    let fired = || {
+        vec![
+            event(Some("overlay"), press),
+            event(Some("other"), press),
+            event(None, press),
+            event(None, uniloader_core::binds::Edge::Release),
+        ]
+    };
+    let owners = |events: Vec<uniloader_core::binds::Event>| -> Vec<Option<String>> {
+        events.into_iter().map(|e| e.owner).collect()
+    };
+    assert_eq!(s.allowed_binds(fired()).len(), 4, "nobody captures");
     s.claim_input(overlay, true);
-    assert_eq!(
-        s.allowed_hotkeys(fired()).len(),
-        2,
-        "a stopped owner is void"
-    );
+    assert_eq!(s.allowed_binds(fired()).len(), 4, "a stopped owner is void");
     s.plugins[0].enabled = true;
     s.plugins[1].enabled = true;
-    assert_eq!(s.allowed_hotkeys(fired()), vec!["overlay.mouse".to_owned()]);
+    assert_eq!(
+        owners(s.allowed_binds(fired())),
+        [Some("overlay".to_owned()), None],
+        "its own presses, and every release"
+    );
     s.claim_input(other, true);
-    assert_eq!(s.allowed_hotkeys(fired()), vec!["other.jump".to_owned()]);
+    assert_eq!(
+        owners(s.allowed_binds(fired())),
+        [Some("other".to_owned()), None]
+    );
     s.claim_input(other, false);
     assert_eq!(
-        s.allowed_hotkeys(fired()),
-        vec!["overlay.mouse".to_owned()],
+        owners(s.allowed_binds(fired())),
+        [Some("overlay".to_owned()), None],
         "giving a claim up hands the keyboard back"
     );
     s.claim_input(overlay, false);
-    assert_eq!(s.allowed_hotkeys(fired()).len(), 2);
+    assert_eq!(s.allowed_binds(fired()).len(), 4);
 }
 
 #[test]

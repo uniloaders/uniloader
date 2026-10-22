@@ -9,14 +9,51 @@ use uniloader_core::names;
 
 use crate::state::{Notify, Persist, State};
 
-/// What executing a line produced.
+#[path = "console_binds.rs"]
+mod binds;
+
+/// Who submitted a script. Decides what it may do: RCON may not change the `rcon_*`
+/// settings, and key binds stop while a plugin captures the keyboard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    /// The console window or an overlay console, typed by the user.
+    Console,
+    /// A plugin's `console_exec` or `console_capture`.
+    Plugin,
+    /// A key bind.
+    Key,
+    /// A cfg file the loader runs by itself (`autoexec.cfg`).
+    Startup,
+}
+
+/// The context a command runs in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ctx {
+    /// The plugin running it, which lets a plugin name its own settings without its prefix.
+    pub caller: Option<PluginHandle>,
+    /// Who submitted it.
+    pub source: Source,
+}
+
+impl Ctx {
+    /// A context for `source` with no calling plugin.
+    #[must_use]
+    pub fn from(source: Source) -> Self {
+        Ctx {
+            caller: None,
+            source,
+        }
+    }
+}
+
+/// What executing a command produced.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Outcome {
     /// Status to return to a plugin that called `console_exec`.
     pub status: Status,
     /// Setting notifications to deliver.
     pub notify: Vec<Notify>,
-    /// Settings files to write once the lock is released.
+    /// Files to write once the lock is released.
     pub persist: Vec<Persist>,
     /// Plugin command to run: `(plugin, name, args)`.
     pub command: Option<(PluginHandle, String, String)>,
@@ -25,6 +62,14 @@ pub struct Outcome {
     /// Loading a DLL and calling into it must not happen under the state lock, so the same
     /// rule as for [`Outcome::command`] applies: this module only decides what to do.
     pub lifecycle: Option<(PluginOp, String)>,
+    /// Hotkey action (`<plugin>.<action>`) to fire.
+    pub hotkey: Option<String>,
+    /// Commands to run next, before the rest of the script: an alias's body.
+    pub expand: Vec<String>,
+    /// `exec <name> <args>`: the runner reads the cfg file, outside the lock.
+    pub exec: Option<(String, String)>,
+    /// `wait`: run the rest of the script this many milliseconds later.
+    pub wait: Option<u64>,
 }
 
 impl Default for Outcome {
@@ -35,11 +80,15 @@ impl Default for Outcome {
             persist: Vec::new(),
             command: None,
             lifecycle: None,
+            hotkey: None,
+            expand: Vec::new(),
+            exec: None,
+            wait: None,
         }
     }
 }
 
-fn fail(state: &mut State, status: Status, message: String) -> Outcome {
+pub(crate) fn fail(state: &mut State, status: Status, message: String) -> Outcome {
     state.console_print(message);
     Outcome {
         status,
@@ -47,8 +96,8 @@ fn fail(state: &mut State, status: Status, message: String) -> Outcome {
     }
 }
 
-fn print_all(state: &mut State, lines: Vec<String>, when_empty: &str) -> Outcome {
-    if lines.is_empty() {
+pub(crate) fn print_all(state: &mut State, lines: Vec<String>, when_empty: &str) -> Outcome {
+    if lines.is_empty() && !when_empty.is_empty() {
         state.console_print(when_empty.to_owned());
     }
     for line in lines {
@@ -57,15 +106,20 @@ fn print_all(state: &mut State, lines: Vec<String>, when_empty: &str) -> Outcome
     Outcome::default()
 }
 
-/// Execute one typed line. Output goes to the state's console buffer.
-pub fn execute(state: &mut State, caller: Option<PluginHandle>, line: &str) -> Outcome {
-    if !line.trim().is_empty() {
-        state.console_print(format!("> {}", line.trim()));
+/// The length of a tick, what `wait` without an argument waits.
+pub const TICK_MS: u64 = 16;
+
+/// Execute one command (one piece of a script, as `script::commands` split it). Output goes
+/// to the state's console buffer.
+pub fn execute(state: &mut State, ctx: &Ctx, text: &str) -> Outcome {
+    if !text.trim().is_empty() {
+        state.console_print(format!("> {}", text.trim()));
     }
-    let parsed = match console::parse(line) {
+    let parsed = match console::parse(text) {
         Ok(p) => p,
         Err(e) => return fail(state, Status::INVALID_ARGUMENT, e.to_string()),
     };
+    let caller = ctx.caller;
     match parsed {
         Line::Empty => Outcome::default(),
         Line::Help(None) => {
@@ -77,14 +131,6 @@ pub fn execute(state: &mut State, caller: Option<PluginHandle>, line: &str) -> O
         Line::Help(Some(name)) => help_for(state, &name),
         Line::List(prefix) => list(state, prefix.as_deref()),
         Line::Plugin(op, name) => plugin_op(state, op, name.as_deref()),
-        Line::Hotkeys => {
-            let lines = state
-                .hotkeys
-                .iter()
-                .map(|e| format!("{} = {}  ({})", e.name, e.binding(), e.title))
-                .collect();
-            print_all(state, lines, "no hotkeys registered")
-        }
         Line::Hooks => {
             let lines = (state.hook_lines)();
             print_all(state, lines, "no hooks installed")
@@ -93,11 +139,20 @@ pub fn execute(state: &mut State, caller: Option<PluginHandle>, line: &str) -> O
             let lines = (state.quit)();
             print_all(state, lines, "closing the game")
         }
-        Line::Get(name) | Line::Variable(name, None) => get(state, caller, &name),
-        Line::Set(name, value) | Line::Variable(name, Some(value)) => {
-            set(state, caller, &name, &value)
-        }
-        Line::Command(name, args) => command(state, caller, &name, &args),
+        Line::Get(name) => get(state, caller, &name),
+        Line::Set(name, value) => set(state, ctx, &name, &value),
+        Line::Variable(name, value) => binds::undotted(state, ctx, &name, value.as_deref()),
+        Line::Command(name, args) => command(state, ctx, &name, &args),
+        Line::Echo(text) => print_all(state, vec![text], ""),
+        Line::Wait(ms) => Outcome {
+            wait: Some(ms.unwrap_or(TICK_MS)),
+            ..Outcome::default()
+        },
+        Line::Exec(name, args) => Outcome {
+            exec: Some((name, args)),
+            ..Outcome::default()
+        },
+        other => binds::execute(state, ctx, other),
     }
 }
 
@@ -200,7 +255,7 @@ fn plugin_op(state: &mut State, op: PluginOp, name: Option<&str>) -> Outcome {
     }
 }
 
-fn get(state: &mut State, caller: Option<PluginHandle>, name: &str) -> Outcome {
+pub(crate) fn get(state: &mut State, caller: Option<PluginHandle>, name: &str) -> Outcome {
     match state.get_setting(caller, name) {
         Ok(value) => {
             state.console_print(format!("{name} = {value}"));
@@ -210,7 +265,8 @@ fn get(state: &mut State, caller: Option<PluginHandle>, name: &str) -> Outcome {
     }
 }
 
-fn set(state: &mut State, caller: Option<PluginHandle>, name: &str, value: &str) -> Outcome {
+pub(crate) fn set(state: &mut State, ctx: &Ctx, name: &str, value: &str) -> Outcome {
+    let caller = ctx.caller;
     match state.set_setting(caller, name, value) {
         Ok(changed) => {
             if let Ok(v) = state.get_setting(caller, name) {
@@ -226,14 +282,28 @@ fn set(state: &mut State, caller: Option<PluginHandle>, name: &str, value: &str)
     }
 }
 
-fn command(state: &mut State, caller: Option<PluginHandle>, name: &str, args: &str) -> Outcome {
-    // A dotted name is a setting when one matches, otherwise a plugin command.
+fn command(state: &mut State, ctx: &Ctx, name: &str, args: &str) -> Outcome {
+    let caller = ctx.caller;
+    // A dotted name is a setting when one matches, then a plugin command, then a hotkey
+    // action.
     if state.get_setting(caller, name).is_ok() {
         return if args.is_empty() {
             get(state, caller, name)
         } else {
-            set(state, caller, name, args)
+            set(state, ctx, name, &uniloader_core::script::value(args))
         };
+    }
+    let is_command = names::split_qualified(name)
+        .and_then(|(plugin, cmd)| Some((state.find_plugin(plugin)?, cmd)))
+        .is_some_and(|(handle, cmd)| {
+            state
+                .plugin(handle)
+                .is_some_and(|p| p.commands.contains_key(cmd))
+        });
+    if !is_command && args.is_empty() {
+        if let Some(outcome) = binds::action(state, name) {
+            return outcome;
+        }
     }
     let Some((plugin, cmd)) = names::split_qualified(name) else {
         return fail(state, Status::NOT_FOUND, format!("unknown command {name}"));
@@ -308,6 +378,11 @@ mod tests {
     use crate::state::tests::{desc, started, state};
     use crate::state::{CommandInfo, Phase};
 
+    const CTX: Ctx = Ctx {
+        caller: None,
+        source: Source::Console,
+    };
+
     fn fixture() -> (State, PluginHandle) {
         let mut s = state();
         let h = started(&mut s, "vr");
@@ -336,9 +411,9 @@ mod tests {
     #[test]
     fn get_set_and_shorthand() {
         let (mut s, h) = fixture();
-        assert_eq!(execute(&mut s, None, "get vr.ipd").status, Status::OK);
+        assert_eq!(execute(&mut s, &CTX, "get vr.ipd").status, Status::OK);
         assert_eq!(last(&s), "vr.ipd = 1");
-        let out = execute(&mut s, None, "set vr.ipd 3");
+        let out = execute(&mut s, &CTX, "set vr.ipd 3");
         assert_eq!(
             out.notify,
             vec![Notify::SettingChanged {
@@ -348,15 +423,15 @@ mod tests {
             }]
         );
         assert_eq!(last(&s), "vr.ipd = 3");
-        assert_eq!(execute(&mut s, None, "vr.ipd 5").notify.len(), 1);
-        assert_eq!(execute(&mut s, None, "vr.ipd").status, Status::OK);
+        assert_eq!(execute(&mut s, &CTX, "vr.ipd 5").notify.len(), 1);
+        assert_eq!(execute(&mut s, &CTX, "vr.ipd").status, Status::OK);
         assert_eq!(last(&s), "vr.ipd = 5");
         assert_eq!(
-            execute(&mut s, None, "vr.ipd 50").status,
+            execute(&mut s, &CTX, "vr.ipd 50").status,
             Status::INVALID_ARGUMENT
         );
         assert_eq!(
-            execute(&mut s, None, "set vr.ipd").status,
+            execute(&mut s, &CTX, "set vr.ipd").status,
             Status::INVALID_ARGUMENT
         );
         let _ = std::fs::remove_dir_all(&s.paths.game_dir);
@@ -365,17 +440,17 @@ mod tests {
     #[test]
     fn commands_route_to_plugin() {
         let (mut s, h) = fixture();
-        let out = execute(&mut s, None, "vr.recenter now");
+        let out = execute(&mut s, &CTX, "vr.recenter now");
         assert_eq!(out.command, Some((h, "recenter".into(), "now".into())));
         assert_eq!(
-            execute(&mut s, None, "vr.missing").status,
+            execute(&mut s, &CTX, "vr.missing").status,
             Status::NOT_FOUND
         );
-        assert_eq!(execute(&mut s, None, "nope.x").status, Status::NOT_FOUND);
+        assert_eq!(execute(&mut s, &CTX, "nope.x").status, Status::NOT_FOUND);
         assert_eq!(last(&s), "no plugin named nope");
         s.set_enabled(h, false);
         assert_eq!(
-            execute(&mut s, None, "vr.recenter").status,
+            execute(&mut s, &CTX, "vr.recenter").status,
             Status::NOT_FOUND
         );
     }
@@ -390,31 +465,31 @@ mod tests {
                 "plugin a (optional)".to_owned(),
             ],
         );
-        execute(&mut s, None, "plugins");
+        execute(&mut s, &CTX, "plugins");
         assert_eq!(last(&s), "vr 1 (vr.dll) running");
-        execute(&mut s, None, "plugin deps");
+        execute(&mut s, &CTX, "plugin deps");
         assert_eq!(last(&s), "vr needs plugin a (optional)");
         assert_eq!(
-            execute(&mut s, None, "plugin deps nope").status,
+            execute(&mut s, &CTX, "plugin deps nope").status,
             Status::NOT_FOUND
         );
 
-        let out = execute(&mut s, None, "plugin load hello");
+        let out = execute(&mut s, &CTX, "plugin load hello");
         assert_eq!(out.lifecycle, Some((PluginOp::Load, "hello".to_owned())));
         assert_eq!(
             out.status,
             Status::OK,
             "the platform layer reports the real one"
         );
-        let out = execute(&mut s, None, "plugin disable vr");
+        let out = execute(&mut s, &CTX, "plugin disable vr");
         assert_eq!(out.lifecycle, Some((PluginOp::Disable, "vr".to_owned())));
 
         // Reload is refused in one place, with the reason, rather than silently doing less.
-        let out = execute(&mut s, None, "plugin reload vr");
+        let out = execute(&mut s, &CTX, "plugin reload vr");
         assert_eq!(out.status, Status::UNSUPPORTED);
         assert!(last(&s).contains("not possible in-process"));
         assert_eq!(
-            execute(&mut s, None, "plugin stop").status,
+            execute(&mut s, &CTX, "plugin stop").status,
             Status::INVALID_ARGUMENT
         );
         let _ = std::fs::remove_dir_all(&s.paths.game_dir);
@@ -429,12 +504,12 @@ mod tests {
             version: "3.0.1".into(),
             kind: "library",
         });
-        execute(&mut s, None, "plugins");
+        execute(&mut s, &CTX, "plugins");
         assert_eq!(last(&s), "  UE4SS 3.0.1 (ue4ss/UE4SS.dll) library");
         let vr = s.find_plugin("vr").unwrap_or(PluginHandle::NONE);
         s.register_service(vr, "overlay", 2, 0x10)
             .unwrap_or_else(|e| panic!("{e:?}"));
-        execute(&mut s, None, "plugins");
+        execute(&mut s, &CTX, "plugins");
         assert_eq!(last(&s), "service overlay v2 from vr");
         let _ = std::fs::remove_dir_all(&s.paths.game_dir);
     }
@@ -442,34 +517,37 @@ mod tests {
     #[test]
     fn hooks_and_quit_print_what_the_platform_layer_supplies() {
         let (mut s, _) = fixture();
-        execute(&mut s, None, "hooks");
+        execute(&mut s, &CTX, "hooks");
         assert_eq!(last(&s), "no hooks installed");
         s.hook_lines = || vec!["vr detour 0x1000 camera".to_owned()];
-        execute(&mut s, None, "hooks");
+        execute(&mut s, &CTX, "hooks");
         assert_eq!(last(&s), "vr detour 0x1000 camera");
-        execute(&mut s, None, "quit");
+        execute(&mut s, &CTX, "quit");
         assert_eq!(last(&s), "closing the game needs the platform layer");
     }
 
     #[test]
     fn help_list_hotkeys_and_plugins() {
         let (mut s, _) = fixture();
-        execute(&mut s, None, "help");
+        execute(&mut s, &CTX, "help");
         assert!(s.console.iter().any(|l| l.text.starts_with("plugins")));
-        execute(&mut s, None, "help vr.recenter");
+        execute(&mut s, &CTX, "help vr.recenter");
         assert_eq!(last(&s), "vr.recenter : Recenter.");
         assert_eq!(
-            execute(&mut s, None, "help vr.what").status,
+            execute(&mut s, &CTX, "help vr.what").status,
             Status::NOT_FOUND
         );
-        execute(&mut s, None, "list vr.i");
+        execute(&mut s, &CTX, "list vr.i");
         assert_eq!(last(&s), "vr.ipd = 1");
-        execute(&mut s, None, "list zzz");
+        execute(&mut s, &CTX, "list zzz");
         assert_eq!(last(&s), "nothing registered");
-        execute(&mut s, None, "hotkeys");
-        assert_eq!(last(&s), "vr.toggle = f12  (Toggle)");
-        execute(&mut s, None, "plugins");
+        execute(&mut s, &CTX, "hotkeys");
+        assert_eq!(
+            last(&s),
+            "f12              \"action vr.toggle\"  (default vr.toggle)"
+        );
+        execute(&mut s, &CTX, "plugins");
         assert_eq!(last(&s), "vr 1 (vr.dll) running");
-        assert_eq!(execute(&mut s, None, "   "), Outcome::default());
+        assert_eq!(execute(&mut s, &CTX, "   "), Outcome::default());
     }
 }

@@ -45,6 +45,9 @@ pub struct PluginCallbacks {
     /// Not called when the plugin faulted: a plugin whose callback just crashed is not asked
     /// to run more code.
     pub on_disable: Option<unsafe extern "C" fn(ctx: *mut c_void)>,
+    /// The key of a registered hotkey action went up after `on_hotkey` fired for it, for
+    /// actions that last while a key is held. Not reported for `sc..` binds.
+    pub on_hotkey_release: Option<unsafe extern "C" fn(ctx: *mut c_void, action: Str)>,
 }
 
 impl PluginCallbacks {
@@ -61,6 +64,7 @@ impl PluginCallbacks {
             on_event: None,
             on_enable: None,
             on_disable: None,
+            on_hotkey_release: None,
         }
     }
 }

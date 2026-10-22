@@ -11,8 +11,9 @@
 use core::ffi::c_void;
 
 use uniloader_api::{
-    ArgEntry, Bytes, CommandDesc, EnvEntry, HostApi, HotkeyDesc, LineFn, LogLevel, PluginHandle,
-    PluginState, ReplyFn, SettingDesc, SettingFlags, SettingKind, Status, Str, API_VERSION,
+    ArgEntry, BindDesc, Bytes, CommandDesc, EnvEntry, HostApi, HotkeyDesc, LineFn, LogLevel,
+    PluginHandle, PluginState, ReplyFn, SettingDesc, SettingFlags, SettingKind, Status, Str,
+    API_VERSION,
 };
 use uniloader_core::settings;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -127,6 +128,7 @@ pub(crate) fn build(paths: &Paths, process: &Process) -> &'static HostApi {
         hotkey_press: registry::hotkey_press,
         input_capture: registry::input_capture,
         plugin_of: caller::plugin_of,
+        bind_default,
     }))
 }
 
@@ -291,6 +293,30 @@ unsafe extern "C" fn hotkey_register(
         .map_or_else(|e| e, |_| Status::OK)
 }
 
+unsafe extern "C" fn bind_default(
+    _host: *mut c_void,
+    plugin: PluginHandle,
+    desc: *const BindDesc,
+) -> Status {
+    if desc.is_null() {
+        return Status::INVALID_ARGUMENT;
+    }
+    // SAFETY: checked non-null; the ABI requires a valid descriptor.
+    let d = unsafe { &*desc };
+    if d.struct_size < core::mem::size_of::<BindDesc>() {
+        return Status::UNSUPPORTED;
+    }
+    state()
+        .register_suggestion(
+            plugin,
+            &text(d.name),
+            &text(d.title),
+            &text(d.default_binding),
+            &text(d.script),
+        )
+        .map_or_else(|e| e, |_| Status::OK)
+}
+
 unsafe extern "C" fn command_register(
     _host: *mut c_void,
     plugin: PluginHandle,
@@ -328,8 +354,16 @@ unsafe extern "C" fn console_print(_host: *mut c_void, plugin: PluginHandle, lin
     state().console_print(line);
 }
 
+/// The context a plugin's script runs in.
+fn plugin_ctx(plugin: PluginHandle) -> crate::console::Ctx {
+    crate::console::Ctx {
+        caller: Some(plugin),
+        source: crate::console::Source::Plugin,
+    }
+}
+
 unsafe extern "C" fn console_exec(_host: *mut c_void, plugin: PluginHandle, line: Str) -> Status {
-    super::run_console_line(Some(plugin), &text(line))
+    super::run_console_line(plugin_ctx(plugin), &text(line))
 }
 
 unsafe extern "C" fn console_capture(
@@ -339,7 +373,7 @@ unsafe extern "C" fn console_capture(
     sink: Option<LineFn>,
     line_ctx: *mut c_void,
 ) -> Status {
-    let (status, printed) = super::run_console_line_capture(Some(plugin), &text(line));
+    let (status, printed) = super::run_console_line_capture(plugin_ctx(plugin), &text(line));
     if let Some(sink) = sink {
         for line in &printed {
             // SAFETY: the ABI requires `sink` to accept a borrowed line for the duration of

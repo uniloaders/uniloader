@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use uniloader_api::{PluginHandle, PluginState, Status};
-use uniloader_core::{hotkeys, keys, names, settings, store};
+use uniloader_core::{binds, keys, names, settings, store};
 
 use crate::config::{LoaderConfig, Paths};
 use crate::{scrollback, services};
@@ -135,9 +135,29 @@ pub struct Changed {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Persist {
     path: std::path::PathBuf,
-    values: BTreeMap<String, String>,
+    body: Body,
     /// Handed out under the state lock, so it orders writes of one file as the sets were.
     seq: u64,
+}
+
+/// What a [`Persist`] writes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Body {
+    /// A plugin's settings, as a flat TOML table.
+    Values(BTreeMap<String, String>),
+    /// A whole text file (`binds.cfg`), replaced atomically.
+    Text(String),
+}
+
+/// Write `text` to `path` through a temporary file and a rename, so a crash mid-write leaves
+/// the old file rather than half of the new one.
+fn write_atomic(path: &std::path::Path, text: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let temporary = path.with_extension("tmp");
+    std::fs::write(&temporary, text)?;
+    std::fs::rename(&temporary, path)
 }
 
 impl Persist {
@@ -161,8 +181,17 @@ impl Persist {
         if *last > self.seq {
             return;
         }
-        if let Err(e) = store::write(&self.path, &self.values) {
-            log::error!("could not save settings: {e}");
+        match &self.body {
+            Body::Values(values) => {
+                if let Err(e) = store::write(&self.path, values) {
+                    log::error!("could not save settings: {e}");
+                }
+            }
+            Body::Text(text) => {
+                if let Err(e) = write_atomic(&self.path, text) {
+                    log::error!("could not save {}: {e}", self.path.display());
+                }
+            }
         }
         *last = self.seq;
     }
@@ -188,10 +217,8 @@ pub struct State {
     pub config: LoaderConfig,
     /// Plugins in load order; handle `n` is index `n - 1`.
     pub plugins: Vec<PluginRecord>,
-    /// All hotkeys.
-    pub hotkeys: hotkeys::Registry,
-    /// User bindings from `hotkeys.toml`.
-    pub hotkey_overrides: BTreeMap<String, String>,
+    /// Every bind, plugin suggestion and alias, and the key state.
+    pub binds: binds::Table,
     /// Current phase.
     pub phase: Phase,
     /// Plugins that described themselves but are waiting for a dependency: name and reason.
@@ -240,16 +267,22 @@ impl State {
     /// Fresh state for a game directory.
     #[must_use]
     pub fn new(paths: Paths, config: LoaderConfig) -> Self {
-        let hotkey_overrides = store::read(&paths.hotkeys_file()).unwrap_or_else(|e| {
-            log::warn!("ignoring hotkey overrides: {e}");
-            BTreeMap::new()
-        });
+        let mut binds = binds::Table::default();
+        let file = paths.binds_file();
+        match std::fs::read_to_string(&file) {
+            Ok(text) => {
+                for warning in binds.load(&text) {
+                    log::warn!("{}: {warning}", file.display());
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => log::warn!("{}: {e}", file.display()),
+        }
         State {
             paths,
             config,
             plugins: Vec::new(),
-            hotkeys: hotkeys::Registry::default(),
-            hotkey_overrides,
+            binds,
             phase: Phase::Idle,
             pending: Vec::new(),
             foreign: Vec::new(),
@@ -402,6 +435,17 @@ impl State {
         Some((handle, key.to_owned()))
     }
 
+    /// The descriptor of a setting, resolved like [`State::get_setting`] resolves its name.
+    #[must_use]
+    pub fn setting_desc(
+        &self,
+        caller: Option<PluginHandle>,
+        name: &str,
+    ) -> Option<&settings::Desc> {
+        let (handle, key) = self.resolve(caller, name)?;
+        self.plugin(handle)?.settings.desc(&key)
+    }
+
     /// Read a setting as text.
     ///
     /// # Errors
@@ -453,7 +497,7 @@ impl State {
             self.persist_seq += 1;
             Persist {
                 path: config_path,
-                values,
+                body: Body::Values(values),
                 seq: self.persist_seq,
             }
         });
@@ -484,18 +528,52 @@ impl State {
             "{}.{action}",
             self.plugin(plugin).ok_or(Status::NOT_FOUND)?.name()
         );
-        match self
-            .hotkeys
-            .register(&name, title, default, &self.hotkey_overrides)
-        {
-            Ok(None) => Ok(name),
-            Ok(Some(bad_override)) => {
-                log::warn!("hotkeys.toml: {name}: {bad_override}; using default {default:?}");
-                Ok(name)
+        self.register_bind(&name, title, default, binds::Target::Hotkey)?;
+        Ok(name)
+    }
+
+    /// Register a bind the plugin currently starting suggests: `name` runs `script` on the
+    /// keys in `default` until the user moves or removes it. Returns the qualified name.
+    ///
+    /// # Errors
+    /// Outside the plugin's start, a bad name, a duplicate or an unparsable default.
+    pub fn register_suggestion(
+        &mut self,
+        plugin: PluginHandle,
+        name: &str,
+        title: &str,
+        default: &str,
+        script: &str,
+    ) -> Result<String, Status> {
+        self.require_starting(plugin)?;
+        names::action_name(name).map_err(|_| Status::INVALID_ARGUMENT)?;
+        uniloader_core::script::commands(script).map_err(|_| Status::INVALID_ARGUMENT)?;
+        let qualified = format!(
+            "{}.{name}",
+            self.plugin(plugin).ok_or(Status::NOT_FOUND)?.name()
+        );
+        let target = binds::Target::Script(script.to_owned());
+        self.register_bind(&qualified, title, default, target)?;
+        Ok(qualified)
+    }
+
+    fn register_bind(
+        &mut self,
+        name: &str,
+        title: &str,
+        default: &str,
+        target: binds::Target,
+    ) -> Result<(), Status> {
+        match self.binds.register(name, title, default, target) {
+            Ok(warnings) => {
+                for warning in warnings {
+                    log::warn!("{warning}");
+                }
+                Ok(())
             }
-            Err(hotkeys::HotkeyError::Duplicate(_)) => Err(Status::ALREADY_EXISTS),
+            Err(binds::BindError::Duplicate(_)) => Err(Status::ALREADY_EXISTS),
             Err(e) => {
-                log::error!("{e}");
+                log::error!("{name}: {e}");
                 Err(Status::INVALID_ARGUMENT)
             }
         }
@@ -579,34 +657,32 @@ impl State {
             .filter(|s| self.plugin(s.provider).is_some_and(|p| p.enabled))
     }
 
-    /// Bind a hotkey action to `binding` (key grammar, chords separated by commas; empty
-    /// unbinds) and save it to `hotkeys.toml`. A binding equal to the default removes the
-    /// override, so a changed default still reaches the user later.
+    /// Move a registered bind entry to `binding` (key grammar, chords separated by commas;
+    /// empty or `none` unbinds). Returns `binds.cfg` to write once the lock is released. A
+    /// binding equal to the default drops the move, so a changed default still reaches the
+    /// user later.
     ///
     /// # Errors
-    /// [`Status::NOT_FOUND`] for an unknown action, [`Status::INVALID_ARGUMENT`] for a
+    /// [`Status::NOT_FOUND`] for an unknown entry, [`Status::INVALID_ARGUMENT`] for a
     /// binding that does not parse.
-    pub fn rebind_hotkey(&mut self, name: &str, binding: &str) -> Result<(), Status> {
+    pub fn rebind_hotkey(&mut self, name: &str, binding: &str) -> Result<Persist, Status> {
         let chords = keys::parse_list(binding).map_err(|_| Status::INVALID_ARGUMENT)?;
-        let default = self
-            .hotkeys
-            .iter()
-            .find(|e| e.name == name)
-            .map(hotkeys::Entry::default_binding)
-            .ok_or(Status::NOT_FOUND)?;
-        let canonical = keys::format_list(&chords);
-        if !self.hotkeys.rebind_all(name, chords) {
+        if self.binds.entry(name).is_none() {
             return Err(Status::NOT_FOUND);
         }
-        if canonical == default {
-            self.hotkey_overrides.remove(name);
-        } else {
-            self.hotkey_overrides.insert(name.to_owned(), canonical);
+        self.binds.rebind(name, chords);
+        Ok(self.save_binds())
+    }
+
+    /// `binds.cfg` with the table as it is now, to write once the lock is released.
+    #[must_use]
+    pub fn save_binds(&mut self) -> Persist {
+        self.persist_seq += 1;
+        Persist {
+            path: self.paths.binds_file(),
+            body: Body::Text(self.binds.save()),
+            seq: self.persist_seq,
         }
-        if let Err(e) = store::write(&self.paths.hotkeys_file(), &self.hotkey_overrides) {
-            log::error!("could not save hotkeys: {e}");
-        }
-        Ok(())
     }
 
     /// Note that a plugin is waiting for a dependency, replacing any earlier note.
@@ -698,15 +774,15 @@ impl State {
 
     /// Every line a command printed since `mark`, oldest first.
     ///
-    /// Log records are left out: this is what a plugin calling `console_exec` gets back as
-    /// the answer to its own line. Lines the bounded buffer has already dropped cannot be
-    /// returned, so a command that printed more than the whole history is reported from
-    /// where the history starts.
+    /// Log records and the echoed commands are left out: this is what a plugin calling
+    /// `console_capture` gets back as the answer to its own script. Lines the bounded buffer
+    /// has already dropped cannot be returned, so a command that printed more than the whole
+    /// history is reported from where the history starts.
     #[must_use]
     pub fn console_since(&self, mark: u64) -> Vec<String> {
         self.console
             .iter()
-            .filter(|line| line.seq > mark && !matches!(line.kind, scrollback::Kind::Log(_)))
+            .filter(|line| line.seq > mark && line.kind == scrollback::Kind::Output)
             .map(scrollback::Line::flat)
             .collect()
     }
@@ -732,10 +808,11 @@ impl State {
         }
     }
 
-    /// The hotkey actions out of `fired` that may fire now: all of them, or only the ones of
-    /// the plugin holding the keyboard. A claim by a plugin that is no longer running is void.
+    /// The key events out of `fired` that may run now: all of them, or only the presses of
+    /// the plugin holding the keyboard (its own suggestions) and every release, so nothing
+    /// held stays on. A claim by a plugin that is no longer running is void.
     #[must_use]
-    pub fn allowed_hotkeys(&self, fired: Vec<String>) -> Vec<String> {
+    pub fn allowed_binds(&self, fired: Vec<binds::Event>) -> Vec<binds::Event> {
         let Some(owner) = self
             .input_claims
             .iter()
@@ -745,10 +822,11 @@ impl State {
         else {
             return fired;
         };
-        let prefix = format!("{}.", owner.name());
         fired
             .into_iter()
-            .filter(|action| action.starts_with(&prefix))
+            .filter(|event| {
+                event.edge == binds::Edge::Release || event.owner.as_deref() == Some(owner.name())
+            })
             .collect()
     }
 
@@ -771,7 +849,8 @@ impl State {
                     .map(|(desc, _)| format!("{owner}.{}", desc.key)),
             );
         }
-        names.extend(self.hotkeys.iter().map(|entry| entry.name.clone()));
+        names.extend(self.binds.entries().map(|entry| entry.name.clone()));
+        names.extend(self.binds.aliases().map(|(name, _)| name.to_owned()));
         names.into_iter().collect()
     }
 }

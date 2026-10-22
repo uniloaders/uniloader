@@ -11,6 +11,8 @@ use core::ffi::c_void;
 
 use uniloader_api::{Bytes, PluginHandle, ReplyFn, Status, Str};
 
+use uniloader_core::binds::Edge;
+
 use crate::state::Notify;
 
 use super::plugins::{self, Active};
@@ -46,25 +48,41 @@ pub(crate) fn enabled(plugin: &Active, on: bool) {
     }
 }
 
-/// A hotkey fired. `action` is the qualified `<plugin>.<action>` name.
-pub(crate) fn hotkey(action: &str) {
+/// A hotkey action's key went down or up. `action` is the qualified `<plugin>.<action>`
+/// name. Releases go to `on_hotkey_release`, which only plugins built with it have.
+pub(crate) fn hotkey(action: &str, edge: Edge) {
     let Some((name, bare)) = action.split_once('.') else {
         return;
     };
     if name == crate::speed::NAME {
-        // The loader's own; `action` logs what went wrong.
-        let _ = super::speed::action(bare);
+        if edge == Edge::Press {
+            // The loader's own; `action` logs what went wrong.
+            let _ = super::speed::action(bare);
+        }
         return;
     }
     let Some(plugin) = plugins::find_by_name(name) else {
         return;
     };
-    let Some(cb) = plugin.callbacks.on_hotkey else {
-        return;
-    };
     let ctx = plugin.callbacks.ctx;
-    // SAFETY: `bare` outlives the call; `ctx` is the plugin's own context.
-    to_plugin(plugin, "on_hotkey", || unsafe { cb(ctx, Str::new(bare)) });
+    match edge {
+        Edge::Press => {
+            let Some(cb) = plugin.callbacks.on_hotkey else {
+                return;
+            };
+            // SAFETY: `bare` outlives the call; `ctx` is the plugin's own context.
+            to_plugin(plugin, "on_hotkey", || unsafe { cb(ctx, Str::new(bare)) });
+        }
+        Edge::Release => {
+            let Some(cb) = plugin.callbacks.on_hotkey_release else {
+                return;
+            };
+            // SAFETY: as for the press.
+            to_plugin(plugin, "on_hotkey_release", || unsafe {
+                cb(ctx, Str::new(bare));
+            });
+        }
+    }
 }
 
 /// Setting change notifications produced by the state.

@@ -6,6 +6,8 @@
 #![allow(unsafe_code)]
 
 use std::io::Write;
+
+use crate::console::{Ctx, Source};
 use std::sync::Mutex;
 use std::sync::OnceLock;
 
@@ -177,7 +179,9 @@ fn read_lines() {
         if typed.is_empty() {
             continue;
         }
-        let outcome = std::panic::catch_unwind(|| super::run_console_line(None, &typed));
+        let outcome = std::panic::catch_unwind(|| {
+            super::run_console_line(Ctx::from(Source::Console), &typed)
+        });
         if outcome.is_err() {
             log::error!("console command {typed:?} panicked");
         }

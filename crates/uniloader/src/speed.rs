@@ -177,12 +177,12 @@ mod tests {
         assert!(s.set_setting(None, "uniloader.speed", "9").is_err());
         assert!(s.set_setting(None, "uniloader.speed", "0").is_err());
         let hotkeys: Vec<String> = s
-            .hotkeys
-            .iter()
-            .map(uniloader_core::hotkeys::Entry::binding)
+            .binds
+            .entries()
+            .map(uniloader_core::binds::Entry::binding)
             .collect();
         assert_eq!(hotkeys, ["none", "none", "none"]);
-        assert!(s.hotkeys.iter().any(|e| e.name == "uniloader.speed_up"));
+        assert!(s.binds.entries().any(|e| e.name == "uniloader.speed_up"));
         let record = s.plugin(handle).unwrap_or_else(|| panic!("no record"));
         assert!(record.enabled);
         assert!(record.commands.contains_key("speed_reset"));

@@ -14,7 +14,7 @@ use std::fmt;
 use thiserror::Error;
 
 /// Modifier keys that must be held together with the main key.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Modifiers {
     /// Either Control key.
     pub ctrl: bool,
@@ -25,7 +25,7 @@ pub struct Modifiers {
 }
 
 /// A parsed binding: one virtual key plus modifiers. `None` means unbound.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Chord {
     /// Win32 virtual key code of the main key. Ignored while [`Chord::scancode`] is set,
     /// because the scan code only becomes a virtual key under a particular layout.
@@ -140,6 +140,26 @@ const NAMED: &[(&str, u16)] = &[
     ("rbracket", VK_OEM_6),
     ("quote", VK_OEM_7),
     ("oem102", VK_OEM_102),
+    // Mouse buttons poll like keys. Binding mouse1 also clicks in the game.
+    ("mouse1", 0x01),
+    ("mouse2", 0x02),
+    ("mouse3", 0x04),
+    ("mouse4", 0x05),
+    ("mouse5", 0x06),
+    // Source engine names, so a bind copied from a CS config works.
+    ("uparrow", VK_UP),
+    ("downarrow", VK_DOWN),
+    ("leftarrow", VK_LEFT),
+    ("rightarrow", VK_RIGHT),
+    ("ins", VK_INSERT),
+    ("del", VK_DELETE),
+    ("pgup", VK_PRIOR),
+    ("pgdn", VK_NEXT),
+    ("kp_plus", VK_ADD),
+    ("kp_minus", VK_SUBTRACT),
+    ("kp_multiply", VK_MULTIPLY),
+    ("kp_slash", VK_DIVIDE),
+    ("kp_del", VK_DECIMAL),
 ];
 
 fn lookup(name: &str) -> Option<u16> {
@@ -150,7 +170,10 @@ fn lookup(name: &str) -> Option<u16> {
             }
         }
     }
-    if let Some(digit) = name.strip_prefix("numpad") {
+    if let Some(digit) = name
+        .strip_prefix("numpad")
+        .or_else(|| name.strip_prefix("kp_"))
+    {
         if let Ok(n) = digit.parse::<u16>() {
             if n <= 9 {
                 return Some(VK_NUMPAD0 + n);
@@ -380,6 +403,22 @@ mod tests {
         assert_eq!(chord.and_then(|c| c.scancode), Some(0x3b));
         assert!(chord.is_some_and(|c| c.modifiers.ctrl));
         assert!(matches!(parse("sczz"), Err(KeyError::BadScanCode(_))));
+    }
+
+    #[test]
+    fn mouse_buttons_and_source_names() {
+        assert_eq!(parse("MOUSE5").map(|c| c.map(|c| c.vk)), Ok(Some(0x06)));
+        assert_eq!(parse("kp_5").map(|c| c.map(|c| c.vk)), Ok(Some(0x65)));
+        assert_eq!(parse("uparrow").map(|c| c.map(|c| c.vk)), Ok(Some(VK_UP)));
+        // Display keeps the canonical names.
+        assert_eq!(
+            parse("pgup").ok().flatten().map(|c| c.to_string()),
+            Some("pageup".into())
+        );
+        assert_eq!(
+            parse("mouse4").ok().flatten().map(|c| c.to_string()),
+            Some("mouse4".into())
+        );
     }
 
     #[test]

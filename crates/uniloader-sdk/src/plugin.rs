@@ -61,6 +61,10 @@ pub trait Plugin: Sized + Send + Sync + 'static {
     /// A registered hotkey action was pressed while the game window had focus.
     fn on_hotkey(&self, _host: &Host, _action: &str) {}
 
+    /// The key of a hotkey action went up after [`Plugin::on_hotkey`], for actions that last
+    /// while the key is held.
+    fn on_hotkey_release(&self, _host: &Host, _action: &str) {}
+
     /// One of this plugin's settings changed. `value` is the canonical text form.
     fn on_setting_changed(&self, _host: &Host, _key: &str, _value: &str) {}
 

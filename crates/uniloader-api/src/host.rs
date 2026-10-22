@@ -6,7 +6,7 @@ use crate::registry::{
     ConsoleLineFn, GuardedFn, HotkeyInfoFn, KeyModifiers, PluginEntryFn, ServiceInfo, SettingInfoFn,
 };
 use crate::types::{
-    ArgEntry, Bytes, Caller, CommandDesc, EnvEntry, HotkeyDesc, LogLevel, PluginHandle,
+    ArgEntry, BindDesc, Bytes, Caller, CommandDesc, EnvEntry, HotkeyDesc, LogLevel, PluginHandle,
     PluginState, SettingDesc, Status, Str,
 };
 
@@ -218,7 +218,7 @@ pub struct HostApi {
     ) -> Status,
     /// Bind any plugin's hotkey action (qualified name) to `binding` in key grammar, which
     /// may list several chords separated by commas; empty unbinds it. Saved to
-    /// `hotkeys.toml`; a binding equal to the default removes the override.
+    /// `binds.cfg` as a `rebind` line; a binding equal to the default removes it.
     pub hotkey_rebind: unsafe extern "C" fn(
         host: *mut c_void,
         plugin: PluginHandle,
@@ -300,4 +300,12 @@ pub struct HostApi {
     /// [`Status::NOT_FOUND`] for a pointer that is no plugin's.
     pub plugin_of:
         unsafe extern "C" fn(host: *mut c_void, caller: Caller, out: *mut PluginHandle) -> Status,
+    /// Suggest a bind: `desc.script` runs on `desc.default_binding` until the user moves it
+    /// (`rebind`) or removes it (`unbind`), which the loader saves. When another plugin
+    /// already suggests a key, the first one keeps it. Only during `start`.
+    pub bind_default: unsafe extern "C" fn(
+        host: *mut c_void,
+        plugin: PluginHandle,
+        desc: *const BindDesc,
+    ) -> Status,
 }

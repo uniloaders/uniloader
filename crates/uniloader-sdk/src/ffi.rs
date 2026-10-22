@@ -158,6 +158,7 @@ pub unsafe fn start<P: Plugin>(
             on_event: Some(on_event::<P>),
             on_enable: Some(on_enable::<P>),
             on_disable: Some(on_disable::<P>),
+            on_hotkey_release: Some(on_hotkey_release::<P>),
         });
     }
     Status::OK
@@ -215,6 +216,15 @@ unsafe extern "C" fn on_hotkey<P: Plugin>(ctx: *mut c_void, action: Str) {
     let s = unsafe { state::<P>(ctx) };
     let action = str_from(action);
     guard(s, "on_hotkey", |s| s.plugin.on_hotkey(&s.host, &action));
+}
+
+unsafe extern "C" fn on_hotkey_release<P: Plugin>(ctx: *mut c_void, action: Str) {
+    // SAFETY: documented pointer contracts of this callback.
+    let s = unsafe { state::<P>(ctx) };
+    let action = str_from(action);
+    guard(s, "on_hotkey_release", |s| {
+        s.plugin.on_hotkey_release(&s.host, &action);
+    });
 }
 
 unsafe extern "C" fn on_setting_changed<P: Plugin>(ctx: *mut c_void, key: Str, value: Str) {

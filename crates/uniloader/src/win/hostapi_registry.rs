@@ -197,8 +197,8 @@ pub(super) unsafe extern "C" fn hotkey_enumerate(
         return Status::INVALID_ARGUMENT;
     };
     let owned: Vec<[String; 4]> = state()
-        .hotkeys
-        .iter()
+        .binds
+        .entries()
         .map(|e| {
             [
                 e.name.clone(),
@@ -228,9 +228,14 @@ pub(super) unsafe extern "C" fn hotkey_rebind(
     name: Str,
     binding: Str,
 ) -> Status {
-    state()
-        .rebind_hotkey(&text(name), &text(binding))
-        .map_or_else(|e| e, |()| Status::OK)
+    let saved = state().rebind_hotkey(&text(name), &text(binding));
+    match saved {
+        Ok(persist) => {
+            persist.write();
+            Status::OK
+        }
+        Err(status) => status,
+    }
 }
 
 pub(super) unsafe extern "C" fn service_register(
@@ -370,13 +375,10 @@ pub(super) unsafe extern "C" fn hotkey_press(
     };
     let fired = {
         let mut guard = state();
-        let pressed = guard.hotkeys.press(scancode, held);
-        guard.allowed_hotkeys(pressed)
+        let pressed = guard.binds.press(scancode, held);
+        guard.allowed_binds(pressed)
     };
-    for action in fired {
-        log::debug!("hotkey {action} (scan code {scancode:#x})");
-        super::dispatch::hotkey(&action);
-    }
+    super::exec::deliver_keys(fired);
     Status::OK
 }
 

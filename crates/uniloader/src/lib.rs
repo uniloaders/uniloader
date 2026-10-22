@@ -13,10 +13,12 @@
 
 #![cfg_attr(not(windows), allow(dead_code))]
 
+mod buffer;
 mod config;
 mod console;
 mod logging;
 mod process;
+mod run;
 mod scrollback;
 mod services;
 mod speed;

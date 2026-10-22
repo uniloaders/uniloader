@@ -12,6 +12,7 @@ mod console;
 mod deps;
 mod detour;
 mod dispatch;
+mod exec;
 mod foreign;
 mod guard;
 mod hostapi;
@@ -25,12 +26,13 @@ mod speed;
 
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
-use uniloader_api::{HostApi, PluginHandle, Status};
+use uniloader_api::{HostApi, Status};
 
 use crate::config::{LoaderConfig, Paths};
+use crate::console::Ctx;
+use crate::logging;
 use crate::process::{flags, Process};
 use crate::state::{Phase, State};
-use crate::{console as console_commands, logging};
 
 /// The host table holds raw pointers, so it is not automatically `Sync`.
 // The two marker impls below are the only unsafe code in this module.
@@ -164,7 +166,7 @@ fn init() -> bool {
     guard.phase = Phase::Running;
     guard.hook_lines = plugin_hooks::console_lines;
     guard.quit = quit;
-    log_hotkeys(&guard);
+    log_binds(&guard);
     // The loader's own entry is not a plugin anyone installed.
     let builtin = usize::from(speed::owner().is_some());
     let running = guard.plugins.iter().filter(|p| p.enabled).count() - builtin;
@@ -175,6 +177,7 @@ fn init() -> bool {
     drop(guard);
     // After the plugins started: one that holds the speed at 1 has had its say.
     speed::apply_stored();
+    exec::autoexec();
     // Last, so a command typed or a key pressed in the first instant cannot race the
     // registries.
     console::start_input();
@@ -182,30 +185,28 @@ fn init() -> bool {
     running > 0
 }
 
-/// Log what every hotkey action ended up bound to.
+/// Log every bind: what each key runs and where that comes from.
 ///
-/// A scan code binding also reports what this keyboard layout makes of it, because "the key
+/// A scan code bind also reports what this keyboard layout makes of it, because "the key
 /// under Escape does nothing" is otherwise impossible to diagnose from a log.
-fn log_hotkeys(guard: &State) {
-    for entry in guard.hotkeys.iter() {
-        let resolved: Vec<String> = entry
-            .chords()
-            .filter_map(|c| c.scancode)
-            .filter_map(|sc| {
-                uniloader_core::hotkeys::KeyState::vk_for_scancode(&input::AsyncKeys, sc)
-                    .map(|vk| format!("sc{sc:x} is vk 0x{vk:02x} on this layout"))
+fn log_binds(guard: &State) {
+    use uniloader_core::binds::KeyState;
+    for row in guard.binds.rows() {
+        let layout = row
+            .chord
+            .scancode
+            .and_then(|sc| {
+                input::AsyncKeys
+                    .vk_for_scancode(sc)
+                    .map(|vk| format!(" (sc{sc:x} is vk 0x{vk:02x} on this layout)"))
             })
-            .collect();
-        let binding = entry.binding();
-        if resolved.is_empty() {
-            log::info!("hotkey {} = {binding}", entry.name);
-        } else {
-            log::info!(
-                "hotkey {} = {binding} ({})",
-                entry.name,
-                resolved.join(", ")
-            );
-        }
+            .unwrap_or_default();
+        log::info!(
+            "bind {} = {:?} ({}){layout}",
+            row.chord,
+            row.script,
+            row.origin
+        );
     }
 }
 
@@ -219,92 +220,36 @@ fn quit() -> Vec<String> {
     vec!["stopping plugins and closing the game".to_owned()]
 }
 
-/// One poll of the hotkey thread: drain the log into the console, and fire hotkeys while the
-/// game has focus.
+/// One tick of the input thread: drain the log into the console, turn key changes into
+/// binds while the game has focus, and run the scripts that are due.
 pub(crate) fn tick() {
     let focused = input::game_has_focus();
-    let fired = {
+    let events = {
         let mut guard = state();
         // The console shows the log whether or not anything reads it, so a line logged a
         // moment ago is in the scrollback when someone asks.
         guard.console_drain();
-        if focused {
-            let polled = guard.hotkeys.poll(&input::AsyncKeys);
-            guard.allowed_hotkeys(polled)
+        let events = if focused {
+            guard.binds.poll(&input::AsyncKeys)
         } else {
-            // Released while away, so a key held when focus left does not fire on return.
-            guard.hotkeys.reset();
-            Vec::new()
-        }
+            // Released while away, so a key held when focus left does not fire on return,
+            // and a `+` bind held then ends.
+            guard.binds.reset()
+        };
+        guard.allowed_binds(events)
     };
-    for action in fired {
-        log::debug!("hotkey {action}");
-        dispatch::hotkey(&action);
-    }
+    exec::deliver_keys(events);
+    exec::BUFFER.drain(&exec::Platform);
 }
 
-/// Execute a console line and deliver whatever it produced, discarding the output.
-pub(crate) fn run_console_line(caller: Option<PluginHandle>, line: &str) -> Status {
-    run_console_line_capture(caller, line).0
+/// Run a script as if typed and deliver whatever it produced, discarding the output.
+pub(crate) fn run_console_line(ctx: Ctx, line: &str) -> Status {
+    exec::run_script(ctx, line).0
 }
 
-/// Execute a console line and return both the status and everything it printed.
-pub(crate) fn run_console_line_capture(
-    caller: Option<PluginHandle>,
-    line: &str,
-) -> (Status, Vec<String>) {
-    let (outcome, printed) = {
-        let mut guard = state();
-        let before = guard.console_mark();
-        let outcome = console_commands::execute(&mut guard, caller, line);
-        let printed = guard.console_since(before);
-        (outcome, printed)
-    };
-    for line in &printed {
-        console::print(line);
-    }
-    // The console echoes the typed line so the window and the log show what was asked. A
-    // caller capturing output already knows its own line, so it is not part of the answer.
-    let echo = format!("> {}", line.trim());
-    let printed: Vec<String> = printed.into_iter().filter(|l| *l != echo).collect();
-    for persist in outcome.persist {
-        persist.write();
-    }
-    dispatch::deliver(outcome.notify);
-    if let Some((op, name)) = outcome.lifecycle {
-        // Performed out here, with no lock held: it loads a DLL and calls into it.
-        let (status, lines) = lifecycle::perform(op, &name);
-        {
-            let mut guard = state();
-            for line in &lines {
-                guard.console_print(line.clone());
-            }
-        }
-        for line in &lines {
-            console::print(line);
-        }
-        return (status, [printed, lines].concat());
-    }
-    match outcome.command {
-        // The loader's own commands: no DLL to call.
-        Some((plugin, name, _)) if Some(plugin) == speed::owner() => {
-            let (status, line) = match speed::action(&name) {
-                Ok(line) => (Status::OK, line),
-                Err(status) => (status, format!("{name} failed: {status:?}")),
-            };
-            state().console_print(line.clone());
-            console::print(&line);
-            (status, [printed, vec![line]].concat())
-        }
-        // A plugin command prints through `console_print`, which lands in the buffer.
-        Some((plugin, name, args)) => {
-            let before = state().console_mark();
-            let status = dispatch::command(plugin, &name, &args);
-            let after = state().console_since(before);
-            (status, [printed, after].concat())
-        }
-        None => (outcome.status, printed),
-    }
+/// Run a script and return both the status and everything it printed.
+pub(crate) fn run_console_line_capture(ctx: Ctx, line: &str) -> (Status, Vec<String>) {
+    exec::run_script(ctx, line)
 }
 
 /// Called from `DllMain` on process detach. `terminating` is true when the process is
