@@ -308,4 +308,14 @@ pub struct HostApi {
         plugin: PluginHandle,
         desc: *const BindDesc,
     ) -> Status,
+    /// Report keys the game itself uses (`chords`, comma separated), for an adapter plugin
+    /// that knows the game's input mapping. `label` says what, for example
+    /// `game: Destination`. A bind on such a key still works; the console and the log say
+    /// that both run.
+    pub keys_reserve: unsafe extern "C" fn(
+        host: *mut c_void,
+        plugin: PluginHandle,
+        label: Str,
+        chords: Str,
+    ) -> Status,
 }

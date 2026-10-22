@@ -377,6 +377,24 @@ impl Host {
         check(unsafe { (self.api.bind_default)(self.api.host, self.handle, &raw const desc) })
     }
 
+    /// Report keys the game itself uses (`chords`, comma separated), with what they do in
+    /// `label`, for example `game: Destination`. For adapter plugins that know the game's
+    /// input mapping; binds on them still work and are pointed out.
+    ///
+    /// # Errors
+    /// A key list that does not parse.
+    pub fn reserve_keys(&self, label: &str, chords: &str) -> Result<(), PluginError> {
+        // SAFETY: both strings outlive the call.
+        check(unsafe {
+            (self.api.keys_reserve)(
+                self.api.host,
+                self.handle,
+                Str::new(label),
+                Str::new(chords),
+            )
+        })
+    }
+
     /// Register a console command. Only during `start`.
     ///
     /// # Errors

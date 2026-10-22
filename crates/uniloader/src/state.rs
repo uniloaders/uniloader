@@ -251,6 +251,9 @@ pub struct State {
     /// The stored values of the plugin starting now, read before its start so that each
     /// [`State::register_setting`] does not read the file again under the lock.
     pub start_values: Option<(PluginHandle, BTreeMap<String, String>)>,
+    /// Keys the game uses, with who said so (`game` from `loader.toml`, or an adapter
+    /// plugin's label), so a bind on one can be pointed out.
+    pub reserved: Vec<(keys::Chord, String)>,
     /// Settings (`plugin.key`) stored as an Argon2id hash of what is set, because the loader
     /// only ever verifies them: the RCON password.
     pub hashed: BTreeSet<String>,
@@ -283,7 +286,8 @@ impl State {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => log::warn!("{}: {e}", file.display()),
         }
-        State {
+        let game_keys = config.game_keys.join(",");
+        let mut state = State {
             paths,
             config,
             plugins: Vec::new(),
@@ -299,8 +303,13 @@ impl State {
             quit: no_quit,
             start_values: None,
             hashed: BTreeSet::new(),
+            reserved: Vec::new(),
             persist_seq: 0,
+        };
+        if state.reserve_keys("used by the game", &game_keys).is_err() {
+            log::warn!("loader.toml: game_keys {game_keys:?} has a key that does not parse");
         }
+        state
     }
 
     /// Record a plugin after a successful describe; returns its handle.
@@ -616,6 +625,16 @@ impl State {
                 for warning in warnings {
                     log::warn!("{warning}");
                 }
+                let chords: Vec<keys::Chord> = self
+                    .binds
+                    .entry(name)
+                    .map(|e| e.chords().collect())
+                    .unwrap_or_default();
+                for chord in chords {
+                    if let Some(label) = self.reserved_by(chord) {
+                        log::warn!("{name}: {chord} is also {label}; both will run");
+                    }
+                }
                 Ok(())
             }
             Err(binds::BindError::Duplicate(_)) => Err(Status::ALREADY_EXISTS),
@@ -719,6 +738,30 @@ impl State {
         }
         self.binds.rebind(name, chords);
         Ok(self.save_binds())
+    }
+
+    /// Note keys the game uses. `label` says what, for example `game: Destination`.
+    ///
+    /// # Errors
+    /// A key list that does not parse.
+    pub fn reserve_keys(&mut self, label: &str, chords: &str) -> Result<(), Status> {
+        let chords = keys::parse_list(chords).map_err(|_| Status::INVALID_ARGUMENT)?;
+        for chord in chords {
+            if let Some((fire, _)) = self.binds.lookup(chord) {
+                log::warn!("{chord} is {label} and also bound to {fire:?}; both will run");
+            }
+            self.reserved.push((chord, label.to_owned()));
+        }
+        Ok(())
+    }
+
+    /// What reserved `chord`, if anything.
+    #[must_use]
+    pub fn reserved_by(&self, chord: keys::Chord) -> Option<&str> {
+        self.reserved
+            .iter()
+            .find(|(c, _)| *c == chord)
+            .map(|(_, label)| label.as_str())
     }
 
     /// `binds.cfg` with the table as it is now, to write once the lock is released.

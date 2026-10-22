@@ -171,3 +171,21 @@ fn secrets_never_reach_the_console_binds_or_files() {
     );
     assert!(!saved(&f).contains("hunter2"));
 }
+
+#[test]
+fn keys_the_game_uses_are_pointed_out() {
+    let (f, _) = fake();
+    f.with_state(|s| s.reserve_keys("game: Destination", "f7, f8"))
+        .unwrap_or_else(|e| panic!("{e:?}"));
+    let ran = f.run("bind f7 \"echo x\"");
+    assert_eq!(ran.status, Status::OK, "never blocked");
+    assert!(ran
+        .printed
+        .iter()
+        .any(|l| l.contains("also game: Destination")));
+    assert!(f
+        .run("binds f7")
+        .printed
+        .iter()
+        .any(|l| l.ends_with("[also game: Destination]")));
+}

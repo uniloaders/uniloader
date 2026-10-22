@@ -130,6 +130,9 @@ pub struct LoaderConfig {
     /// Other DLLs to load after the plugins, relative to the game directory, for example
     /// `ue4ss/UE4SS.dll` when the loader took the place of UE4SS's own proxy.
     pub load: Vec<String>,
+    /// Keys the game itself uses, for games without an adapter plugin that reports them
+    /// (`keys_reserve`). A bind on one still works; the console and the log say both run.
+    pub game_keys: Vec<String>,
 }
 
 impl Default for LoaderConfig {
@@ -140,6 +143,7 @@ impl Default for LoaderConfig {
             log_level: "info".to_owned(),
             asi: true,
             load: Vec::new(),
+            game_keys: Vec::new(),
         }
     }
 }

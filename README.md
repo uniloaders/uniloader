@@ -82,6 +82,7 @@ disabled_plugins = ["jump"]     # file stems never loaded
 log_level = "info"
 asi = true                      # load plugins/*.asi
 load = ["ue4ss/UE4SS.dll"]      # chain-load DLLs this one displaced, listed with their version
+game_keys = ["f1", "ctrl+f12"]  # keys the game uses: binds on them work, and are pointed out
 ```
 
 Command line: `--loader-console` opens a console window, `--noplugins` loads nothing,

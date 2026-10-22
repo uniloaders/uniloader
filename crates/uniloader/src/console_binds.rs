@@ -125,6 +125,9 @@ fn bind(state: &mut State, ctx: &Ctx, text: &str, body: &str) -> Outcome {
     }
     state.binds.bind(chord, body);
     state.console_print(format!("{chord} = {}", script::quote(body)));
+    if let Some(label) = state.reserved_by(chord) {
+        state.console_print(format!("note: {chord} is also {label}; both will run"));
+    }
     let plain = chord.modifiers == keys::Modifiers::default() && chord.scancode.is_none();
     if plain && matches!(chord.vk, 0x01 | 0x02) {
         state.console_print(format!(
@@ -151,8 +154,12 @@ fn list(state: &mut State, filter: Option<&str>) -> Outcome {
         .rows()
         .into_iter()
         .map(|row| {
+            let game = state
+                .reserved_by(row.chord)
+                .map(|label| format!(" [also {label}]"))
+                .unwrap_or_default();
             format!(
-                "{:<16} {}  ({})",
+                "{:<16} {}  ({}){game}",
                 row.chord.to_string(),
                 script::quote(&row.script),
                 row.origin

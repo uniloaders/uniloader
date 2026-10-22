@@ -129,6 +129,7 @@ pub(crate) fn build(paths: &Paths, process: &Process) -> &'static HostApi {
         input_capture: registry::input_capture,
         plugin_of: caller::plugin_of,
         bind_default,
+        keys_reserve,
     }))
 }
 
@@ -316,6 +317,17 @@ unsafe extern "C" fn bind_default(
             &text(d.script),
         )
         .map_or_else(|e| e, |_| Status::OK)
+}
+
+unsafe extern "C" fn keys_reserve(
+    _host: *mut c_void,
+    _plugin: PluginHandle,
+    label: Str,
+    chords: Str,
+) -> Status {
+    state()
+        .reserve_keys(&text(label), &text(chords))
+        .map_or_else(|e| e, |()| Status::OK)
 }
 
 unsafe extern "C" fn command_register(
