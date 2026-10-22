@@ -24,6 +24,7 @@ mod plugins;
 pub(crate) mod proxy;
 mod rcon;
 mod speed;
+mod update;
 
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
@@ -181,6 +182,7 @@ fn init() -> bool {
     speed::apply_stored();
     exec::autoexec();
     rcon::reconfigure();
+    update::start();
     // Last, so a command typed or a key pressed in the first instant cannot race the
     // registries.
     console::start_input();

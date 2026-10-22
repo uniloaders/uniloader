@@ -90,6 +90,12 @@ impl Paths {
         self.config_dir.join("binds.cfg")
     }
 
+    /// The update check's cache of answers, next to the logs (it is not configuration).
+    #[must_use]
+    pub fn update_cache(&self) -> PathBuf {
+        self.logs_dir.with_file_name("cache").join("updates.toml")
+    }
+
     /// A cfg file `exec` runs, for a name already checked by [`cfg_name`].
     #[must_use]
     pub fn cfg_file(&self, name: &str) -> PathBuf {

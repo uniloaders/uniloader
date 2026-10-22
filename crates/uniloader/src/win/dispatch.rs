@@ -98,6 +98,8 @@ pub(crate) fn deliver(notifications: Vec<Notify>) {
                 super::speed::apply(&value);
             } else if key.starts_with("rcon") {
                 super::rcon::reconfigure();
+            } else if key.starts_with("update") {
+                super::update::start();
             }
             continue;
         }

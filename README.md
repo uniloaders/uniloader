@@ -159,6 +159,14 @@ including the overlay's settings editor and `uniloader/config/uniloader.toml`:
 | `uniloader.speed` | Setting, 0.1 to 4, default 1. `uniloader.speed 1.2` in the console sets it. |
 | `uniloader.speed_up`, `uniloader.speed_down` | Command and hotkey: a tenth faster or slower. |
 | `uniloader.speed_reset` | Command and hotkey: back to 1. |
+| `uniloader.update_check` | Setting, off by default: look for newer plugin versions. |
+| `uniloader.update_interval` | Setting, hours between two checks of one source, default 24. |
+
+The update check runs in the background after startup and whenever it is turned on. It asks
+each plugin's update source (the latest GitHub release of `UPDATE_GITHUB`, or `UPDATE_URL`)
+at most once per interval, caches the answers in `uniloader/cache/updates.toml`, logs newer
+versions, publishes `loader.update_available` and shows them in `plugin info` and the overlay.
+While it is off the loader opens no connection, and WinHTTP is not even loaded.
 
 The hotkeys are unbound by default, because games and plugins have taken most function keys;
 bind them in the overlay's settings editor or in the console (`bind ctrl+add

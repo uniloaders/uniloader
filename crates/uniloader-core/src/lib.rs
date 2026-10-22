@@ -20,4 +20,5 @@ pub mod store;
 pub mod target;
 pub mod thunk;
 pub mod timescale;
+pub mod update;
 pub mod values;

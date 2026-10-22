@@ -26,6 +26,7 @@ mod secret;
 mod services;
 mod speed;
 mod state;
+mod update;
 
 #[cfg(windows)]
 mod win;

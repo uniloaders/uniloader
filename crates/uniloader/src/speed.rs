@@ -1,5 +1,5 @@
 //! The loader's own entry in the plugin list, and the game speed setting it carries. The
-//! remote console's settings are on it too (see `rcon`).
+//! remote console's settings (see `rcon`) and the update check's (see `update`) are on it too.
 //!
 //! The loader registers itself as the plugin `uniloader`, so its settings, hotkeys and
 //! commands are read, set, rebound, listed, saved and shown in the overlay's settings editor
@@ -101,11 +101,18 @@ pub fn builtin(file: &str) -> (Described, Builtin) {
         name: NAME.to_owned(),
         title: "uniloader".to_owned(),
         version: env!("CARGO_PKG_VERSION").to_owned(),
-        description: "The loader itself: game speed and the remote console.".to_owned(),
+        description: "The loader itself: game speed, the remote console and the update check."
+            .to_owned(),
         authors: vec![(
             "Bluscream".to_owned(),
             "https://github.com/Bluscream".to_owned(),
         )],
+        links: crate::described::Links {
+            homepage: "https://github.com/uniloaders/uniloader".to_owned(),
+            issues: "https://github.com/uniloaders/uniloader/issues".to_owned(),
+            download: "https://github.com/uniloaders/uniloader/releases/latest".to_owned(),
+        },
+        update_github: "uniloaders/uniloader".to_owned(),
         ..Described::default()
     };
     let actions = Action::ALL.iter().map(|(_, name, help)| (*name, *help));
@@ -114,6 +121,7 @@ pub fn builtin(file: &str) -> (Described, Builtin) {
         settings: [speed_setting()]
             .into_iter()
             .chain(crate::rcon::settings())
+            .chain(crate::update::settings())
             .collect(),
         hashed: vec![crate::rcon::keys::PASSWORD.to_owned()],
         hotkeys: actions
