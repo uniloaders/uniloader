@@ -21,6 +21,7 @@ mod lifecycle;
 mod plugin_hooks;
 mod plugins;
 pub(crate) mod proxy;
+mod speed;
 
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
@@ -147,6 +148,15 @@ fn init() -> bool {
         log::info!("plugins disabled; forwarding only");
         return false;
     }
+    // Before the plugins, so the name is the loader's and a plugin can read its settings in
+    // `start`.
+    let own_file = proxy::forwarding()
+        .and_then(|f| f.own_path.file_name())
+        .map_or_else(
+            || "uniloader.dll".to_owned(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+    speed::register(&own_file);
     plugins::load_all(&paths, &config.disabled_plugins);
     // After the plugins, so a plugin's hooks are in place before anything else runs code.
     foreign::load_all(&paths, config.asi, &config.load);
@@ -155,9 +165,16 @@ fn init() -> bool {
     guard.hook_lines = plugin_hooks::console_lines;
     guard.quit = quit;
     log_hotkeys(&guard);
-    let running = guard.plugins.iter().filter(|p| p.enabled).count();
-    log::info!("{running} of {} plugins running", guard.plugins.len());
+    // The loader's own entry is not a plugin anyone installed.
+    let builtin = usize::from(speed::owner().is_some());
+    let running = guard.plugins.iter().filter(|p| p.enabled).count() - builtin;
+    log::info!(
+        "{running} of {} plugins running",
+        guard.plugins.len() - builtin
+    );
     drop(guard);
+    // After the plugins started: one that holds the speed at 1 has had its say.
+    speed::apply_stored();
     // Last, so a command typed or a key pressed in the first instant cannot race the
     // registries.
     console::start_input();
@@ -269,6 +286,16 @@ pub(crate) fn run_console_line_capture(
         return (status, [printed, lines].concat());
     }
     match outcome.command {
+        // The loader's own commands: no DLL to call.
+        Some((plugin, name, _)) if Some(plugin) == speed::owner() => {
+            let (status, line) = match speed::action(&name) {
+                Ok(line) => (Status::OK, line),
+                Err(status) => (status, format!("{name} failed: {status:?}")),
+            };
+            state().console_print(line.clone());
+            console::print(&line);
+            (status, [printed, vec![line]].concat())
+        }
         // A plugin command prints through `console_print`, which lands in the buffer.
         Some((plugin, name, args)) => {
             let before = state().console_mark();

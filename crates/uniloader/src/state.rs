@@ -80,6 +80,19 @@ impl PluginRecord {
     }
 }
 
+/// What a plugin entry with no DLL behind it registers: the loader's own (see `speed`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Builtin {
+    /// File name shown in the plugin list.
+    pub file: String,
+    /// Its settings.
+    pub settings: Vec<settings::Desc>,
+    /// Its hotkey actions: name, title and default binding.
+    pub hotkeys: Vec<(String, String, String)>,
+    /// Its console commands.
+    pub commands: Vec<(String, CommandInfo)>,
+}
+
 /// A DLL the loader loaded that is not a uniloader plugin: an `.asi` file, or a library listed
 /// under `load` in `loader.toml` such as UE4SS. Listed with the plugins, never called.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -272,6 +285,38 @@ impl State {
         Ok(PluginHandle(
             u32::try_from(self.plugins.len()).map_err(|_| Status::ERROR)?,
         ))
+    }
+
+    /// Record a plugin entry that has no DLL and register everything it declares, as if it
+    /// had done so in its start. It is running from then on; nothing ever stops it.
+    ///
+    /// # Errors
+    /// What [`State::add_plugin`] and the registrations refuse.
+    pub fn add_builtin(
+        &mut self,
+        info: Described,
+        builtin: Builtin,
+    ) -> Result<PluginHandle, Status> {
+        let handle = self.add_plugin(info, &builtin.file)?;
+        let phase = std::mem::replace(&mut self.phase, Phase::Starting(handle));
+        let registered = self.register_builtin(handle, builtin);
+        self.phase = phase;
+        registered?;
+        self.set_enabled(handle, true);
+        Ok(handle)
+    }
+
+    fn register_builtin(&mut self, handle: PluginHandle, builtin: Builtin) -> Result<(), Status> {
+        for desc in builtin.settings {
+            self.register_setting(handle, desc)?;
+        }
+        for (action, title, default) in &builtin.hotkeys {
+            self.register_hotkey(handle, action, title, default)?;
+        }
+        for (name, info) in builtin.commands {
+            self.register_command(handle, &name, info)?;
+        }
+        Ok(())
     }
 
     /// Record by handle.

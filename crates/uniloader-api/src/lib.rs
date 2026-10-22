@@ -70,4 +70,10 @@ pub mod topics {
     /// running then, so a UI can tell the player. Payload: its name, a NUL byte, then why
     /// (UTF-8).
     pub const PLUGIN_NOT_RUNNING: &str = "loader.plugin_not_running";
+    /// The game speed (the setting `uniloader.speed`) changed and the clocks now run at it.
+    /// Payload: the factor, a little-endian `f64`; 1.0 is normal speed.
+    ///
+    /// A plugin that cannot work at another speed, a multiplayer session for one, sets
+    /// `uniloader.speed` back to 1 when it receives this.
+    pub const SPEED: &str = "loader.speed";
 }

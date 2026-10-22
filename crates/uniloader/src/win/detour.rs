@@ -164,6 +164,11 @@ fn alloc_executable(near: Option<usize>) -> Option<*mut u8> {
 /// trampoline at the moment the detour is removed, and one page per hook for the lifetime of
 /// a game session costs nothing against having to prove otherwise.
 ///
+/// `ready` receives the trampoline before the jump is written. A replacement that is called
+/// the instant the jump exists, on another thread, finds its way to the original only if it
+/// was stored by then; returning it afterwards is too late for a function the game calls
+/// constantly.
+///
 /// # Safety
 /// `target` must be the entry point of a function, with `readable` bytes of committed memory
 /// from it, and `replacement` must have its exact signature and calling convention.
@@ -171,6 +176,7 @@ pub(super) unsafe fn install(
     target: usize,
     readable: usize,
     replacement: usize,
+    ready: impl FnOnce(*mut c_void),
     write: impl Fn(usize, &[u8]) -> Result<Vec<u8>, Status>,
 ) -> Result<Detour, String> {
     // The longest prologue the decoder could need, but never past the end of the region.
@@ -207,6 +213,7 @@ pub(super) unsafe fn install(
     patch[0] = 0xE9;
     patch[1..JUMP_LEN].copy_from_slice(&displacement.to_ne_bytes());
 
+    ready(trampoline.cast::<c_void>());
     let original = write(target, &patch).map_err(|e| format!("cannot write the jump: {e:?}"))?;
     log::debug!(
         "detoured {target:#X} -> {replacement:#X} via relay {relay:p}, {stolen} bytes stolen"

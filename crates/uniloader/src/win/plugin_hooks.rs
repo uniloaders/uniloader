@@ -84,7 +84,7 @@ fn is_writable_region(address: usize, len: usize) -> bool {
 
 /// How many bytes from `address` lie in the same committed, accessible region; 0 when
 /// `address` itself is not accessible.
-fn accessible_from(address: usize) -> usize {
+pub(super) fn accessible_from(address: usize) -> usize {
     if address == 0 {
         return 0;
     }
@@ -246,6 +246,20 @@ pub(super) fn detour(
     replacement: *mut c_void,
     note: &str,
 ) -> Result<(u64, *mut c_void), Status> {
+    detour_with(plugin, "", target, replacement, note, |_| {})
+}
+
+/// [`detour`] for the loader's own hooks: `owner` names the hook in the `hooks` listing when
+/// no plugin DLL stands behind `plugin`, and `ready` receives the trampoline before the jump
+/// is written (see [`super::detour::install`]).
+pub(super) fn detour_with(
+    plugin: PluginHandle,
+    owner: &str,
+    target: *mut c_void,
+    replacement: *mut c_void,
+    note: &str,
+    ready: impl FnOnce(*mut c_void),
+) -> Result<(u64, *mut c_void), Status> {
     if target.is_null() || replacement.is_null() {
         return Err(Status::INVALID_ARGUMENT);
     }
@@ -269,6 +283,7 @@ pub(super) fn detour(
             target as usize,
             readable,
             replacement as usize,
+            ready,
             |at, bytes| {
                 // `install` only ever asks for the target's own entry bytes, inside the
                 // readable window; the enclosing `unsafe` block carries the obligation.
@@ -288,6 +303,9 @@ pub(super) fn detour(
         note,
         Installed::Detour { detour: installed },
     );
+    if let Some(entry) = hooks.last_mut().filter(|e| e.name.is_empty()) {
+        owner.clone_into(&mut entry.name);
+    }
     Ok((id, trampoline))
 }
 

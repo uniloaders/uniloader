@@ -51,6 +51,11 @@ pub(crate) fn hotkey(action: &str) {
     let Some((name, bare)) = action.split_once('.') else {
         return;
     };
+    if name == crate::speed::NAME {
+        // The loader's own; `action` logs what went wrong.
+        let _ = super::speed::action(bare);
+        return;
+    }
     let Some(plugin) = plugins::find_by_name(name) else {
         return;
     };
@@ -70,6 +75,12 @@ pub(crate) fn deliver(notifications: Vec<Notify>) {
             key,
             value,
         } = notify;
+        if Some(handle) == super::speed::owner() {
+            if key == crate::speed::SPEED {
+                super::speed::apply(&value);
+            }
+            continue;
+        }
         let Some(plugin) = plugins::find(handle) else {
             continue;
         };

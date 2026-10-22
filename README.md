@@ -83,6 +83,32 @@ load = ["ue4ss/UE4SS.dll"]      # chain-load DLLs this one displaced, listed wit
 Command line: `--loader-console` opens a console window, `--noplugins` loads nothing,
 `--loader-log=debug` overrides the level.
 
+## Game speed
+
+The loader can run any game faster or slower, the way Cheat Engine's speedhack does: it
+scales the clocks games measure frame time with (`QueryPerformanceCounter`,
+`GetTickCount64`, `GetTickCount`, and `timeGetTime` once `winmm.dll` is loaded). The wall
+clock stays real. Nothing is hooked until the speed first differs from 1, and a change never
+makes the clocks jump or run backwards.
+
+The loader lists itself as the plugin `uniloader`, so its settings work like any plugin's,
+including the overlay's settings editor and `uniloader/config/uniloader.toml`:
+
+| Name | What |
+| --- | --- |
+| `uniloader.speed` | Setting, 0.1 to 4, default 1. `uniloader.speed 1.2` in the console sets it. |
+| `uniloader.speed_up`, `uniloader.speed_down` | Command and hotkey: a tenth faster or slower. |
+| `uniloader.speed_reset` | Command and hotkey: back to 1. |
+
+The hotkeys are unbound by default, because games and plugins have taken most function keys;
+bind them in the overlay's settings editor or in `hotkeys.toml`
+(`"uniloader.speed_up" = "ctrl+shift+u"`). A saved speed other than 1 is applied at startup and logged as a warning.
+
+**For plugins:** the speed is the setting `uniloader.speed` (`host.get("uniloader.speed")`),
+and every change is published as the event `loader.speed` (`topics::SPEED`, payload a
+little-endian `f64`). A plugin that cannot work at another speed, a multiplayer session where
+every machine must agree on time, subscribes to it and sets `uniloader.speed` back to 1.
+
 ## Repository layout
 
 | Crate | What it is |
