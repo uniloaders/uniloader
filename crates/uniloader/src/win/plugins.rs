@@ -310,7 +310,7 @@ pub(super) struct Described {
     /// File it came from.
     pub(super) file: PathBuf,
     /// What the describe export said.
-    pub(super) info: crate::state::Described,
+    pub(super) info: crate::described::Described,
     /// What it declared it needs.
     pub(super) declared: Vec<external::Declared>,
     exports: Exports,
@@ -360,7 +360,7 @@ pub(super) fn describe_one(file: &Path) -> Result<Described, String> {
     external::register_provider(&name, &external::provided(info));
     Ok(Described {
         file: file.to_path_buf(),
-        info: crate::state::Described {
+        info: crate::described::Described {
             title: if title.is_empty() {
                 name.clone()
             } else {
@@ -370,7 +370,7 @@ pub(super) fn describe_one(file: &Path) -> Result<Described, String> {
             version: text(info.version),
             description: text(info.description),
             authors: authors(info),
-            links: crate::state::Links {
+            links: crate::described::Links {
                 homepage: text(info.homepage),
                 issues: text(info.issues),
                 download: text(info.download),
@@ -430,6 +430,56 @@ impl Described {
     }
 }
 
+/// Which of the plugin's target filters the game fails. Hashes the executable first when a
+/// filter asks for `file.sha256` and nobody did before (outside the state lock: it reads the
+/// whole file).
+fn target_mismatch(info: &crate::described::Described) -> Vec<String> {
+    let wants_hash = info
+        .targets
+        .iter()
+        .any(|f| f.property.eq_ignore_ascii_case("file.sha256"));
+    if wants_hash && !super::state().facts.contains_key("file.sha256") {
+        let exe = super::proxy::module_path(None);
+        if let Some(digest) = uniloader_core::facts::sha256(&exe) {
+            super::state().facts.insert(
+                "file.sha256".to_owned(),
+                uniloader_core::target::Fact::Text(digest),
+            );
+        }
+    }
+    super::state().target_mismatch(info)
+}
+
+/// Publish `loader.plugin_mismatch` for every running plugin meant for another game. Never
+/// called with the state lock held.
+fn announce_mismatches() {
+    let (targets, mismatched) = {
+        let guard = super::state();
+        let mismatched: Vec<Vec<u8>> = guard
+            .plugins
+            .iter()
+            .filter(|p| p.enabled && !p.mismatch.is_empty())
+            .map(|p| {
+                [p.name(), &p.info.version, &p.mismatch.join("\n")]
+                    .join("\0")
+                    .into_bytes()
+            })
+            .collect();
+        (
+            guard.subscribers(PluginHandle::NONE, topics::PLUGIN_MISMATCH),
+            mismatched,
+        )
+    };
+    for payload in mismatched {
+        deliver_event(
+            PluginHandle::NONE,
+            &targets,
+            topics::PLUGIN_MISMATCH,
+            &payload,
+        );
+    }
+}
+
 /// Second pass: register and start one described plugin.
 pub(super) fn start_one(described: &Described) -> Result<Active, String> {
     let Described {
@@ -443,10 +493,21 @@ pub(super) fn start_one(described: &Described) -> Result<Active, String> {
         .file_name()
         .map(|f| f.to_string_lossy().to_string())
         .unwrap_or_default();
+    let mismatch = target_mismatch(info);
+    if !mismatch.is_empty() {
+        if info.refuse_mismatch {
+            return Err(format!("meant for another game: {}", mismatch.join("; ")));
+        }
+        log::warn!(
+            "[{name}] meant for another game, starting it anyway: {}",
+            mismatch.join("; ")
+        );
+    }
 
     let handle = super::state()
         .add_plugin(info.clone(), &file_name)
         .map_err(|e| format!("rejected name {name:?}: {e:?}"))?;
+    super::state().set_mismatch(handle, mismatch);
     log::info!("starting {name} {version} from {file_name}");
     for dependency in declared {
         log::debug!("[{name}] needs {}", dependency.describe());
@@ -594,6 +655,7 @@ fn load_all_now(paths: &Paths, disabled: &[String]) {
     let waiting = super::state().pending.clone();
     not_running.extend(waiting);
     announce_not_running(&not_running);
+    announce_mismatches();
 }
 
 /// Publish `loader.plugin_not_running` for each of `plugins` (name, why). Never called with

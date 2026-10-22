@@ -16,6 +16,7 @@
 mod buffer;
 mod config;
 mod console;
+mod described;
 mod logging;
 mod process;
 mod rcon;

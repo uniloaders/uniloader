@@ -8,7 +8,8 @@
 
 use uniloader_core::settings;
 
-use crate::state::{Builtin, CommandInfo, Described};
+use crate::described::Described;
+use crate::state::{Builtin, CommandInfo};
 
 /// The loader's name in the plugin list.
 pub const NAME: &str = "uniloader";

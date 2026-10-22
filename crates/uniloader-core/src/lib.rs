@@ -10,6 +10,7 @@ pub mod binds;
 pub mod cmdline;
 pub mod console;
 pub mod deps;
+pub mod facts;
 pub mod keys;
 pub mod names;
 pub mod pe;

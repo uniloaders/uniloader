@@ -142,6 +142,7 @@ pub fn execute(state: &mut State, ctx: &Ctx, text: &str) -> Outcome {
         Line::Help(Some(name)) => help_for(state, &name),
         Line::List(prefix) => list(state, prefix.as_deref()),
         Line::Plugin(op, name) => plugin_op(state, op, name.as_deref()),
+        Line::Facts(filter) => facts(state, filter.as_deref()),
         Line::Hooks => {
             let lines = (state.hook_lines)();
             print_all(state, lines, "no hooks installed")
@@ -267,6 +268,26 @@ fn plugin_op(state: &mut State, op: PluginOp, name: Option<&str>) -> Outcome {
     }
 }
 
+/// `facts [filter]`: the game's properties, numbers also in hex.
+fn facts(state: &mut State, filter: Option<&str>) -> Outcome {
+    use uniloader_core::target::Fact;
+    let lines: Vec<String> = state
+        .facts
+        .iter()
+        .filter(|(name, _)| filter.is_none_or(|f| name.to_ascii_lowercase().contains(f)))
+        .map(|(name, fact)| match fact {
+            Fact::Number(n) if *n > 9 => format!("{name} = {n} (0x{n:x})"),
+            other => format!("{name} = {other}"),
+        })
+        .collect();
+    let empty = if state.facts.is_empty() {
+        "the game's properties have not been read"
+    } else {
+        "no property matches"
+    };
+    print_all(state, lines, empty)
+}
+
 /// `plugin info <name>`: everything the plugin declared about itself, and what the loader
 /// found (target mismatch, latest version).
 fn plugin_info(state: &mut State, name: &str) -> Outcome {
@@ -274,7 +295,12 @@ fn plugin_info(state: &mut State, name: &str) -> Outcome {
         return fail(state, Status::NOT_FOUND, format!("no plugin named {name}"));
     };
     let info = &p.info;
-    let mut lines = vec![format!("{} {} ({})", info.title, info.version, p.file)];
+    let title = if info.title.is_empty() {
+        &info.name
+    } else {
+        &info.title
+    };
+    let mut lines = vec![format!("{title} {} ({})", info.version, p.file)];
     if !info.description.is_empty() {
         lines.push(format!("  {}", info.description));
     }
@@ -626,5 +652,63 @@ mod tests {
         execute(&mut s, &CTX, "plugins");
         assert_eq!(last(&s), "vr 1 (vr.dll) running");
         assert_eq!(execute(&mut s, &CTX, "   "), Outcome::default());
+    }
+
+    #[test]
+    fn facts_and_plugin_info() {
+        use uniloader_core::target::{Fact, Filter};
+        let (mut s, h) = fixture();
+        assert_eq!(execute(&mut s, &CTX, "facts").status, Status::OK);
+        assert_eq!(last(&s), "the game's properties have not been read");
+        s.facts.insert("pe.machine".into(), Fact::Number(0x8664));
+        s.facts
+            .insert("exe.name".into(), Fact::Text("Game.exe".into()));
+        execute(&mut s, &CTX, "facts PE.");
+        assert_eq!(last(&s), "pe.machine = 34404 (0x8664)");
+
+        let record = s.plugins.iter_mut().find(|p| p.name() == "vr");
+        let Some(record) = record else {
+            panic!("no vr")
+        };
+        record.info.authors = vec![
+            ("Ann".into(), "https://a.example".into()),
+            ("Bo".into(), String::new()),
+        ];
+        record.info.links.issues = "https://a.example/issues".into();
+        record.info.targets = vec![Filter {
+            property: "exe.name".into(),
+            values: vec!["Other.exe".into(), "Else.exe".into()],
+        }];
+        let info = record.info.clone();
+        let why = s.target_mismatch(&info);
+        assert_eq!(
+            why,
+            vec!["exe.name is Game.exe, the plugin wants Other.exe | Else.exe"]
+        );
+        s.set_mismatch(h, why);
+        let before = s.console.len();
+        execute(&mut s, &CTX, "plugin info vr");
+        let shown: Vec<&str> = s
+            .console
+            .iter()
+            .skip(before + 1)
+            .map(|l| l.text.as_str())
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                "vr 1 (vr.dll)",
+                "  author: Ann <https://a.example>",
+                "  author: Bo",
+                "  issues: https://a.example/issues",
+                "  target: exe.name = Other.exe | Else.exe",
+                "  on a target mismatch it starts anyway",
+                "  mismatch: exe.name is Game.exe, the plugin wants Other.exe | Else.exe",
+            ]
+        );
+        assert_eq!(
+            execute(&mut s, &CTX, "plugin info nope").status,
+            Status::NOT_FOUND
+        );
     }
 }

@@ -21,6 +21,8 @@ From the DayZ loader, made game-agnostic:
   variables plugins register, `;` between commands, `"..."` quoting, aliases, `+`/`-` hold
   binds, cfg files and `wait`. See [Console and binds](#console-and-binds).
 - **Dependencies** and load order, with version requirements.
+- **Metadata and targets**: authors with links, home page, issue tracker, download page and
+  where to look for updates; and which game the plugin is for (see [Targets](#targets)).
 - **Plugin-to-plugin messaging**: direct messages with replies, broadcast topics.
 - **Hooks the loader owns**: byte patches, vtable slots, inline detours, undone when the
   plugin stops.
@@ -168,6 +170,39 @@ than 1 is applied at startup and logged as a warning.
 and every change is published as the event `loader.speed` (`topics::SPEED`, payload a
 little-endian `f64`). A plugin that cannot work at another speed, a multiplayer session where
 every machine must agree on time, subscribes to it and sets `uniloader.speed` back to 1.
+
+## Targets
+
+A plugin can say which game it is for. Each filter names a property of the running game and
+lists the values it accepts; every filter must accept for the plugin to count as meant for
+this game:
+
+```rust
+const TARGETS: &'static [Target] = &[
+    Target::new("exe.name", &["TrainSimWorld.exe"]),
+    Target::new("pe.version.CompanyName", &["Dovetail Games"]),
+    Target::new("pe.version.ProductName", &["TrainSimWorld5", "TrainSimWorld6", "TrainSimWorld7"]),
+];
+```
+
+A mismatch never stops the loader. The plugin still starts with a warning in the log, the
+event `loader.plugin_mismatch` and a dialog in the overlay, unless it set
+`REFUSE_ON_MISMATCH`; then it is listed as not running, with the reason.
+
+`facts` in the console lists every property the loader read from the game, with its value,
+and `plugin info NAME` shows what a plugin declared and whether it matched. The properties:
+the executable's name, path and folder, the Steam install folder, app ID and build ID; the PE
+headers (machine, timestamp, linker version, subsystem, the PDB GUID that identifies one
+build exactly); every string of the version resource (`pe.version.ProductName`, custom keys
+included, and `pe.version.040904b0.ProductName` per language) and its fixed part
+(`pe.fixed.file_version`); the Unreal or Unity engine version; .NET runtime; and on request
+`file.sha256`.
+
+Values match by kind. Text is matched ignoring case, with `*` and `?` wildcards, or as a
+version after a comparator (`>=2021.3`). Versions accept a prefix (`4.26` accepts `4.26.1`)
+or comparisons (`>=4.26 <5`). Numbers are matched as decimal or `0x` hex, with comparisons,
+and `&0x20` accepts when those bits are set. A property the loader could not read fails its
+filter.
 
 ## Repository layout
 

@@ -160,6 +160,7 @@ fn init() -> bool {
             |n| n.to_string_lossy().into_owned(),
         );
     speed::register(&own_file);
+    identify_game();
     plugins::load_all(&paths, &config.disabled_plugins);
     // After the plugins, so a plugin's hooks are in place before anything else runs code.
     foreign::load_all(&paths, config.asi, &config.load);
@@ -185,6 +186,30 @@ fn init() -> bool {
     console::start_input();
     input::start_polling();
     running > 0
+}
+
+/// Read the game's properties for target filters, and log who it is.
+fn identify_game() {
+    let exe = proxy::module_path(None);
+    let facts = uniloader_core::facts::gather(&exe, false);
+    let shown = |name: &str| facts.get(name).map(ToString::to_string);
+    let mut parts: Vec<String> = ["pe.version.CompanyName", "pe.version.ProductName"]
+        .into_iter()
+        .filter_map(shown)
+        .collect();
+    if let Some(engine) = shown("unreal.version").or_else(|| shown("unity.version")) {
+        parts.push(format!("engine {engine}"));
+    }
+    if let Some(build) = shown("steam.build_id") {
+        parts.push(format!("Steam build {build}"));
+    }
+    log::info!(
+        "game: {} {} ({} properties for target filters, `facts` lists them)",
+        shown("exe.name").unwrap_or_default(),
+        parts.join(", "),
+        facts.len()
+    );
+    state().facts = facts;
 }
 
 /// Log every bind: what each key runs and where that comes from.

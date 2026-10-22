@@ -8,12 +8,16 @@
 //! How a value is matched depends on what the property holds:
 //!
 //! - **Text** (names, `pe.version.*` strings, hashes): case-insensitive, with `*` for any run
-//!   of characters and `?` for one, so `Train Sim World*` accepts every edition.
+//!   of characters and `?` for one, so `Train Sim World*` accepts every edition. A value
+//!   starting with a comparator (`>=1.2`) compares the version the text starts with instead,
+//!   for version strings such as `pe.version.FileVersion` or `unity.version`.
 //! - **Versions** (`pe.fixed.file_version`, `unreal.version`, ...): a bare version accepts that
 //!   version and everything under it (`4.26` accepts `4.26.2.0`); comparators separated by
 //!   spaces or commas must all hold (`>=4.26 <5`, `>1.0, <=2.3.4`). Missing parts count as 0.
 //! - **Numbers** (`pe.timestamp`, ...): decimal or `0x` hex, exact or with comparators like
-//!   versions.
+//!   versions; `&0x20` accepts when all those bits are set (flags).
+//!
+//! Property names are matched ignoring case.
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -160,17 +164,42 @@ fn number(text: &str) -> Option<u64> {
     }
 }
 
+/// Whether `value` starts with a comparator.
+fn is_comparison(value: &str) -> bool {
+    value.starts_with(['<', '>', '='])
+}
+
 /// Whether `value` (one accepted value of a filter) accepts `fact`.
 #[must_use]
 pub fn accepts(value: &str, fact: &Fact) -> bool {
+    let value = value.trim();
     match fact {
-        Fact::Text(text) => glob(value.trim(), text),
+        Fact::Text(text) if is_comparison(value) => {
+            version(text).is_some_and(|have| version_accepts(value, &have))
+        }
+        Fact::Text(text) => glob(value, text),
         Fact::Version(have) => version_accepts(value, have),
-        Fact::Number(have) => match number(value) {
-            Some(want) => *have == want,
-            None => version_accepts(value, &[*have]),
-        },
+        Fact::Number(have) => {
+            if let Some(mask) = value.strip_prefix('&').and_then(number) {
+                return have & mask == mask;
+            }
+            match number(value) {
+                Some(want) => *have == want,
+                None => version_accepts(value, &[*have]),
+            }
+        }
     }
+}
+
+/// The fact named `property`, ignoring case.
+#[must_use]
+pub fn lookup<'a>(facts: &'a Facts, property: &str) -> Option<&'a Fact> {
+    facts.get(property).or_else(|| {
+        facts
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(property))
+            .map(|(_, fact)| fact)
+    })
 }
 
 /// The filters the facts fail, each as a line saying why. Empty when everything matches.
@@ -180,7 +209,7 @@ pub fn mismatches(filters: &[Filter], facts: &Facts) -> Vec<String> {
         .iter()
         .filter_map(|filter| {
             let wanted = filter.values.join(" | ");
-            match facts.get(&filter.property) {
+            match lookup(facts, &filter.property) {
                 None => Some(format!(
                     "{} wants {wanted}, but the game has no such property",
                     filter.property
@@ -239,6 +268,18 @@ mod tests {
         assert!(accepts("0x65120000", &stamp));
         assert!(accepts(">=1695678464", &stamp));
         assert!(!accepts("1", &stamp));
+        let flags = Fact::Number(0x8160);
+        assert!(accepts("&0x8100", &flags));
+        assert!(!accepts("&0x1", &flags));
+    }
+
+    #[test]
+    fn text_compares_as_a_version_after_a_comparator() {
+        let unity = text("2021.3.16f1");
+        assert!(accepts(">=2021.3 <2022", &unity));
+        assert!(!accepts(">=2022", &unity));
+        assert!(accepts("2021.3.*", &unity));
+        assert!(!accepts(">1", &text("no version")));
     }
 
     #[test]
@@ -246,6 +287,10 @@ mod tests {
         let facts: Facts = [
             ("exe.name".to_owned(), text("TrainSimWorld.exe")),
             ("pe.version.CompanyName".to_owned(), text("Dovetail Games")),
+            (
+                "pe.version.040904b0.ProductName".to_owned(),
+                text("TrainSimWorld7"),
+            ),
         ]
         .into_iter()
         .collect();
@@ -255,7 +300,8 @@ mod tests {
         };
         let ok = [
             filter("exe.name", &["TS2Prototype*.exe", "TrainSimWorld.exe"]),
-            filter("pe.version.CompanyName", &["dovetail*"]),
+            filter("pe.version.companyname", &["dovetail*"]),
+            filter("pe.version.040904B0.ProductName", &["TrainSimWorld?"]),
         ];
         assert_eq!(mismatches(&ok, &facts), Vec::<String>::new());
         let bad = [

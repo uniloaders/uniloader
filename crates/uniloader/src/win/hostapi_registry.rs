@@ -19,8 +19,8 @@ use uniloader_core::settings;
 
 use super::hostapi::text;
 use super::{plugins, state};
+use crate::described::{Described, Latest};
 use crate::scrollback;
-use crate::state::{Described, Latest};
 
 /// An owned [`PluginEntry`].
 struct Entry {

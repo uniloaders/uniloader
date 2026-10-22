@@ -11,6 +11,7 @@ use uniloader_api::{PluginHandle, PluginState, Status};
 use uniloader_core::{binds, keys, names, settings, store};
 
 use crate::config::{LoaderConfig, Paths};
+use crate::described::{Described, Latest};
 use crate::{scrollback, services};
 
 /// Lines the console keeps for display.
@@ -23,42 +24,6 @@ pub struct CommandInfo {
     pub help: String,
     /// Argument syntax.
     pub usage: String,
-}
-
-/// What a plugin's describe export said about it.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Described {
-    /// Unique name.
-    pub name: String,
-    /// Human readable name.
-    pub title: String,
-    /// Version text.
-    pub version: String,
-    /// One-line description.
-    pub description: String,
-    /// Authors: name and URL (or empty).
-    pub authors: Vec<(String, String)>,
-    /// Home page, issue tracker and download page, each possibly empty.
-    pub links: Links,
-    /// GitHub `owner/name` for the update check, or empty.
-    pub update_github: String,
-    /// URL answering with the latest version, or empty.
-    pub update_url: String,
-    /// Which game the plugin is meant for; empty for any.
-    pub targets: Vec<uniloader_core::target::Filter>,
-    /// Refuse to start it when the targets do not match, instead of warning.
-    pub refuse_mismatch: bool,
-}
-
-/// Where to read about, report problems with, and download a plugin.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Links {
-    /// Home page.
-    pub homepage: String,
-    /// Issue tracker.
-    pub issues: String,
-    /// Latest release download.
-    pub download: String,
 }
 
 /// Everything the loader tracks about one plugin DLL.
@@ -85,17 +50,6 @@ pub struct PluginRecord {
     pub mismatch: Vec<String>,
     /// What the update check found: the latest version and where to download it.
     pub latest: Option<Latest>,
-}
-
-/// A plugin's latest release, as the update check found it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Latest {
-    /// Its version.
-    pub version: String,
-    /// Where to download it, or empty.
-    pub download: String,
-    /// Whether it is newer than the running one.
-    pub newer: bool,
 }
 
 impl PluginRecord {
@@ -290,6 +244,8 @@ pub struct State {
     /// Keys the game uses, with who said so (`game` from `loader.toml`, or an adapter
     /// plugin's label), so a bind on one can be pointed out.
     pub reserved: Vec<(keys::Chord, String)>,
+    /// The running game's properties, for target filters and the `facts` command.
+    pub facts: uniloader_core::target::Facts,
     /// Settings (`plugin.key`) stored as an Argon2id hash of what is set, because the loader
     /// only ever verifies them: the RCON password.
     pub hashed: BTreeSet<String>,
@@ -340,6 +296,7 @@ impl State {
             start_values: None,
             hashed: BTreeSet::new(),
             reserved: Vec::new(),
+            facts: uniloader_core::target::Facts::new(),
             persist_seq: 0,
         };
         if state.reserve_keys("used by the game", &game_keys).is_err() {
@@ -833,6 +790,20 @@ impl State {
         if let Some(record) = self.plugin_mut(plugin) {
             record.dependencies = lines.into_iter().collect();
         }
+    }
+
+    /// Record why the running game does not match a plugin's target filters.
+    pub fn set_mismatch(&mut self, plugin: PluginHandle, why: Vec<String>) {
+        if let Some(record) = self.plugin_mut(plugin) {
+            record.mismatch = why;
+        }
+    }
+
+    /// Which of the plugin's target filters the running game fails, one line each; empty when
+    /// it declared none or all match.
+    #[must_use]
+    pub fn target_mismatch(&self, info: &Described) -> Vec<String> {
+        uniloader_core::target::mismatches(&info.targets, &self.facts)
     }
 
     /// Mark a plugin started or stopped/faulted.

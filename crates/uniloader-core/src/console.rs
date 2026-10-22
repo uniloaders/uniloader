@@ -75,6 +75,9 @@ pub enum Line {
     Help(Option<String>),
     /// `list [prefix]`: settings and commands, optionally filtered by prefix.
     List(Option<String>),
+    /// `facts [filter]`: the running game's properties that target filters test, optionally
+    /// only those whose name contains the filter.
+    Facts(Option<String>),
     /// `get <plugin.key>`.
     Get(String),
     /// `set <plugin.key> <value>`.
@@ -257,6 +260,7 @@ pub fn parse(line: &str) -> Result<Line, ParseError> {
             Line::Plugin(op, name)
         }
         "hooks" => Line::Hooks,
+        "facts" => Line::Facts(optional(rest)),
         "quit" | "exit" => Line::Quit,
         "get" => {
             if rest.is_empty() {
@@ -306,6 +310,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "plugin disable",
     "plugin list",
     "hooks",
+    "facts",
     "get",
     "set",
     "quit",
@@ -337,6 +342,10 @@ pub const BUILTIN_HELP: &[(&str, &str)] = &[
         "List settings and commands, optionally filtered.",
     ),
     ("plugins", "List loaded plugins and their state."),
+    (
+        "facts [filter]",
+        "List the game's properties that plugin target filters test.",
+    ),
     (
         "plugin deps [name]",
         "Show what plugins declared they need.",
