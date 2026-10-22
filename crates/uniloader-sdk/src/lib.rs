@@ -44,8 +44,8 @@ pub use host::{read_str, Arg, CommandLine, Hook, Host, PluginError, PluginRef};
 pub use meta::{Author, Target};
 pub use plugin::Plugin;
 pub use registry::{
-    AuthorEntry, ConsoleEntry, HotkeyEntry, ModuleEntry, NotRunningEvent, PluginStateEvent,
-    Service, SettingEntry,
+    AuthorEntry, ConsoleEntry, HotkeyEntry, MismatchEvent, ModuleEntry, NotRunningEvent,
+    PluginStateEvent, Service, SettingEntry, UpdateEvent,
 };
 pub use settings::{Setting, SettingKind};
 pub use uniloader_api as api;

@@ -233,6 +233,65 @@ impl NotRunningEvent {
     }
 }
 
+/// The NUL separated UTF-8 fields of a loader event payload.
+fn fields(payload: &[u8]) -> Vec<String> {
+    payload
+        .split(|&b| b == 0)
+        .map(|f| String::from_utf8_lossy(f).into_owned())
+        .collect()
+}
+
+/// A `loader.plugin_mismatch` event, decoded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MismatchEvent {
+    /// The plugin meant for another game.
+    pub name: String,
+    /// Its version.
+    pub version: String,
+    /// Why, one line per filter that failed.
+    pub reasons: Vec<String>,
+}
+
+impl MismatchEvent {
+    /// Decode the payload of [`uniloader_api::topics::PLUGIN_MISMATCH`].
+    #[must_use]
+    pub fn parse(payload: &[u8]) -> Option<Self> {
+        let mut f = fields(payload).into_iter();
+        Some(MismatchEvent {
+            name: f.next().filter(|n| !n.is_empty())?,
+            version: f.next()?,
+            reasons: f.next()?.lines().map(str::to_owned).collect(),
+        })
+    }
+}
+
+/// A `loader.update_available` event, decoded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateEvent {
+    /// The plugin with a newer version.
+    pub name: String,
+    /// The version running.
+    pub version: String,
+    /// The latest version.
+    pub latest: String,
+    /// Where to download it, or empty.
+    pub download: String,
+}
+
+impl UpdateEvent {
+    /// Decode the payload of [`uniloader_api::topics::UPDATE_AVAILABLE`].
+    #[must_use]
+    pub fn parse(payload: &[u8]) -> Option<Self> {
+        let mut f = fields(payload).into_iter();
+        Some(UpdateEvent {
+            name: f.next().filter(|n| !n.is_empty())?,
+            version: f.next()?,
+            latest: f.next()?,
+            download: f.next().unwrap_or_default(),
+        })
+    }
+}
+
 /// Sink pushing a converted entry into the caller's vector.
 ///
 /// # Safety
@@ -545,5 +604,18 @@ mod tests {
         assert_eq!(event.state, PluginState::FAULTED);
         assert_eq!(event.name, "coop");
         assert_eq!(PluginStateEvent::parse(&[1, 2, 3]), None);
+    }
+
+    #[test]
+    fn loader_events_decode() {
+        let m = MismatchEvent::parse(b"jump\x000.3.0\x00exe.name is A\nunreal.version is 5");
+        assert_eq!(
+            m.map(|m| (m.name, m.reasons.len())),
+            Some(("jump".to_owned(), 2))
+        );
+        let u = UpdateEvent::parse(b"jump\x000.3.0\x00v0.4.0\x00https://x");
+        assert_eq!(u.map(|u| u.latest), Some("v0.4.0".to_owned()));
+        assert_eq!(UpdateEvent::parse(b""), None);
+        assert_eq!(MismatchEvent::parse(b"jump"), None);
     }
 }

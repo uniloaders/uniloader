@@ -4,11 +4,12 @@
 //! it is on and the overlay draws them on the next frame. A toast queued before the first
 //! frame is not lost: its clock starts when it is first drawn.
 
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use uniloader_overlay::{DialogFn, UiAnswer, UiDialog, UiLevel, UiNotice};
+use uniloader_overlay::{remember, DialogFn, UiAnswer, UiDialog, UiLevel, UiNotice};
 use uniloader_sdk::api::PluginHandle;
 
 /// How long a toast stays when the caller does not say.
@@ -55,6 +56,10 @@ pub(crate) struct Entry {
     pub(crate) answer: Option<Answer>,
     /// When it was first drawn.
     pub(crate) shown: Option<Instant>,
+    /// The "Don't show again" key (`<plugin>/<key>`), or empty for a dialog without one.
+    pub(crate) remember: String,
+    /// Whether "Don't show again" is ticked.
+    pub(crate) dont_show: bool,
 }
 
 impl Entry {
@@ -152,6 +157,8 @@ pub(crate) fn passing(
         cancel: String::new(),
         answer: None,
         shown: None,
+        remember: String::new(),
+        dont_show: false,
     })
 }
 
@@ -162,6 +169,8 @@ pub(crate) struct DialogText<'a> {
     pub(crate) default_text: &'a str,
     pub(crate) accept: &'a str,
     pub(crate) cancel: &'a str,
+    /// The full "Don't show again" key, `<plugin>/<key>`, or empty.
+    pub(crate) remember: &'a str,
 }
 
 /// Queue a modal dialog. Returns its id.
@@ -183,6 +192,8 @@ pub(crate) fn dialog(
         cancel: text.cancel.to_owned(),
         answer,
         shown: None,
+        remember: text.remember.to_owned(),
+        dont_show: false,
     })
 }
 
@@ -241,14 +252,43 @@ pub(crate) fn set_input(id: u64, text: &str) {
     }
 }
 
-/// Take one entry out, whoever owns it, and say what to tell its owner.
-pub(crate) fn take(id: u64, answer: UiAnswer) -> Option<Answered> {
+/// Tick or untick "Don't show again" on a dialog.
+pub(crate) fn set_dont_show(id: u64, ticked: bool) {
+    let mut list = entries();
+    if let Some(entry) = list.iter_mut().find(|e| e.id == id) {
+        entry.dont_show = ticked;
+    }
+}
+
+/// Take one entry out, whoever owns it, and say what to tell its owner. A dialog the user
+/// answered with "Don't show again" ticked is remembered in `config_dir`.
+pub(crate) fn take(id: u64, answer: UiAnswer, config_dir: Option<&Path>) -> Option<Answered> {
     let mut list = entries();
     let index = list.iter().position(|e| e.id == id)?;
     let entry = list.remove(index);
     recount(&list);
     drop(list);
+    if let Some(dir) = config_dir.filter(|_| entry.dont_show && !entry.remember.is_empty()) {
+        match remember::dismiss(dir, &entry.remember) {
+            Ok(()) => log::info!("dialog {} will not be shown again", entry.remember),
+            Err(e) => log::warn!("cannot remember dialog {}: {e}", entry.remember),
+        }
+    }
     answered(&entry, answer)
+}
+
+/// The answer for a dialog that is not shown because the user dismissed it for good: the
+/// owner hears [`UiAnswer::SUPPRESSED`] on the next frame.
+pub(crate) fn suppressed(owner: PluginHandle, answer: Option<Answer>) -> (u64, Option<Answered>) {
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let answered = answer.map(|callback| Answered {
+        owner,
+        id,
+        answer: UiAnswer::SUPPRESSED,
+        text: String::new(),
+        callback,
+    });
+    (id, answered)
 }
 
 /// Take one entry out on behalf of its owner, refusing another plugin's id. `Err` when the
@@ -314,6 +354,7 @@ mod tests {
             default_text: "typed",
             accept: "",
             cancel: "",
+            remember: "",
         };
         let callback = Answer {
             callback: ignore,
@@ -328,11 +369,40 @@ mod tests {
         );
         assert!(modal());
         assert!(take_owned(PluginHandle(8), id).is_err());
-        let answered = take(id, UiAnswer::ACCEPTED);
+        let answered = take(id, UiAnswer::ACCEPTED, None);
         assert_eq!(
             answered.map(|a| (a.owner, a.text)),
             Some((owner, "typed".to_owned()))
         );
-        assert!(take(id, UiAnswer::ACCEPTED).is_none(), "already gone");
+        assert!(take(id, UiAnswer::ACCEPTED, None).is_none(), "already gone");
+    }
+
+    #[test]
+    fn dont_show_again_is_remembered_and_suppresses() {
+        let dir = std::env::temp_dir().join(format!("overlay-notices-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let owner = PluginHandle(9);
+        let words = DialogText {
+            title: "Update",
+            text: "x",
+            default_text: "",
+            accept: "",
+            cancel: "",
+            remember: "jump/outdated/2.0",
+        };
+        let id = dialog(owner, UiDialog::MESSAGE, UiLevel::INFO, &words, None);
+        set_dont_show(id, true);
+        assert!(
+            take(id, UiAnswer::ACCEPTED, Some(&dir)).is_none(),
+            "no callback"
+        );
+        assert!(remember::is_dismissed(&dir, "jump/outdated/2.0"));
+        let callback = Answer {
+            callback: ignore,
+            ctx: 0,
+        };
+        let (_, answered) = suppressed(owner, Some(callback));
+        assert_eq!(answered.map(|a| a.answer), Some(UiAnswer::SUPPRESSED));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

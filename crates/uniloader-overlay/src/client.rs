@@ -341,6 +341,42 @@ impl Overlay {
     where
         F: FnOnce(UiAnswer, &str) + Send + 'static,
     {
+        self.open_dialog(kind, level, [title, text, default_text, ""], answer)
+    }
+
+    /// A message or confirm [`Overlay::dialog`] with a "Don't show again" checkbox under the
+    /// key `remember` (see [`crate::DialogDesc::remember`]); once the user dismissed it for
+    /// good it answers [`UiAnswer::SUPPRESSED`] without showing.
+    ///
+    /// # Errors
+    /// The overlay refused it.
+    pub fn dialog_remembered<F>(
+        &self,
+        kind: UiDialog,
+        level: UiLevel,
+        title: &str,
+        text: &str,
+        remember: &str,
+        answer: F,
+    ) -> Result<u64, PluginError>
+    where
+        F: FnOnce(UiAnswer, &str) + Send + 'static,
+    {
+        self.open_dialog(kind, level, [title, text, "", remember], answer)
+    }
+
+    /// Both dialog calls: `words` is title, text, default text and remember key.
+    fn open_dialog<F>(
+        &self,
+        kind: UiDialog,
+        level: UiLevel,
+        words: [&str; 4],
+        answer: F,
+    ) -> Result<u64, PluginError>
+    where
+        F: FnOnce(UiAnswer, &str) + Send + 'static,
+    {
+        let [title, text, default_text, remember] = words;
         let ctx = Box::into_raw(Box::new(DialogCtx { answer }));
         let desc = DialogDesc {
             struct_size: core::mem::size_of::<DialogDesc>(),
@@ -351,6 +387,7 @@ impl Overlay {
             default_text: Str::new(default_text),
             accept_label: Str::new(""),
             cancel_label: Str::new(""),
+            remember: Str::new(remember),
         };
         let mut id = 0u64;
         // SAFETY: `desc` and `id` outlive the call; `ctx` matches `answer_dialog::<F>`.

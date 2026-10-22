@@ -20,6 +20,8 @@ pub(crate) struct Outcome {
     pub(crate) answered: Vec<(u64, UiAnswer)>,
     /// Input dialogs whose text changed: id and the new text.
     pub(crate) typed: Vec<(u64, String)>,
+    /// Dialogs whose "Don't show again" was ticked or unticked: id and the new state.
+    pub(crate) dont_show: Vec<(u64, bool)>,
 }
 
 /// The accent colour for a level.
@@ -167,6 +169,12 @@ fn dialog(ctx: &Context, entry: &Entry, kind: UiDialog, buffer: &str, outcome: &
                 response.request_focus();
                 if response.has_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
                     outcome.answered.push((entry.id, UiAnswer::ACCEPTED));
+                }
+            }
+            if !entry.remember.is_empty() {
+                let mut ticked = entry.dont_show;
+                if ui.checkbox(&mut ticked, "Don't show again").changed() {
+                    outcome.dont_show.push((entry.id, ticked));
                 }
             }
             ui.add_space(4.0);

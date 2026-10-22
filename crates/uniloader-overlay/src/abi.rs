@@ -63,6 +63,9 @@ impl UiAnswer {
     pub const CANCELLED: UiAnswer = UiAnswer(1);
     /// Taken down by [`OverlayApi::close`].
     pub const CLOSED: UiAnswer = UiAnswer(2);
+    /// Not shown: the user ticked "Don't show again" on a dialog with the same
+    /// [`DialogDesc::remember`] key before.
+    pub const SUPPRESSED: UiAnswer = UiAnswer(3);
 }
 
 /// Which widget [`OverlayApi::widget`] adds.
@@ -219,6 +222,12 @@ pub struct DialogDesc {
     pub accept_label: Str,
     /// Cancelling button label, or empty for the default.
     pub cancel_label: Str,
+    /// A key for "Don't show again", or empty for a dialog without that checkbox. Once the
+    /// user ticks it and closes the dialog, every later dialog of the same plugin with the
+    /// same key answers [`UiAnswer::SUPPRESSED`] at once instead of showing. Put whatever
+    /// makes the message new into the key, such as `outdated/1.2.0`, so a new version is
+    /// shown again. Kept in `uniloader/config/dont-show-again.txt` (see [`crate::remember`]).
+    pub remember: Str,
 }
 
 /// The graphics API a swapchain belongs to.
@@ -324,8 +333,6 @@ pub struct OverlayApi {
     ) -> Status,
     /// Whether the overlay has the keyboard and mouse right now.
     pub is_capturing: unsafe extern "C" fn() -> bool,
-    // Appended later: a plugin built before they existed still works with a provider that
-    // has them; one built with them needs a provider that has them (the size check).
     /// Set (add or replace) the owner's card `name` in the showcase. A provider without a
     /// showcase answers [`Status::UNSUPPORTED`].
     pub card_set: unsafe extern "C" fn(caller: Caller, name: Str, desc: *const CardDesc) -> Status,

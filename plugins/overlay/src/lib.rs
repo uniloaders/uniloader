@@ -43,8 +43,8 @@ use std::sync::OnceLock;
 
 use uniloader_overlay::{UiLevel, UiNotice};
 use uniloader_sdk::{
-    export_plugin, topics, Author, Host, NotRunningEvent, Plugin, PluginError, PluginRef,
-    PluginState, PluginStateEvent, Setting,
+    export_plugin, topics, Author, Host, MismatchEvent, NotRunningEvent, Plugin, PluginError,
+    PluginRef, PluginState, PluginStateEvent, Setting, UpdateEvent,
 };
 
 /// How long the notice that a plugin is not running stays.
@@ -127,6 +127,8 @@ impl Plugin for OverlayPlugin {
         )?;
         host.subscribe(topics::PLUGIN_STATE)?;
         host.subscribe(topics::PLUGIN_NOT_RUNNING)?;
+        host.subscribe(topics::PLUGIN_MISMATCH)?;
+        host.subscribe(topics::UPDATE_AVAILABLE)?;
         // SAFETY: `service::TABLE` is the `OverlayApi` layout of this version, and every
         // function in it is thread safe.
         let provided = unsafe {
@@ -190,7 +192,42 @@ impl Plugin for OverlayPlugin {
         }
     }
 
-    fn on_event(&self, _host: &Host, _from: PluginRef, topic: &str, payload: &[u8]) {
+    fn on_event(&self, host: &Host, _from: PluginRef, topic: &str, payload: &[u8]) {
+        if topic == topics::PLUGIN_MISMATCH {
+            if let Some(event) = MismatchEvent::parse(payload) {
+                own_dialog(
+                    host,
+                    &format!("{} is meant for another game", event.name),
+                    &format!(
+                        "{} {} runs, but it says it was made for a different game:\n{}",
+                        event.name,
+                        event.version,
+                        event.reasons.join("\n")
+                    ),
+                    &format!("mismatch/{}/{}", event.name, event.version),
+                );
+            }
+            return;
+        }
+        if topic == topics::UPDATE_AVAILABLE {
+            if let Some(event) = UpdateEvent::parse(payload) {
+                let download = if event.download.is_empty() {
+                    String::new()
+                } else {
+                    format!("\nDownload: {}", event.download)
+                };
+                own_dialog(
+                    host,
+                    &format!("Update for {}", event.name),
+                    &format!(
+                        "{} {} is out; this game runs {}.{download}",
+                        event.name, event.latest, event.version
+                    ),
+                    &format!("outdated/{}/{}", event.name, event.latest),
+                );
+            }
+            return;
+        }
         if topic == topics::PLUGIN_NOT_RUNNING {
             // The player sees why a plugin they installed does nothing.
             if let Some(event) = NotRunningEvent::parse(payload) {
@@ -223,6 +260,31 @@ impl Plugin for OverlayPlugin {
             shared::refresh();
         }
     }
+}
+
+/// One of the overlay's own warnings as a message dialog with "Don't show again", unless the
+/// user dismissed `key` for good.
+fn own_dialog(host: &Host, title: &str, text: &str, key: &str) {
+    let remember = uniloader_overlay::remember::key(OverlayPlugin::NAME, key);
+    if uniloader_overlay::remember::is_dismissed(&host.config_dir(), &remember) {
+        return;
+    }
+    let words = notices::DialogText {
+        title,
+        text,
+        default_text: "",
+        accept: "",
+        cancel: "",
+        remember: &remember,
+    };
+    notices::dialog(
+        host.me().raw(),
+        uniloader_overlay::UiDialog::MESSAGE,
+        UiLevel::WARNING,
+        &words,
+        None,
+    );
+    shared::recount();
 }
 
 /// What the hotkeys and the `toggle` command share.

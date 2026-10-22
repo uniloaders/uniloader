@@ -16,6 +16,7 @@
 mod abi;
 pub mod card_bus;
 mod client;
+pub mod remember;
 pub mod showcase;
 
 pub use abi::{
@@ -30,9 +31,9 @@ pub const SERVICE: &str = "overlay";
 /// even when another plugin has [`SERVICE`]: a plugin's panels can then be in both places
 /// ([`Overlay::connect_all`]).
 pub const GAME_SERVICE: &str = "overlay.game";
-/// Version of [`OverlayApi`] this crate describes. 2: callers pass their loader context, not
-/// a handle.
-pub const VERSION: u32 = 2;
+/// Version of [`OverlayApi`] this crate describes. 3: dialogs carry a "Don't show again" key
+/// ([`DialogDesc::remember`]).
+pub const VERSION: u32 = 3;
 /// Name of the egui plugin that provides the service. Prefer a dependency on [`SERVICE`],
 /// which any provider satisfies.
 pub const PLUGIN: &str = "overlay";

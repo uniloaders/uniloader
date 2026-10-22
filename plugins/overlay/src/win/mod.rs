@@ -10,6 +10,7 @@ mod d3d12;
 mod gl;
 mod hooks;
 mod render;
+mod shell;
 mod vk;
 mod wnd;
 
@@ -409,8 +410,11 @@ fn gui_pass(
     let (renderer_output, platform, _viewports) = egui_directx11::split_output(output);
     // egui asks its host to copy; with no backend under us, that is this.
     for command in platform.commands {
-        if let egui::OutputCommand::CopyText(text) = command {
-            clipboard::set_text(&text);
+        match command {
+            egui::OutputCommand::CopyText(text) => clipboard::set_text(&text),
+            egui::OutputCommand::OpenUrl(open) => shell::open_url(&open.url),
+            // No image clipboard in a game.
+            egui::OutputCommand::CopyImage(_) => {}
         }
     }
     renderer_output

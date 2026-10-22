@@ -5,8 +5,8 @@
 //! through the loader — `set` for a setting, `rebind` for a binding — so a slider here and a
 //! typed console command cannot disagree.
 
-use egui::{Context, Grid, RichText, ScrollArea};
-use uniloader_sdk::{HotkeyEntry, SettingEntry};
+use egui::{Color32, Context, Grid, RichText, ScrollArea};
+use uniloader_sdk::{HotkeyEntry, ModuleEntry, SettingEntry};
 
 use super::chrome::{self, Chrome, Placed};
 use super::recorder::{self, Target};
@@ -18,23 +18,27 @@ pub(crate) struct Section {
     pub(crate) plugin: String,
     /// Whether it is running.
     pub(crate) running: bool,
+    /// What it says about itself and what the loader found: version, authors, links, update
+    /// and target state.
+    pub(crate) about: ModuleEntry,
     /// Its settings with their values.
     pub(crate) settings: Vec<SettingEntry>,
     /// Its hotkey actions.
     pub(crate) hotkeys: Vec<HotkeyEntry>,
 }
 
-/// Group the registries into sections, in the order the plugins were loaded.
+/// Group the registries into sections, one per plugin, in the order they were loaded.
 pub(crate) fn sections(
-    plugins: &[(String, bool)],
+    plugins: Vec<ModuleEntry>,
     settings: Vec<SettingEntry>,
     hotkeys: Vec<HotkeyEntry>,
 ) -> Vec<Section> {
     let mut out: Vec<Section> = plugins
-        .iter()
-        .map(|(plugin, running)| Section {
-            plugin: plugin.clone(),
-            running: *running,
+        .into_iter()
+        .map(|about| Section {
+            plugin: about.name.clone(),
+            running: about.state == uniloader_sdk::PluginState::RUNNING,
+            about,
             settings: Vec::new(),
             hotkeys: Vec::new(),
         })
@@ -50,7 +54,6 @@ pub(crate) fn sections(
             section.hotkeys.push(hotkey);
         }
     }
-    out.retain(|s| !s.settings.is_empty() || !s.hotkeys.is_empty());
     out
 }
 
@@ -93,7 +96,7 @@ pub(crate) fn show(ctx: &Context, view: &View<'_>, chrome: &Chrome<'_>) -> (Edit
                     show_section(ui, section, view.advanced, &mut edits);
                 }
                 if view.sections.is_empty() {
-                    ui.label("No plugin has registered a setting or a hotkey.");
+                    ui.label("No plugin is loaded.");
                 }
             });
     });
@@ -113,6 +116,7 @@ fn show_section(ui: &mut egui::Ui, section: &Section, advanced: bool, edits: &mu
         .id_salt(&section.plugin)
         .default_open(true)
         .show(ui, |ui| {
+            about(ui, &section.about);
             reset_all(ui, section, edits);
             let mut hidden = 0_usize;
             for entry in &section.settings {
@@ -144,6 +148,53 @@ fn show_section(ui: &mut egui::Ui, section: &Section, advanced: bool, edits: &mu
                 hotkeys(ui, section, edits);
             }
         });
+}
+
+/// Version, authors and links; a newer version and a target mismatch stand out.
+fn about(ui: &mut egui::Ui, m: &ModuleEntry) {
+    ui.horizontal_wrapped(|ui| {
+        if !m.version.is_empty() {
+            ui.label(RichText::new(format!("v{}", m.version)).weak());
+        }
+        if !m.authors.is_empty() {
+            ui.label(RichText::new("by").weak());
+            for (i, author) in m.authors.iter().enumerate() {
+                let name = if i + 1 < m.authors.len() {
+                    format!("{},", author.name)
+                } else {
+                    author.name.clone()
+                };
+                if author.url.is_empty() {
+                    ui.label(name);
+                } else {
+                    ui.hyperlink_to(name, &author.url);
+                }
+            }
+        }
+        for (label, url) in [
+            ("Home page", &m.homepage),
+            ("Issues", &m.issues),
+            ("Download", &m.download),
+        ] {
+            if !url.is_empty() {
+                ui.hyperlink_to(label, url);
+            }
+        }
+    });
+    if !m.description.is_empty() {
+        ui.label(RichText::new(&m.description).weak().small());
+    }
+    let warn = Color32::from_rgb(230, 190, 100);
+    if m.update_available {
+        ui.label(RichText::new(format!("Update available: {}", m.latest)).color(warn));
+    }
+    if !m.mismatch.is_empty() {
+        ui.label(RichText::new("Made for another game:").color(warn))
+            .on_hover_text(&m.mismatch);
+        for line in m.mismatch.lines() {
+            ui.label(RichText::new(line).small().color(warn));
+        }
+    }
 }
 
 /// The hotkey table: what it does, what it is bound to, and the buttons to change it.
@@ -230,9 +281,30 @@ mod tests {
             binding: "f1".to_owned(),
             default_binding: "f1".to_owned(),
         };
-        let plugins = [("overlay".to_owned(), true), ("quiet".to_owned(), true)];
-        let grouped = sections(&plugins, Vec::new(), vec![hotkey]);
-        assert_eq!(grouped.len(), 1);
-        assert_eq!(grouped[0].plugin, "overlay");
+        let module = |name: &str| ModuleEntry {
+            plugin: None,
+            kind: uniloader_sdk::ModuleKind::PLUGIN,
+            state: uniloader_sdk::PluginState::RUNNING,
+            name: name.to_owned(),
+            title: name.to_owned(),
+            version: "1".to_owned(),
+            description: String::new(),
+            file: String::new(),
+            authors: Vec::new(),
+            homepage: String::new(),
+            issues: String::new(),
+            download: String::new(),
+            latest: String::new(),
+            update_available: false,
+            mismatch: String::new(),
+        };
+        let grouped = sections(
+            vec![module("overlay"), module("quiet")],
+            Vec::new(),
+            vec![hotkey],
+        );
+        assert_eq!(grouped.len(), 2, "every plugin is listed, for its metadata");
+        assert_eq!(grouped[0].hotkeys.len(), 1);
+        assert_eq!(grouped[1].plugin, "quiet");
     }
 }

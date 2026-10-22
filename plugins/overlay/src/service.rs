@@ -255,21 +255,42 @@ unsafe extern "C" fn dialog_open(
             read_str(desc.default_text),
             read_str(desc.accept_label),
             read_str(desc.cancel_label),
+            read_str(desc.remember),
         ]
     };
-    let [title, text, default_text, accept, cancel] = &strings;
-    let words = notices::DialogText {
-        title,
-        text,
-        default_text,
-        accept,
-        cancel,
-    };
+    let [title, text, default_text, accept, cancel, remember] = &strings;
     let answer = answer.map(|callback| notices::Answer {
         callback,
         ctx: ctx as usize,
     });
-    let id = notices::dialog(owner, desc.kind, desc.level, &words, answer);
+    let remember = if remember.trim().is_empty() {
+        String::new()
+    } else {
+        let plugin = owner_name(owner).unwrap_or_default();
+        uniloader_overlay::remember::key(&plugin, remember)
+    };
+    let dismissed = !remember.is_empty()
+        && crate::host().is_some_and(|host| {
+            uniloader_overlay::remember::is_dismissed(&host.config_dir(), &remember)
+        });
+    let id = if dismissed {
+        let (id, answered) = notices::suppressed(owner, answer);
+        if let Some(answered) = answered {
+            // Delivered on the next frame, never from inside the owner's own call.
+            ui::queue_answer(answered);
+        }
+        id
+    } else {
+        let words = notices::DialogText {
+            title,
+            text,
+            default_text,
+            accept,
+            cancel,
+            remember: &remember,
+        };
+        notices::dialog(owner, desc.kind, desc.level, &words, answer)
+    };
     shared::recount();
     if !out_id.is_null() {
         // SAFETY: checked non-null; the ABI requires a writable `u64`.

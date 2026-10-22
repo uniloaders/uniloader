@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use egui::{Context, Pos2, Rect, Vec2};
 use uniloader_core::keys::Modifiers;
-use uniloader_sdk::{Host, PluginState};
+use uniloader_sdk::Host;
 
 use crate::layout::{self, Geometry};
 use crate::notices::{self, Answered};
@@ -308,10 +308,14 @@ fn resolve(host: &Host, painted: &paint::Outcome) {
     for (id, text) in &painted.typed {
         notices::set_input(*id, text);
     }
+    for (id, ticked) in &painted.dont_show {
+        notices::set_dont_show(*id, *ticked);
+    }
+    let config_dir = host.config_dir();
     let mut answered: Vec<Answered> = painted
         .answered
         .iter()
-        .filter_map(|(id, answer)| notices::take(*id, *answer))
+        .filter_map(|(id, answer)| notices::take(*id, *answer, Some(&config_dir)))
         .collect();
     answered.append(&mut answers());
     notices::mark_shown(&painted.shown);
@@ -323,13 +327,12 @@ fn resolve(host: &Host, painted: &paint::Outcome) {
 
 /// The settings editor's view of the registries, one section per plugin.
 fn editor_sections(host: &Host) -> Vec<settings_panel::Section> {
-    let plugins: Vec<(String, bool)> = host
+    let plugins = host
         .modules()
         .into_iter()
         .filter(|m| m.plugin.is_some())
-        .map(|m| (m.name, m.state == PluginState::RUNNING))
         .collect();
-    settings_panel::sections(&plugins, host.settings(None), host.hotkeys())
+    settings_panel::sections(plugins, host.settings(None), host.hotkeys())
 }
 
 /// Where a window was left.
