@@ -99,6 +99,9 @@ impl Showcase {
         }
         let (i, since) = match self.shown {
             Some((i, since)) if now.duration_since(since) < Self::DWELL => (i, since),
+            // A single card stays: moving on to itself only made providers rebuild it
+            // every DWELL.
+            Some((i, since)) if self.cards.len() == 1 => (i, since),
             Some((i, _)) => {
                 self.revision += 1;
                 ((i + 1) % self.cards.len(), now)
@@ -168,6 +171,23 @@ mod tests {
             s.current(t1 + Showcase::DWELL).map(|c| c.title.as_str()),
             Some("one")
         );
+    }
+
+    #[test]
+    fn a_single_card_stays_without_new_revisions() {
+        let mut s = Showcase::default();
+        s.set(card(1, "a", "one"));
+        let t0 = Instant::now();
+        assert!(s.current(t0).is_some());
+        let revision = s.revision();
+        for n in 1..4 {
+            assert_eq!(
+                s.current(t0 + Showcase::DWELL * n)
+                    .map(|c| c.title.as_str()),
+                Some("one")
+            );
+        }
+        assert_eq!(s.revision(), revision, "nothing to redraw");
     }
 
     #[test]
