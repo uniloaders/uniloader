@@ -21,6 +21,7 @@ mod logging;
 mod process;
 mod rcon;
 mod run;
+mod schema;
 mod scrollback;
 mod secret;
 mod services;

@@ -108,6 +108,12 @@ impl Paths {
     pub fn loader_file(&self) -> PathBuf {
         self.config_dir.join("loader.toml")
     }
+
+    /// Where the schema files for config editors go (see [`uniloader_core::schema`]).
+    #[must_use]
+    pub fn schema_dir(&self) -> PathBuf {
+        self.config_dir.join(uniloader_core::schema::DIR)
+    }
 }
 
 /// Whether `name` may name a cfg file for `exec`: `[a-z0-9_.-]+`, so it can never be a path
@@ -214,6 +220,7 @@ mod tests {
             p.loader_file(),
             Path::new("/g/uniloader/config/loader.toml")
         );
+        assert_eq!(p.schema_dir(), Path::new("/g/uniloader/config/schema"));
     }
 
     #[test]

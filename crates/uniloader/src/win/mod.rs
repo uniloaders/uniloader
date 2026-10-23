@@ -211,7 +211,16 @@ fn identify_game() {
         parts.join(", "),
         facts.len()
     );
-    state().facts = facts;
+    let paths = {
+        let mut guard = state();
+        guard.facts = facts;
+        guard.paths.clone()
+    };
+    let exe_name = exe
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    crate::schema::save_loader(&paths, &crate::schema::loader(&exe_name));
 }
 
 /// Log every bind: what each key runs and where that comes from.

@@ -14,6 +14,7 @@ pub mod facts;
 pub mod keys;
 pub mod names;
 pub mod pe;
+pub mod schema;
 pub mod script;
 pub mod settings;
 pub mod store;

@@ -2,12 +2,16 @@
 
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::values;
 
 /// Value type of a setting. Mirrors `uniloader_api::SettingKind`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Serialised as the lower case word (`date_time` for [`Kind::DateTime`]) in schema files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Kind {
     /// `true` / `false`.
     Bool,
@@ -41,7 +45,7 @@ pub enum Kind {
 // Four independent yes/no properties mirroring the ABI's `SettingFlags` bits; each is read
 // by name all over the loader and the editors, which a bit set would only make noisier.
 #[allow(clippy::struct_excessive_bools)]
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Desc {
     /// Key within the plugin namespace.
     pub key: String,

@@ -143,7 +143,7 @@ enum Body {
 
 /// Write `text` to `path` through a temporary file and a rename, so a crash mid-write leaves
 /// the old file rather than half of the new one.
-fn write_atomic(path: &std::path::Path, text: &str) -> std::io::Result<()> {
+pub(crate) fn write_atomic(path: &std::path::Path, text: &str) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }

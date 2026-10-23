@@ -355,7 +355,17 @@ fn rebase(changer: &Changer, factor: f64) {
 /// any plugin loads, so the name is the loader's and plugins can read the setting in `start`.
 pub(super) fn register(file: &str) {
     let (info, builtin) = crate::speed::builtin(file);
-    let added = super::state().add_builtin(info, builtin);
+    let (added, schema, paths) = {
+        let mut guard = super::state();
+        let added = guard.add_builtin(info, builtin);
+        let schema = added
+            .ok()
+            .and_then(|handle| crate::schema::plugin(&guard, handle, true));
+        (added, schema, guard.paths.clone())
+    };
+    if let Some(schema) = schema {
+        crate::schema::save_plugin(&paths, &schema);
+    }
     match added {
         Ok(handle) => {
             if OWNER.set(handle).is_err() {

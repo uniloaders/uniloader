@@ -559,7 +559,14 @@ pub(super) fn start_one(described: &Described) -> Result<Active, String> {
     if callbacks.struct_size < core::mem::size_of::<PluginCallbacks>() {
         log::warn!("[{name}] filled a callback table smaller than this API version's");
     }
-    super::state().set_enabled(handle, true);
+    let schema = {
+        let mut guard = super::state();
+        guard.set_enabled(handle, true);
+        crate::schema::plugin(&guard, handle, false)
+    };
+    if let Some(schema) = schema {
+        crate::schema::save_plugin(&paths, &schema);
+    }
     Ok(Active {
         handle,
         name: name.clone(),
