@@ -1,0 +1,37 @@
+[package]
+name = "uniloader-config"
+description = "Edits a game's uniloader configuration: plugins on or off, their settings, key binds."
+version.workspace = true
+edition.workspace = true
+# eframe 0.35 (the egui version the overlay pins) needs 1.92.
+rust-version = "1.92"
+license.workspace = true
+
+[dependencies]
+uniloader-api.workspace = true
+uniloader-core.workspace = true
+serde.workspace = true
+toml.workspace = true
+# egui is what the in-game overlay draws with, so both settings editors share one toolkit.
+# The glow (OpenGL) backend only: wgpu would triple the binary for nothing a form needs.
+# No accesskit: it pulls a D-Bus stack on Linux for a screen reader bridge.
+eframe = { version = "0.35", default-features = false, features = [
+    "default_fonts",
+    "glow",
+    "wayland",
+    "x11",
+] }
+# Native open dialogs; on Linux through the XDG desktop portal, so no GTK at build or run time.
+rfd = "0.17"
+# Edits TOML in place, keeping the user's comments and layout (the version `toml` 0.8 uses).
+toml_edit = "0.22"
+# Whether the game is running: process names and command lines on Windows and Linux alike.
+sysinfo = { version = "0.38", default-features = false, features = ["system"] }
+# Where the list of recent locations lives (the platform's per-user config directory).
+dirs = "7"
+# A hashed secret (the RCON password) is stored as the loader stores it: Argon2id, PHC string.
+argon2 = { version = "0.5", features = ["std"] }
+password-hash = { version = "0.5", features = ["getrandom"] }
+
+[lints]
+workspace = true

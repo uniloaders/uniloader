@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # The gate: cargo fmt --check, clippy (pedantic, -D warnings) and the tests on the host, then
 # rustdoc, then clippy and a release build for x86_64-pc-windows-msvc (the loader and plugins
-# only exist on Windows). Runs inside the `build-box` distrobox and re-execs itself there
-# from the host. Nothing is filtered: each step's full output is on screen and in
+# only exist on Windows), and a Linux release build of the config editor. Runs inside the
+# `build-box` distrobox and re-execs itself there from the host. Nothing is filtered: each step's full output is on screen and in
 # target/gate-logs/<step>.log.
 #
 #   scripts/gate.sh            full gate
@@ -52,4 +52,6 @@ fi
 # way the DayZ loader builds, so no .cargo/config.toml is needed.
 step clippy-windows cargo xwin clippy --workspace --all-targets --target "$TARGET" -- -D warnings
 step build-windows cargo xwin build --release --workspace --target "$TARGET"
+# The config editor is the one program that also runs on Linux: target/release/uniloader-config.
+step build-linux cargo build --release -p uniloader-config
 echo "== gate passed"

@@ -56,6 +56,7 @@ not a system DLL's, it only hosts plugins and forwards nothing).
   uniloader/
     config/loader.toml  optional; see below
     config/<plugin>.toml, binds.cfg      written by the loader
+    config/schema/<plugin>.json          what each plugin registered, for uniloader-config
     config/autoexec.cfg, <name>.cfg      yours: run at start / by `exec <name>`
     logs/loader.log
 ```
@@ -221,6 +222,7 @@ filter.
 | `crates/uniloader-sdk` | The safe Rust side of the ABI: implement `Plugin`, call `export_plugin!`. |
 | `crates/uniloader` | The loader DLL: proxy, plugin host, host API, console. |
 | `crates/uniloader-overlay` | Client for the overlay service: its C ABI and a safe wrapper. |
+| `crates/uniloader-config` | `uniloader-config`, a window for editing an install's config outside the game, on Windows and Linux; see its [README](crates/uniloader-config/README.md). |
 | `plugins/lua-bridge` | Lua 5.4 scripting as a plugin; its API is documented in `src/api.rs`. |
 | `plugins/overlay` | The in-game overlay: console, settings editor, the `overlay` service. |
 | `examples/hello-plugin` | The smallest useful plugin. |
