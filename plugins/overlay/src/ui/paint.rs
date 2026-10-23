@@ -163,9 +163,12 @@ fn dialog(ctx: &Context, entry: &Entry, kind: UiDialog, buffer: &str, outcome: &
             ui.set_max_width(420.0);
             ui.label(RichText::new(&entry.text).color(colour(entry.level)));
             ui.add_space(6.0);
-            if kind == UiDialog::INPUT {
-                let response = ui
-                    .add(egui::TextEdit::singleline(&mut text).desired_width(ui.available_width()));
+            if kind.takes_text() {
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut text)
+                        .password(kind == UiDialog::SECRET)
+                        .desired_width(ui.available_width()),
+                );
                 response.request_focus();
                 if response.has_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
                     outcome.answered.push((entry.id, UiAnswer::ACCEPTED));

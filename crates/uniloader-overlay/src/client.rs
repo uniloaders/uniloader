@@ -325,7 +325,7 @@ impl Overlay {
     }
 
     /// Open a modal dialog; `answer` runs once with how it ended (and the typed text for an
-    /// accepted input dialog). `default_text` only matters for [`UiDialog::INPUT`].
+    /// accepted input dialog). `default_text` only matters for [`UiDialog::takes_text`] kinds.
     ///
     /// # Errors
     /// The overlay refused it.

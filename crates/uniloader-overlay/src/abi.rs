@@ -49,6 +49,14 @@ impl UiDialog {
     pub const CONFIRM: UiDialog = UiDialog(1);
     /// Text and one line to type into.
     pub const INPUT: UiDialog = UiDialog(2);
+    /// An [`UiDialog::INPUT`] whose line is masked (a password); the text is never logged.
+    pub const SECRET: UiDialog = UiDialog(3);
+
+    /// Whether it has a line to type into ([`UiDialog::INPUT`], [`UiDialog::SECRET`]).
+    #[must_use]
+    pub fn takes_text(self) -> bool {
+        self == Self::INPUT || self == Self::SECRET
+    }
 }
 
 /// How a dialog ended.

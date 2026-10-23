@@ -220,6 +220,7 @@ fn describe(kind: &Kind) -> &'static str {
         Kind::Passing(_, _) => "notice",
         Kind::Modal(UiDialog::MESSAGE, _) => "message dialog",
         Kind::Modal(UiDialog::CONFIRM, _) => "confirm dialog",
+        Kind::Modal(UiDialog::SECRET, _) => "secret dialog",
         Kind::Modal(_, _) => "input dialog",
     }
 }
@@ -318,12 +319,16 @@ fn answered(entry: &Entry, answer: UiAnswer) -> Option<Answered> {
     let Kind::Modal(kind, buffer) = &entry.kind else {
         return None;
     };
-    let text = if *kind == UiDialog::INPUT && answer == UiAnswer::ACCEPTED {
+    let text = if kind.takes_text() && answer == UiAnswer::ACCEPTED {
         buffer.clone()
     } else {
         String::new()
     };
-    log::debug!("ui {} answered {} {text:?}", entry.id, answer.0);
+    if *kind == UiDialog::SECRET {
+        log::debug!("ui {} answered {}", entry.id, answer.0);
+    } else {
+        log::debug!("ui {} answered {} {text:?}", entry.id, answer.0);
+    }
     Some(Answered {
         owner: entry.owner?,
         id: entry.id,
