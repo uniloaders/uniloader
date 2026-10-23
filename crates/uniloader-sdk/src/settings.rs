@@ -83,6 +83,7 @@ pub struct Setting {
     pub(crate) min: f64,
     pub(crate) max: f64,
     pub(crate) choices: Vec<String>,
+    pub(crate) labels: Vec<String>,
     pub(crate) restart_required: bool,
     pub(crate) advanced: bool,
     pub(crate) transient: bool,
@@ -100,6 +101,7 @@ impl Setting {
             min: 0.0,
             max: 0.0,
             choices: Vec::new(),
+            labels: Vec::new(),
             restart_required: false,
             advanced: false,
             transient: false,
@@ -207,6 +209,15 @@ impl Setting {
     #[must_use]
     pub fn key(key: &str, title: &str, default: &str) -> Self {
         Self::new(key, title, SettingKind::Key, default.to_owned())
+    }
+
+    /// What editors show for each choice of a [`Setting::choice`] or [`Setting::flags`], in
+    /// their order (`"LAN only"` for `lan`); values stay the choices. An empty label shows
+    /// the choice itself.
+    #[must_use]
+    pub fn with_labels(mut self, labels: &[&str]) -> Self {
+        self.labels = labels.iter().map(|&l| l.to_owned()).collect();
+        self
     }
 
     /// Longer help text shown in UI and `help`.

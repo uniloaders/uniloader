@@ -373,7 +373,9 @@ pub struct SettingDesc {
     pub min: f64,
     /// Upper bound for numeric kinds; ignored otherwise.
     pub max: f64,
-    /// `|`-separated choices for [`SettingKind::ENUM`]; ignored otherwise.
+    /// `|`-separated choices for [`SettingKind::ENUM`] and [`SettingKind::FLAGS`], each
+    /// `choice` or `choice=Label` (what editors show; the value is the choice); extensions
+    /// for [`SettingKind::FILE`]; ignored otherwise.
     pub choices: Str,
     /// See [`SettingFlags`].
     pub flags: SettingFlags,

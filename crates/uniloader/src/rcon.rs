@@ -62,6 +62,7 @@ fn desc(key: &str, title: &str, kind: Kind, default: &str, description: &str) ->
         min: 0.0,
         max: 0.0,
         choices: Vec::new(),
+        labels: Vec::new(),
         restart_required: false,
         advanced: true,
         transient: false,

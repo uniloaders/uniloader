@@ -84,6 +84,7 @@ fn speed_setting() -> settings::Desc {
         min: MIN,
         max: MAX,
         choices: Vec::new(),
+        labels: Vec::new(),
         restart_required: false,
         advanced: false,
         transient: false,

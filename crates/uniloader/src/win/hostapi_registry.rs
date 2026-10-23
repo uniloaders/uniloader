@@ -200,7 +200,7 @@ pub(super) unsafe extern "C" fn setting_enumerate(
             .collect()
     };
     for (plugin, desc, value) in &owned {
-        let choices = desc.choices.join("|");
+        let choices = settings::choices_text(&desc.choices, &desc.labels);
         let info = SettingInfo {
             struct_size: core::mem::size_of::<SettingInfo>(),
             plugin: Str::new(plugin),

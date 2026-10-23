@@ -63,6 +63,10 @@ pub struct Desc {
     pub max: f64,
     /// Allowed values for [`Kind::Enum`].
     pub choices: Vec<String>,
+    /// What editors show for each of `choices`, in the same order; an empty one (or a
+    /// missing tail) shows the choice itself. Values are always the choices.
+    #[serde(default)]
+    pub labels: Vec<String>,
     /// Takes effect after restart only.
     pub restart_required: bool,
     /// Hidden from the settings editor until the user asks for advanced settings.
@@ -76,6 +80,46 @@ pub struct Desc {
     /// A password or token: never printed, listed or logged by the console, which shows
     /// `<set>` or `<unset>` instead.
     pub secret: bool,
+}
+
+impl Desc {
+    /// What an editor shows for `choice`: its label, or the choice itself.
+    #[must_use]
+    pub fn label<'a>(&'a self, choice: &'a str) -> &'a str {
+        self.choices
+            .iter()
+            .position(|c| c == choice)
+            .and_then(|i| self.labels.get(i))
+            .filter(|l| !l.is_empty())
+            .map_or(choice, String::as_str)
+    }
+}
+
+/// The choices and labels of the ABI's `|`-separated text, where an entry is `choice` or
+/// `choice=Label` (`lan=LAN only|public=Everyone`).
+#[must_use]
+pub fn parse_choices(text: &str) -> (Vec<String>, Vec<String>) {
+    text.split('|')
+        .filter(|c| !c.is_empty())
+        .map(|entry| match entry.split_once('=') {
+            Some((choice, label)) => (choice.trim().to_owned(), label.trim().to_owned()),
+            None => (entry.trim().to_owned(), String::new()),
+        })
+        .unzip()
+}
+
+/// [`parse_choices`]'s text for `choices` and `labels`.
+#[must_use]
+pub fn choices_text(choices: &[String], labels: &[String]) -> String {
+    choices
+        .iter()
+        .enumerate()
+        .map(|(i, c)| match labels.get(i).filter(|l| !l.is_empty()) {
+            Some(label) => format!("{c}={label}"),
+            None => c.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join("|")
 }
 
 /// Why a value or descriptor was rejected.
@@ -331,6 +375,7 @@ mod tests {
             min: 0.0,
             max: 0.0,
             choices: Vec::new(),
+            labels: Vec::new(),
             restart_required: false,
             advanced: false,
             transient: false,
@@ -378,6 +423,7 @@ mod tests {
     fn enum_is_case_insensitive_and_canonical() {
         let d = Desc {
             choices: vec!["Left".into(), "Right".into()],
+            labels: Vec::new(),
             ..desc("eye", Kind::Enum, "Left")
         };
         assert_eq!(validate(&d, "right").as_deref(), Ok("Right"));
@@ -403,6 +449,7 @@ mod tests {
         );
         let shown = Desc {
             choices: vec!["Map".into(), "Chat".into()],
+            labels: Vec::new(),
             ..desc("shown", Kind::Flags, "")
         };
         assert_eq!(validate(&shown, "chat,map").as_deref(), Ok("Map,Chat"));
@@ -451,5 +498,26 @@ mod tests {
             Err(SettingError::Unknown("nope".into()))
         );
         assert!(r.persistent_values().is_empty());
+    }
+
+    #[test]
+    fn choices_carry_labels_and_values_stay_the_choices() {
+        let (choices, labels) = parse_choices("lan=LAN only|public|invite=Invite only|");
+        assert_eq!(choices, ["lan", "public", "invite"]);
+        assert_eq!(labels, ["LAN only", "", "Invite only"]);
+        assert_eq!(
+            choices_text(&choices, &labels),
+            "lan=LAN only|public|invite=Invite only"
+        );
+        let d = Desc {
+            choices,
+            labels,
+            ..desc("who", Kind::Enum, "lan")
+        };
+        assert_eq!(d.label("lan"), "LAN only");
+        assert_eq!(d.label("public"), "public", "no label: the choice");
+        assert_eq!(d.label("other"), "other");
+        assert_eq!(validate(&d, "invite").as_deref(), Ok("invite"));
+        assert!(validate(&d, "Invite only").is_err(), "a label is no value");
     }
 }

@@ -120,8 +120,10 @@ pub struct SettingEntry {
     pub min: f64,
     /// Upper bound for numbers.
     pub max: f64,
-    /// Choices of an enum setting.
+    /// Choices of an enum or flags setting.
     pub choices: Vec<String>,
+    /// What to show for each of `choices` (empty: the choice itself); see [`SettingEntry::label`].
+    pub labels: Vec<String>,
     /// Default as text.
     pub default: String,
     /// Current value as text.
@@ -343,13 +345,22 @@ impl From<&PluginEntry> for ModuleEntry {
     }
 }
 
+impl SettingEntry {
+    /// What to show for `choice`: its label, or the choice itself.
+    #[must_use]
+    pub fn label<'a>(&'a self, choice: &'a str) -> &'a str {
+        self.choices
+            .iter()
+            .position(|c| c == choice)
+            .and_then(|i| self.labels.get(i))
+            .filter(|l| !l.is_empty())
+            .map_or(choice, String::as_str)
+    }
+}
+
 impl From<&SettingInfo> for SettingEntry {
     fn from(s: &SettingInfo) -> Self {
-        let choices: Vec<String> = str_from(s.choices)
-            .split('|')
-            .filter(|c| !c.is_empty())
-            .map(str::to_owned)
-            .collect();
+        let (choices, labels) = uniloader_core::settings::parse_choices(&str_from(s.choices));
         let kind = SettingKind::from_abi(s.kind);
         SettingEntry {
             plugin: str_from(s.plugin),
@@ -360,6 +371,7 @@ impl From<&SettingInfo> for SettingEntry {
             min: s.min,
             max: s.max,
             choices,
+            labels,
             default: str_from(s.default),
             value: str_from(s.value),
             restart_required: s

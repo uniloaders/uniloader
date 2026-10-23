@@ -489,6 +489,19 @@ impl Ui<'_> {
         self.widget(UiWidget::BUTTON, text, &mut value).is_ok() && value.boolean
     }
 
+    /// A button described by `tip` ([`Ui::tip`]); whether it was clicked this frame.
+    pub fn button_with_tip(&mut self, text: &str, tip: &str) -> bool {
+        let clicked = self.button(text);
+        self.tip(tip);
+        clicked
+    }
+
+    /// Describes the widget added just before (what a button does). A provider without
+    /// descriptions ignores it.
+    pub fn tip(&mut self, text: &str) {
+        self.widget(UiWidget::TIP, text, &mut UiValue::default());
+    }
+
     /// A checkbox over `on`; whether it changed.
     pub fn checkbox(&mut self, text: &str, on: &mut bool) -> bool {
         let mut value = UiValue {

@@ -185,6 +185,7 @@ unsafe extern "C" fn setting_register(
     if d.struct_size < core::mem::size_of::<SettingDesc>() {
         return Status::UNSUPPORTED;
     }
+    let (choices, labels) = settings::parse_choices(&text(d.choices));
     let desc = settings::Desc {
         key: text(d.key),
         title: text(d.title),
@@ -209,11 +210,8 @@ unsafe extern "C" fn setting_register(
         default: text(d.default),
         min: d.min,
         max: d.max,
-        choices: text(d.choices)
-            .split('|')
-            .filter(|c| !c.is_empty())
-            .map(str::to_owned)
-            .collect(),
+        choices,
+        labels,
         restart_required: d.flags.contains(SettingFlags::RESTART_REQUIRED),
         advanced: d.flags.contains(SettingFlags::ADVANCED),
         transient: d.flags.contains(SettingFlags::TRANSIENT),

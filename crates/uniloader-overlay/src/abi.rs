@@ -117,6 +117,10 @@ impl UiWidget {
     /// reference during the call and touches the handle at no other time. A provider that cannot draw that device's
     /// textures returns `UNSUPPORTED`. The texture holds gamma-encoded, premultiplied RGBA.
     pub const GPU_TEXTURE: UiWidget = UiWidget(12);
+    /// What the widget added just before does, `text` (a button's description): a provider
+    /// shows it in its description pane, as hover text or as a small line under the widget.
+    /// Ignores `value`.
+    pub const TIP: UiWidget = UiWidget(13);
 }
 
 /// The value a widget reads, writes, or both. Fields a widget does not use are ignored.

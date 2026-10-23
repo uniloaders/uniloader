@@ -4,7 +4,7 @@
 use eframe::egui::color_picker::{color_edit_button_srgba, Alpha};
 use eframe::egui::{Color32, ComboBox, DragValue, RichText, Slider, TextEdit, Ui};
 use uniloader_core::schema::Setting;
-use uniloader_core::settings::Kind;
+use uniloader_core::settings::{Desc, Kind};
 use uniloader_core::values;
 
 use super::edit::{self, Edit, Record};
@@ -157,15 +157,15 @@ fn control(
         Kind::Enum => {
             let mut picked = current.to_owned();
             ComboBox::from_id_salt(id)
-                .selected_text(&picked)
+                .selected_text(desc.label(current))
                 .show_ui(ui, |ui| {
                     for choice in &desc.choices {
-                        ui.selectable_value(&mut picked, choice.clone(), choice);
+                        ui.selectable_value(&mut picked, choice.clone(), desc.label(choice));
                     }
                 });
             (picked != current).then_some(picked)
         }
-        Kind::Flags => flags(ui, &desc.choices, current),
+        Kind::Flags => flags(ui, desc, current),
         Kind::Colour => colour(ui, edit, id, current),
         Kind::Key => key(ui, edit, id, current),
         Kind::File | Kind::Directory => {
@@ -204,13 +204,14 @@ fn text(ui: &mut Ui, edit: &mut Edit, id: &str, current: &str, hint: &str) -> Op
     response.changed().then(|| draft.clone())
 }
 
-fn flags(ui: &mut Ui, choices: &[String], current: &str) -> Option<String> {
+fn flags(ui: &mut Ui, desc: &Desc, current: &str) -> Option<String> {
+    let choices = &desc.choices;
     let set: Vec<&str> = values::flag_names(current).collect();
     let mut changed = None;
     ui.horizontal_wrapped(|ui| {
         for choice in choices {
             let mut on = set.iter().any(|s| s.eq_ignore_ascii_case(choice));
-            if ui.checkbox(&mut on, choice).changed() {
+            if ui.checkbox(&mut on, desc.label(choice)).changed() {
                 let next: Vec<&str> = choices
                     .iter()
                     .map(String::as_str)

@@ -252,7 +252,7 @@ impl Host {
     /// # Errors
     /// Invalid key, duplicate key, bad default, or called outside `start`.
     pub fn setting(&self, setting: &Setting) -> Result<(), PluginError> {
-        let choices = setting.choices.join("|");
+        let choices = uniloader_core::settings::choices_text(&setting.choices, &setting.labels);
         let mut flags = SettingFlags::NONE.0;
         if setting.restart_required {
             flags |= SettingFlags::RESTART_REQUIRED.0;

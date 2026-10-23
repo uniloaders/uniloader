@@ -130,6 +130,9 @@ fn draw(ui: &mut egui::Ui, kind: UiWidget, text: &str, value: Option<&mut UiValu
             let points = value.map_or(0.0, |v| v.float);
             ui.add_space(if points > 0.0 { points } else { 6.0 });
         }
+        (UiWidget::TIP, _) => {
+            ui.label(egui::RichText::new(text).small().weak());
+        }
         (UiWidget::SETTING, _) => return setting(ui, text),
         (UiWidget::BUTTON, Some(out)) => out.boolean = ui.button(text).clicked(),
         (UiWidget::SELECTABLE, Some(out)) => {
@@ -337,10 +340,13 @@ fn control(ui: &mut egui::Ui, entry: &SettingEntry, label: &str) -> Option<Strin
         SettingKind::Enum => {
             let mut picked = None;
             egui::ComboBox::from_label(label)
-                .selected_text(current)
+                .selected_text(entry.label(current))
                 .show_ui(ui, |ui| {
                     for choice in &entry.choices {
-                        if ui.selectable_label(choice == current, choice).clicked() {
+                        if ui
+                            .selectable_label(choice == current, entry.label(choice))
+                            .clicked()
+                        {
                             picked = Some(choice.clone());
                         }
                     }

@@ -438,7 +438,15 @@ fn help_for(state: &mut State, name: &str) -> Outcome {
                     lines.push(format!("  {}", desc.description));
                 }
                 if !desc.choices.is_empty() {
-                    lines.push(format!("  choices: {}", desc.choices.join(", ")));
+                    let shown: Vec<String> = desc
+                        .choices
+                        .iter()
+                        .map(|c| match desc.label(c) {
+                            l if l == c => c.clone(),
+                            l => format!("{c} ({l})"),
+                        })
+                        .collect();
+                    lines.push(format!("  choices: {}", shown.join(", ")));
                 }
             }
             if let Some(cmd) = record.commands.get(key) {

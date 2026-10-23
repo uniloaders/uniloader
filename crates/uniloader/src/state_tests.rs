@@ -35,6 +35,7 @@ pub(crate) fn desc(key: &str) -> settings::Desc {
         min: 0.0,
         max: 10.0,
         choices: Vec::new(),
+        labels: Vec::new(),
         restart_required: false,
         advanced: false,
         transient: false,

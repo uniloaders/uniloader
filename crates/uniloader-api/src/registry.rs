@@ -90,7 +90,8 @@ pub struct SettingInfo {
     pub min: f64,
     /// Upper bound for numeric kinds.
     pub max: f64,
-    /// `|`-separated choices for enum settings.
+    /// `|`-separated choices for enum and flags settings, each `choice` or `choice=Label`
+    /// ([`crate::SettingDesc::choices`]).
     pub choices: Str,
     /// Flags from the descriptor.
     pub flags: SettingFlags,

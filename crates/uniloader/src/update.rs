@@ -32,6 +32,7 @@ pub fn settings() -> Vec<Desc> {
         min: 0.0,
         max: 0.0,
         choices: Vec::new(),
+        labels: Vec::new(),
         restart_required: false,
         advanced: false,
         transient: false,

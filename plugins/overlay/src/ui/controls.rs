@@ -135,7 +135,7 @@ pub(crate) fn flags(ui: &mut Ui, entry: &SettingEntry, label: &str) -> Option<St
         .show_ui(ui, |ui| {
             for choice in &entry.choices {
                 let mut checked = on.contains(&choice.as_str());
-                if ui.checkbox(&mut checked, choice).changed() {
+                if ui.checkbox(&mut checked, entry.label(choice)).changed() {
                     let next: Vec<&str> = entry
                         .choices
                         .iter()
