@@ -234,7 +234,8 @@ fn game_crashed(session: &Session, previous: Marker) {
         return;
     }
     let text = format!(
-        "The game wrote a crash report of its own during the session of process {} (started          {since} UTC); it is attached.\n",
+        "The game wrote a crash report of its own during the session of process {} (started \
+         {since} UTC); it is attached.\n",
         previous.pid
     );
     let _ = fs::write(incident.join(reports::INFO), info(Kind::Crash, &text));
@@ -262,16 +263,24 @@ fn write_marker(session: &Session, closing: bool) {
 /// The incident's `info.txt`: what happened, then the loader, the game, Windows and the
 /// plugins.
 fn info(kind: Kind, what: &str) -> String {
+    format!(
+        "{} ({})\n{}\n\n{}",
+        kind.headline(),
+        kind.key(),
+        what.trim_end(),
+        details()
+    )
+}
+
+/// The loader, Windows, the game and the plugins, for an incident's `info.txt`.
+fn details() -> String {
     let mut lines = vec![
-        format!("{} ({})", kind.headline(), kind.key()),
-        what.trim_end().to_owned(),
-        String::new(),
         format!("uniloader {}", env!("CARGO_PKG_VERSION")),
         windows_version(),
     ];
     if let Some(session) = SESSION.get() {
         lines.push(format!(
-            "session started {} UTC, {} s ago",
+            "written by the session started {} UTC, {} s in",
             reports::stamp(session.started),
             session.since.elapsed().as_secs()
         ));
@@ -380,9 +389,8 @@ pub(super) fn crashed(dir: &Path, code: u32, address: usize, dump: impl FnOnce(&
         .map(|(m, off)| format!(" ({m}+{off:#x})"))
         .unwrap_or_default();
     let text = format!(
-        "{}\nexception {code:#010x} at {address:#x}{module}; dump written: {written}\n{}\n",
-        Kind::Crash.headline(),
-        windows_version()
+        "{}\nexception {code:#010x} at {address:#x}{module}; dump written: {written}\n",
+        Kind::Crash.headline()
     );
     let _ = fs::write(incident.join(reports::INFO), text);
 }
@@ -437,6 +445,14 @@ fn bundle(session: &Session, name: &str, dir: &Path, since: Option<u64>) -> Opti
                     Kind::Crash.key()
                 ),
             );
+        }
+    }
+    // A crash incident's info.txt is written inside the exception filter, where nothing may
+    // lock: the plugin list and the game's facts are added now.
+    let info = dir.join(reports::INFO);
+    if let Ok(text) = fs::read_to_string(&info) {
+        if !text.contains("\nplugins:") {
+            let _ = fs::write(&info, format!("{}\n\n{}", text.trim_end(), details()));
         }
     }
     parts.extend(attached);
