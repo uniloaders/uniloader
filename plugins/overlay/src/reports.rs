@@ -7,6 +7,7 @@
 #![allow(unsafe_code)]
 
 use core::ffi::c_void;
+use std::sync::Mutex;
 
 use uniloader_overlay::{UiAnswer, UiDialog, UiLevel, UiNotice};
 use uniloader_sdk::api::Str;
@@ -16,6 +17,15 @@ use crate::notices;
 
 /// How long the toast about a report stays.
 const DONE_SECONDS: f32 = 12.0;
+
+/// The open prompts: zip name and dialog id, so a report decided elsewhere (the console)
+/// takes its prompt down.
+static OPEN: Mutex<Vec<(String, u64)>> = Mutex::new(Vec::new());
+
+fn open() -> std::sync::MutexGuard<'static, Vec<(String, u64)>> {
+    OPEN.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 /// The fields of a NUL separated payload.
 fn fields(payload: &[u8]) -> Vec<String> {
@@ -32,7 +42,7 @@ pub(crate) fn on_event(host: &Host, topic: &str, payload: &[u8]) -> bool {
         return true;
     }
     if topic == topics::REPORT_DONE {
-        done(&fields(payload));
+        done(host, &fields(payload));
         return true;
     }
     false
@@ -82,7 +92,7 @@ fn ready(host: &Host, f: &[String]) {
         name: name.to_owned(),
         can_send: !server.is_empty(),
     }));
-    notices::dialog(
+    let id = notices::dialog(
         host.me().raw(),
         UiDialog::CONFIRM,
         UiLevel::WARNING,
@@ -92,6 +102,7 @@ fn ready(host: &Host, f: &[String]) {
             ctx: ctx as usize,
         }),
     );
+    open().push((name.to_owned(), id));
     crate::shared::recount();
 }
 
@@ -136,8 +147,22 @@ unsafe extern "C" fn answered(ctx: *mut c_void, _id: u64, answer: UiAnswer, _tex
     }
 }
 
-fn done(f: &[String]) {
+fn done(host: &Host, f: &[String]) {
     let get = |i: usize| f.get(i).map_or("", String::as_str);
+    let prompts: Vec<u64> = {
+        let mut open = open();
+        let ids = open
+            .iter()
+            .filter(|(n, _)| n == get(0))
+            .map(|&(_, id)| id)
+            .collect();
+        open.retain(|(n, _)| n != get(0));
+        ids
+    };
+    for id in prompts {
+        // Closed, which the callback ignores; already gone when the player answered it.
+        let _ = notices::take_owned(host.me().raw(), id);
+    }
     let (level, title, text) = match get(1) {
         "sent" => (
             UiLevel::SUCCESS,
