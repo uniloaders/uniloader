@@ -339,8 +339,11 @@ fn bundle(session: &Session, name: &str, dir: &Path, since: Option<u64>) -> Opti
         ));
     }
     let mut name = name.to_owned();
-    if reports::kind_of(&name) == Some(Kind::Exit) && !attached.is_empty() {
-        // the game reported a crash of its own
+    let dumped = attached
+        .iter()
+        .any(|p| reports::content_of(&p.name) == Some(reports::Content::Dump));
+    if reports::kind_of(&name) == Some(Kind::Exit) && dumped {
+        // the game wrote a crash dump of its own (attached logs alone prove nothing)
         name = name.replacen("_exit", "_crash", 1);
     }
     parts.extend(attached);
