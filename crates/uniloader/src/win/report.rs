@@ -18,6 +18,7 @@
 #![allow(unsafe_code)]
 
 use std::fs;
+use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
@@ -52,7 +53,7 @@ struct Session {
     /// When it started, Unix seconds.
     started: u64,
     since: Instant,
-    /// The previous session's marker, when it did not close normally.
+    /// The previous session's marker.
     previous: Option<Marker>,
     /// The game's executable name without `.exe`.
     game: String,
@@ -63,6 +64,9 @@ static SESSION: OnceLock<Session> = OnceLock::new();
 static URL: Mutex<String> = Mutex::new(String::new());
 /// Folders plugins attached.
 static ATTACHED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+/// The marker's path (NUL terminated UTF-16) and its closing text, made at start so that
+/// [`ending`] neither allocates nor locks.
+static CLOSING: OnceLock<(Vec<u16>, Vec<u8>)> = OnceLock::new();
 /// The freeze incident being written.
 static FREEZE: Mutex<Option<PathBuf>> = Mutex::new(None);
 
@@ -99,8 +103,7 @@ pub(super) fn start(paths: &Paths) {
     let marker = dir.join(reports::MARKER);
     let previous = fs::read_to_string(&marker)
         .ok()
-        .and_then(|t| Marker::parse(&t))
-        .filter(|m| !m.closing);
+        .and_then(|t| Marker::parse(&t));
     let started = now();
     let mine = Marker {
         pid: std::process::id(),
@@ -110,9 +113,26 @@ pub(super) fn start(paths: &Paths) {
     if let Err(e) = fs::write(&marker, mine.render()) {
         log::warn!("reports: cannot write {}: {e}", marker.display());
     }
-    let game = super::proxy::module_path(None)
-        .file_stem()
-        .map_or_else(|| "game".to_owned(), |s| s.to_string_lossy().into_owned());
+    // The product name tells editions apart that share an exe name (TrainSimWorld7 and
+    // TrainSimWorld5 both run TrainSimWorld.exe).
+    let product = super::try_state()
+        .and_then(|g| {
+            g.facts
+                .get("pe.version.ProductName")
+                .map(ToString::to_string)
+        })
+        // It goes into a header and a file name.
+        .map(|p| {
+            p.chars()
+                .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+                .collect::<String>()
+        })
+        .filter(|p| !p.is_empty());
+    let game = product.unwrap_or_else(|| {
+        super::proxy::module_path(None)
+            .file_stem()
+            .map_or_else(|| "game".to_owned(), |s| s.to_string_lossy().into_owned())
+    });
     let session = Session {
         dir: dir.clone(),
         logs: paths.logs_dir.clone(),
@@ -124,15 +144,25 @@ pub(super) fn start(paths: &Paths) {
     if SESSION.set(session).is_err() {
         return;
     }
+    let closing = Marker {
+        closing: true,
+        ..mine
+    };
+    let wide: Vec<u16> = marker.as_os_str().encode_wide().chain([0]).collect();
+    let _ = CLOSING.set((wide, closing.render().into_bytes()));
     crash::start(&dir);
     crash::watch(seen);
-    if let Some(previous) = previous {
-        previous_ended(&dir, previous);
-    }
+    let incidents_dir = dir.clone();
     let spawned = std::thread::Builder::new()
         .name("uniloader-reports".to_owned())
-        .spawn(|| {
+        .spawn(move || {
+            let dir = incidents_dir;
             std::thread::sleep(SETTLE);
+            // After the settle time, so the incident's plugin list is this start's whole one
+            // (the same plugins, as a rule, as the session that ended).
+            if let Some(previous) = previous.filter(|m| !m.closing) {
+                previous_ended(&dir, previous);
+            }
             bundle_all();
             offer_newest();
         });
@@ -178,6 +208,55 @@ fn previous_ended(dir: &Path, previous: Marker) {
     );
     let _ = fs::write(incident.join(reports::INFO), info(Kind::Exit, &text));
     log::warn!("reports: the previous session ended without closing normally");
+}
+
+/// The game caught a crash itself (UE does on its main thread, writes its own report and
+/// ends the process, which may look like a normal end): a `crash` incident when an attached
+/// folder got a dump during the previous session and nothing else reported that session.
+fn game_crashed(session: &Session, previous: Marker) {
+    let since = reports::stamp(previous.started);
+    if incidents(&session.dir)
+        .iter()
+        .any(|(name, _)| *name >= since)
+    {
+        return;
+    }
+    let dumped = lock(&ATTACHED).iter().any(|folder| {
+        reports::parts_of(folder, "", Some(previous.started))
+            .iter()
+            .any(|p| reports::content_of(&p.name) == Some(reports::Content::Dump))
+    });
+    if !dumped {
+        return;
+    }
+    let incident = session.dir.join(reports::incident_name(now(), Kind::Crash));
+    if fs::create_dir_all(&incident).is_err() {
+        return;
+    }
+    let text = format!(
+        "The game wrote a crash report of its own during the session of process {} (started          {since} UTC); it is attached.\n",
+        previous.pid
+    );
+    let _ = fs::write(incident.join(reports::INFO), info(Kind::Crash, &text));
+    log::warn!("reports: the game reported a crash in the previous session");
+}
+
+/// The process ends through `ExitProcess` or the loader is unloaded: a normal end. Runs
+/// in `DllMain`, where other threads may have died holding the heap's lock: nothing here
+/// allocates.
+pub(super) fn ending() {
+    if let Some((path, text)) = CLOSING.get() {
+        crash::write_raw(path, text);
+    }
+}
+
+fn write_marker(session: &Session, closing: bool) {
+    let marker = Marker {
+        pid: std::process::id(),
+        started: session.started,
+        closing,
+    };
+    let _ = fs::write(session.dir.join(reports::MARKER), marker.render());
 }
 
 /// The incident's `info.txt`: what happened, then the loader, the game, Windows and the
@@ -279,13 +358,12 @@ fn seen(what: &Seen) {
             );
         }
         Seen::Closing => {
-            let marker = Marker {
-                pid: std::process::id(),
-                started: session.started,
-                closing: true,
-            };
-            let _ = fs::write(session.dir.join(reports::MARKER), marker.render());
-            log::info!("reports: the game window closed; the session ends normally");
+            write_marker(session, true);
+            log::info!("reports: the game's main window closed; the session ends normally");
+        }
+        Seen::Reopened => {
+            write_marker(session, false);
+            log::info!("reports: a new main window (that was a start-up window); still running");
         }
     }
 }
@@ -313,6 +391,9 @@ pub(super) fn crashed(dir: &Path, code: u32, address: usize, dump: impl FnOnce(&
 fn bundle_all() {
     let Some(session) = SESSION.get() else { return };
     let since = session.previous.map(|m| m.started);
+    if let Some(previous) = session.previous {
+        game_crashed(session, previous);
+    }
     for (name, dir) in incidents(&session.dir) {
         let current = lock(&FREEZE).as_deref() == Some(dir.as_path());
         if current {
@@ -345,6 +426,18 @@ fn bundle(session: &Session, name: &str, dir: &Path, since: Option<u64>) -> Opti
     if reports::kind_of(&name) == Some(Kind::Exit) && dumped {
         // the game wrote a crash dump of its own (attached logs alone prove nothing)
         name = name.replacen("_exit", "_crash", 1);
+        let info = dir.join(reports::INFO);
+        if let Ok(text) = fs::read_to_string(&info) {
+            let rest = text.split_once('\n').map_or("", |(_, rest)| rest);
+            let _ = fs::write(
+                &info,
+                format!(
+                    "{} ({})\nThe game wrote a crash report of its own; it is attached.\n{rest}",
+                    Kind::Crash.headline(),
+                    Kind::Crash.key()
+                ),
+            );
+        }
     }
     parts.extend(attached);
     let zip = session.dir.join(format!("{name}.zip"));
@@ -540,7 +633,8 @@ pub(super) fn command(args: &str) -> (Status, Vec<String>) {
     let mut words = args.split_whitespace();
     let verb = words.next().unwrap_or("list");
     let rest: Vec<&str> = words.collect();
-    let rest = rest.join(" ");
+    // One quoted word (a URL holds `//`, the console's comment) comes without its quotes.
+    let rest = uniloader_core::script::value(&rest.join(" "));
     let named = || reports::checked_name(rest.trim()).map(str::to_owned);
     match verb {
         "list" => {
@@ -594,6 +688,22 @@ pub(super) fn command(args: &str) -> (Status, Vec<String>) {
             }
             None => (Status::NOT_FOUND, vec![format!("cannot save {rest}")]),
         },
+        "crash" => {
+            // A thread of the loader's own faults, so the loader's exception filter (not the
+            // game's) handles it: the path a crash in a plugin's thread takes.
+            log::warn!("reports: crashing the game on purpose (report crash)");
+            let spawned = std::thread::Builder::new()
+                .name("uniloader-report-crash".to_owned())
+                .spawn(|| {
+                    let at = std::ptr::with_exposed_provenance_mut::<u8>(0x10);
+                    // SAFETY: none; crashing is what this command is for.
+                    unsafe { at.write_volatile(0) };
+                });
+            match spawned {
+                Ok(_) => (Status::OK, vec!["crashing".to_owned()]),
+                Err(e) => (Status::ERROR, vec![e.to_string()]),
+            }
+        }
         "url" => {
             let url = rest.trim();
             if !url.is_empty() && super::http::split_url(url).is_none() {
