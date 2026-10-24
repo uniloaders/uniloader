@@ -9,14 +9,17 @@
 //! The pointer is tracked twice on purpose. `WM_MOUSEMOVE` gives an absolute position, and
 //! raw input gives deltas, which is all there is once the game has captured and recentred the
 //! cursor. While the game holds the mouse it warps the cursor to the middle every frame, and
-//! each warp arrives as a `WM_MOUSEMOVE` at the centre; so the first relative packet latches
-//! [`Pending::relative`] and absolute positions are ignored from then on.
+//! each warp arrives as a `WM_MOUSEMOVE` at the centre; so while the cursor is held (hidden,
+//! or clipped to less than the screen) the pointer moves by the raw deltas and absolute
+//! positions are ignored ([`Pending::relative`]). A free, visible cursor (a game menu) is
+//! followed by its absolute position: there the deltas, without the system's pointer
+//! acceleration, would drift away from the cursor the player sees.
 
 // FFI module: a window procedure, raw input and `SetWindowLongPtrW`.
 #![allow(unsafe_code)]
 
 use core::ffi::c_void;
-use std::sync::atomic::{AtomicIsize, AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicPtr, Ordering};
 use std::sync::Mutex;
 
 use egui::{Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, Vec2};
@@ -50,7 +53,7 @@ struct Pending {
     screen: Vec2,
     /// The most recent key press as `(virtual key, scan code)`, for the hotkey recorder.
     last_key: Option<(u16, u16)>,
-    /// Set once a relative mouse packet has been seen; see the module comment.
+    /// Moving by raw deltas because the game holds the cursor; see the module comment.
     relative: bool,
 }
 
@@ -187,8 +190,8 @@ pub(crate) fn inject(input: &crate::inject::Input) -> Result<(), String> {
             post(WM_KEYUP, usize::from(*vk), up)?;
         }
         Input::Click(x, y) => {
-            // Placed directly: once relative mouse input is latched, absolute moves are
-            // ignored (see the module comment).
+            // Placed directly: while the cursor is held, absolute moves are ignored (see the
+            // module comment).
             {
                 let mut guard = pending();
                 let screen = guard.screen;
@@ -201,6 +204,30 @@ pub(crate) fn inject(input: &crate::inject::Input) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Whether the game holds the cursor: hidden, or clipped to less than the virtual screen.
+fn cursor_held() -> bool {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetClipCursor, GetCursorInfo, GetSystemMetrics, CURSORINFO, CURSOR_SHOWING,
+        SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
+    };
+    let mut info = CURSORINFO {
+        cbSize: u32::try_from(core::mem::size_of::<CURSORINFO>()).unwrap_or(0),
+        ..CURSORINFO::default()
+    };
+    // SAFETY: `info` is a sized `CURSORINFO` for the call to fill.
+    if unsafe { GetCursorInfo(&raw mut info) }.is_ok() && info.flags.0 & CURSOR_SHOWING.0 == 0 {
+        return true;
+    }
+    let mut clip = RECT::default();
+    // SAFETY: plain queries; `clip` is filled by the call.
+    unsafe {
+        GetClipCursor(&raw mut clip).is_ok()
+            && (clip.right - clip.left < GetSystemMetrics(SM_CXVIRTUALSCREEN)
+                || clip.bottom - clip.top < GetSystemMetrics(SM_CYVIRTUALSCREEN))
+    }
 }
 
 /// Where the overlay should draw its cursor.
@@ -334,7 +361,11 @@ fn push(events: &mut Vec<Event>, event: Event) {
 fn record(msg: u32, wparam: WPARAM, lparam: LPARAM, capturing: bool) -> bool {
     match msg {
         WM_MOUSEMOVE => {
+            let held = cursor_held();
             let mut guard = pending();
+            if !held {
+                guard.relative = false;
+            }
             if !guard.relative {
                 guard.pointer = client_position(lparam);
                 let pos = guard.pointer;
@@ -345,14 +376,8 @@ fn record(msg: u32, wparam: WPARAM, lparam: LPARAM, capturing: bool) -> bool {
         WM_INPUT => {
             // Only while capturing: parsing every mouse move the game makes costs a syscall.
             if capturing {
-                if let Some(delta) = raw_mouse_delta(lparam) {
-                    let mut guard = pending();
-                    guard.relative = true;
-                    let screen = guard.screen;
-                    let moved =
-                        (guard.pointer + delta).clamp(Pos2::ZERO, Pos2::new(screen.x, screen.y));
-                    guard.pointer = moved;
-                    push(&mut guard.events, Event::PointerMoved(moved));
+                if let Some(raw) = raw_mouse(lparam) {
+                    raw_input(&raw);
                 }
             }
             true
@@ -367,17 +392,8 @@ fn record(msg: u32, wparam: WPARAM, lparam: LPARAM, capturing: bool) -> bool {
                 WM_MBUTTONDOWN => (PointerButton::Middle, true),
                 _ => (PointerButton::Middle, false),
             };
-            let mut guard = pending();
-            let (pos, modifiers) = (guard.pointer, guard.modifiers);
-            push(
-                &mut guard.events,
-                Event::PointerButton {
-                    pos,
-                    button,
-                    pressed,
-                    modifiers,
-                },
-            );
+            LEGACY_BUTTONS.store(true, Ordering::Relaxed);
+            button_event(button, pressed);
             true
         }
         WM_MOUSEWHEEL => {
@@ -499,8 +515,108 @@ fn client_position(lparam: LPARAM) -> Pos2 {
     Pos2::new(f32::from(x), f32::from(y))
 }
 
-/// The relative movement in a `WM_INPUT` message, when it is a mouse one.
-fn raw_mouse_delta(lparam: LPARAM) -> Option<Vec2> {
+/// Set once the window got a legacy button message (`WM_LBUTTONDOWN`, ...). A game that
+/// registers raw input with `RIDEV_NOLEGACY` gets none, and then the buttons come from raw
+/// input; otherwise the legacy ones are used and the raw buttons ignored, so nothing counts
+/// twice.
+static LEGACY_BUTTONS: AtomicBool = AtomicBool::new(false);
+
+fn button_event(button: PointerButton, pressed: bool) {
+    let mut guard = pending();
+    let (pos, modifiers) = (guard.pointer, guard.modifiers);
+    push(
+        &mut guard.events,
+        Event::PointerButton {
+            pos,
+            button,
+            pressed,
+            modifiers,
+        },
+    );
+}
+
+/// One raw mouse packet.
+struct RawMouse {
+    /// Where it points on the screen (an absolute device: a tablet, a remote session,
+    /// synthetic input), or how far it moved.
+    moved: Moved,
+    /// `RI_MOUSE_*` button transitions.
+    buttons: u16,
+}
+
+enum Moved {
+    Absolute(Pos2),
+    Delta(Vec2),
+}
+
+/// A raw mouse packet while capturing: the pointer follows the deltas while the game holds
+/// the cursor and the real cursor otherwise; buttons count when legacy messages never come.
+fn raw_input(raw: &RawMouse) {
+    let position = match raw.moved {
+        Moved::Absolute(screen) => Some((to_client(screen), false)),
+        Moved::Delta(delta) if cursor_held() => {
+            let guard = pending();
+            let screen = guard.screen;
+            let moved = (guard.pointer + delta).clamp(Pos2::ZERO, Pos2::new(screen.x, screen.y));
+            Some((moved, true))
+        }
+        Moved::Delta(_) => cursor_client().map(|p| (p, false)),
+    };
+    if let Some((pos, relative)) = position {
+        let mut guard = pending();
+        if guard.pointer != pos {
+            guard.pointer = pos;
+            push(&mut guard.events, Event::PointerMoved(pos));
+        }
+        guard.relative = relative;
+    }
+    if raw.buttons == 0 || LEGACY_BUTTONS.load(Ordering::Relaxed) {
+        return;
+    }
+    // RI_MOUSE_* (winuser.h): left down/up, right down/up, middle down/up.
+    for (flag, button, pressed) in [
+        (0x0001_u16, PointerButton::Primary, true),
+        (0x0002, PointerButton::Primary, false),
+        (0x0004, PointerButton::Secondary, true),
+        (0x0008, PointerButton::Secondary, false),
+        (0x0010, PointerButton::Middle, true),
+        (0x0020, PointerButton::Middle, false),
+    ] {
+        if raw.buttons & flag != 0 {
+            button_event(button, pressed);
+        }
+    }
+}
+
+/// A screen position in the subclassed window's client coordinates.
+fn to_client(screen: Pos2) -> Pos2 {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::Graphics::Gdi::ScreenToClient;
+    #[allow(clippy::cast_possible_truncation, reason = "screen pixels")]
+    let mut point = POINT {
+        x: screen.x as i32,
+        y: screen.y as i32,
+    };
+    let hwnd = HWND(WINDOW.load(Ordering::Acquire));
+    // SAFETY: a plain coordinate query; a stale handle only fails the call.
+    let _ = unsafe { ScreenToClient(hwnd, &raw mut point) };
+    #[allow(clippy::cast_precision_loss)]
+    Pos2::new(point.x as f32, point.y as f32)
+}
+
+/// The system cursor in client coordinates.
+fn cursor_client() -> Option<Pos2> {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+    let mut point = POINT::default();
+    // SAFETY: `point` is filled by the call.
+    unsafe { GetCursorPos(&raw mut point) }.ok()?;
+    #[allow(clippy::cast_precision_loss)]
+    Some(to_client(Pos2::new(point.x as f32, point.y as f32)))
+}
+
+/// The mouse packet in a `WM_INPUT` message, when it is a mouse one.
+fn raw_mouse(lparam: LPARAM) -> Option<RawMouse> {
     let mut data = RAWINPUT::default();
     let mut size = u32::try_from(core::mem::size_of::<RAWINPUT>()).ok()?;
     let header = u32::try_from(core::mem::size_of::<RAWINPUTHEADER>()).ok()?;
@@ -520,13 +636,44 @@ fn raw_mouse_delta(lparam: LPARAM) -> Option<Vec2> {
     }
     // SAFETY: the type field says this union holds the mouse variant.
     let mouse = unsafe { data.data.mouse };
-    // Tablets and remote sessions send absolute positions through raw input; those are left
-    // to `WM_MOUSEMOVE`.
-    if mouse.usFlags.0 & MOUSE_MOVE_ABSOLUTE.0 != 0 {
-        return None;
-    }
+    // SAFETY: the button fields of the mouse variant, plain integers.
+    let buttons = unsafe { mouse.Anonymous.Anonymous.usButtonFlags };
     #[allow(clippy::cast_precision_loss)]
-    Some(Vec2::new(mouse.lLastX as f32, mouse.lLastY as f32))
+    let moved = if mouse.usFlags.0 & MOUSE_MOVE_ABSOLUTE.0 != 0 {
+        // 0..=65535 across the virtual desktop (or the primary screen without that flag).
+        use windows::Win32::UI::Input::MOUSE_VIRTUAL_DESKTOP;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetSystemMetrics, SM_CXSCREEN, SM_CXVIRTUALSCREEN, SM_CYSCREEN, SM_CYVIRTUALSCREEN,
+            SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+        };
+        // SAFETY: plain queries.
+        let (left, top, width, height) = unsafe {
+            if mouse.usFlags.0 & MOUSE_VIRTUAL_DESKTOP.0 != 0 {
+                (
+                    GetSystemMetrics(SM_XVIRTUALSCREEN),
+                    GetSystemMetrics(SM_YVIRTUALSCREEN),
+                    GetSystemMetrics(SM_CXVIRTUALSCREEN),
+                    GetSystemMetrics(SM_CYVIRTUALSCREEN),
+                )
+            } else {
+                (
+                    0,
+                    0,
+                    GetSystemMetrics(SM_CXSCREEN),
+                    GetSystemMetrics(SM_CYSCREEN),
+                )
+            }
+        };
+        let scale =
+            |v: i32, origin: i32, size: i32| origin as f32 + v as f32 * size as f32 / 65535.0;
+        Moved::Absolute(Pos2::new(
+            scale(mouse.lLastX, left, width),
+            scale(mouse.lLastY, top, height),
+        ))
+    } else {
+        Moved::Delta(Vec2::new(mouse.lLastX as f32, mouse.lLastY as f32))
+    };
+    Some(RawMouse { moved, buttons })
 }
 
 /// Put the virtual pointer in the middle of the screen, where a newly opened window wants it.

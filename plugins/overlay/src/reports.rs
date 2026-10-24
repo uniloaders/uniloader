@@ -129,7 +129,7 @@ unsafe extern "C" fn answered(ctx: *mut c_void, _id: u64, answer: UiAnswer, _tex
         _ => return,
     };
     if let Some(host) = crate::host() {
-        let line = format!("report {verb} {}", prompt.name);
+        let line = format!("uniloader.report {verb} {}", prompt.name);
         if let Err(e) = host.console_exec(&line) {
             log::warn!("{line}: {e}");
         }
@@ -155,4 +155,6 @@ fn done(f: &[String]) {
         _ => (UiLevel::WARNING, "Report not sent", get(2).to_owned()),
     };
     notices::passing(None, UiNotice::NOTICE, level, title, &text, DONE_SECONDS);
+    // A hidden overlay draws nothing until told it has something to show.
+    crate::shared::recount();
 }
