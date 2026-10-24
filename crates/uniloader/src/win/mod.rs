@@ -311,6 +311,7 @@ pub(crate) fn run_console_line_capture(ctx: Ctx, line: &str) -> (Status, Vec<Str
 /// loader's locks or a plugin's, and the OS loader lock is held. Nothing runs then; plugins
 /// are stopped only by `quit` or `plugin stop`, before the process ends.
 pub(crate) fn shutdown(terminating: bool) {
+    report::ending();
     if !terminating {
         plugins::stop_all();
         log::info!("loader shut down");

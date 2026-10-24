@@ -15,7 +15,9 @@
 //!   just slow). If the window answers again (a long load), the dumps are thrown away; if the
 //!   game is ended while frozen, the next start reports them.
 //! - A normal end: the main window going away marks the session closing, so the next start
-//!   knows the missing `DLL_PROCESS_DETACH` was not a crash.
+//!   knows the missing `DLL_PROCESS_DETACH` was not a crash; a main window that shows up
+//!   after that (a splash screen went first) takes it back. `ExitProcess` marks it too
+//!   ([`super::report::ending`]), for a quit faster than the watchdog's second.
 
 // FFI module: dbghelp through a function pointer, the exception filter, window queries.
 #![allow(unsafe_code)]
@@ -43,6 +45,37 @@ use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetWindow, GetWindowRect, GetWindowThreadProcessId, IsWindow, IsWindowVisible,
     SendMessageTimeoutW, GW_OWNER, SMTO_ABORTIFHUNG, WM_NULL,
 };
+
+/// Replaces the file at `path` (NUL terminated UTF-16) with `bytes` without allocating or
+/// taking a lock: safe from `DllMain` while the process exits.
+pub(super) fn write_raw(path: &[u16], bytes: &[u8]) {
+    use windows::Win32::Foundation::{CloseHandle, GENERIC_WRITE};
+    use windows::Win32::Storage::FileSystem::{
+        CreateFileW, WriteFile, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ,
+    };
+    if path.last() != Some(&0) {
+        return;
+    }
+    // SAFETY: `path` is NUL terminated (checked); the handle is closed below.
+    let Ok(file) = (unsafe {
+        CreateFileW(
+            PCWSTR(path.as_ptr()),
+            GENERIC_WRITE.0,
+            FILE_SHARE_READ,
+            None,
+            CREATE_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL,
+            None,
+        )
+    }) else {
+        return;
+    };
+    // SAFETY: `file` is the handle opened above, `bytes` a live slice.
+    unsafe {
+        let _ = WriteFile(file, Some(bytes), None, None);
+        let _ = CloseHandle(file);
+    }
+}
 
 /// Silent this long: the first freeze dump.
 pub(super) const FIRST_DUMP: Duration = Duration::from_secs(20);
@@ -258,6 +291,8 @@ pub(super) enum Seen {
     Recovered(Duration),
     /// The main window went away: the game is closing.
     Closing,
+    /// A main window again after [`Seen::Closing`]: what closed was a start-up window.
+    Reopened,
 }
 
 /// Runs the watchdog on its own thread, telling `tell` what it sees.
@@ -267,6 +302,7 @@ pub(super) fn watch(tell: fn(&Seen)) {
         .spawn(move || {
             let mut window: Option<HWND> = None;
             let mut had_window = false;
+            let mut closed = false;
             let mut silent_since: Option<Instant> = None;
             let mut dumps = 0u32;
             let mut rearmed = Instant::now();
@@ -282,11 +318,16 @@ pub(super) fn watch(tell: fn(&Seen)) {
                     if had_window {
                         tell(&Seen::Closing);
                         had_window = false;
+                        closed = true;
                     }
                 }
                 if window.is_none() {
                     window = main_window();
                     had_window |= window.is_some();
+                    if closed && window.is_some() {
+                        tell(&Seen::Reopened);
+                        closed = false;
+                    }
                 }
                 let Some(hwnd) = window else { continue };
                 if answers(hwnd) {
