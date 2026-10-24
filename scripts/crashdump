@@ -4,6 +4,10 @@
     crashdump REPORT.zip|DUMP.dmp [SYMBOL_DIR...]   the crash reason and the crashing thread
     crashdump --all REPORT.zip [SYMBOL_DIR...]      every thread
     crashdump --info REPORT.zip                     the report's info.txt and file list only
+    crashdump loader.log [SYMBOL_DIR...]            the panics a log holds
+
+Panics the loader logged (in the report's logs, or a log given) are printed first, their
+frames named the same way.
 
 SYMBOL_DIR: folders holding the shipped binaries beside their PDBs, e.g. a release's
 dist/symbols/<version>/ (package-release.sh keeps one per version) or a development build's
@@ -25,6 +29,7 @@ import argparse
 import bisect
 import json
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -39,6 +44,8 @@ Mode = Literal["crashed", "all", "info"]
 
 CODEVIEW = 2
 PE32_PLUS = 0x20B
+# A frame of the loader's panic hook: `  at dwmapi.dll+0x14fd12 [6ADC8F25288000]`.
+PANIC_FRAME = re.compile(r"^\s+at (\S+)\+0x([0-9a-f]+) \[([0-9A-Fa-f]+)\]$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,6 +261,11 @@ def describe(
         return f"{where}!{function}{line}"
     module = module_at(modules, int(frame.get("offset") or "0x0", 16))
     sym = index.get((module or {}).get("code_id", "").lower()) if module else None
+    return named(where, offset, sym, cache)
+
+
+def named(where: str, offset: int, sym: Path | None, cache: dict[Path, Symbols]) -> str:
+    """Return `module!function (file:line)` from the symbol file, else `module + offset`."""
     if sym is not None:
         if sym not in cache:
             cache[sym] = Symbols.parse(sym.read_text(errors="replace"))
@@ -261,6 +273,42 @@ def describe(
         if name is not None:
             return f"{where}!{name}"
     return f"{where} + {offset:#x}"
+
+
+def name_panics(text: str, index: dict[str, Path], cache: dict[Path, Symbols]) -> list[str]:
+    """Return the panics a log holds, each frame (`at module+0xoffset [code id]`) named."""
+    out: list[str] = []
+    inside = False
+    for line in text.splitlines():
+        if "panic in thread" in line:
+            inside = True
+            out.append(line.strip())
+            continue
+        if not inside:
+            continue
+        frame = PANIC_FRAME.match(line)
+        if frame is not None:
+            where, offset, code_id = frame.group(1), int(frame.group(2), 16), frame.group(3)
+            out.append(f"  at {named(where, offset, index.get(code_id.lower()), cache)}")
+        elif line.startswith("  at "):
+            out.append(line.rstrip())
+        else:
+            inside = False
+    return out
+
+
+def extract_logs(target: Path) -> list[tuple[str, str]]:
+    """Return the logs of a report zip, or the one log given, with their text."""
+    if target.suffix.lower() != ".zip":
+        return (
+            [(target.name, target.read_text(errors="replace"))] if target.suffix == ".log" else []
+        )
+    with zipfile.ZipFile(target) as z:
+        return [
+            (name, z.read(name).decode("utf-8", "replace"))
+            for name in sorted(z.namelist())
+            if name.lower().endswith(".log")
+        ]
 
 
 def report(walked: dict[str, object], mode: Mode, index: dict[str, Path]) -> None:
@@ -345,10 +393,17 @@ def main() -> None:
     store = cache_home / "crashdump" / "symbols"
     store.mkdir(parents=True, exist_ok=True)
     index = index_symbols(dirs, store)
+    cache: dict[Path, Symbols] = {}
+    panics = [(name, name_panics(text, index, cache)) for name, text in extract_logs(target)]
+    for name, lines in panics:
+        if lines:
+            print(f"== panics in {name}")
+            print("\n".join(lines))
+            print()
     with tempfile.TemporaryDirectory() as work:
-        dumps = extract_dumps(target, Path(work))
-        if not dumps:
-            sys.exit(f"error: no dumps in {target}")
+        dumps = extract_dumps(target, Path(work)) if target.suffix != ".log" else []
+        if not dumps and not any(lines for _, lines in panics):
+            sys.exit(f"error: no dumps or panics in {target}")
         for name, dump in dumps:
             print(f"== {name}")
             walked = walk(dump, store)

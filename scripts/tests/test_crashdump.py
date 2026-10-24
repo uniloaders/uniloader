@@ -5,25 +5,19 @@ python3 -m pytest scripts/tests
 
 from __future__ import annotations
 
-import importlib.util
 import struct
 import sys
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from types import ModuleType
+from types import ModuleType
 
 
 def _load() -> ModuleType:
     path = Path(__file__).resolve().parent.parent / "crashdump"
-    loader = SourceFileLoader("crashdump", str(path))
-    spec = importlib.util.spec_from_loader("crashdump", loader)
-    assert spec is not None
-    module = importlib.util.module_from_spec(spec)
+    module = ModuleType("crashdump")
+    module.__file__ = str(path)
     sys.modules["crashdump"] = module
-    loader.exec_module(module)
+    SourceFileLoader("crashdump", str(path)).exec_module(module)
     return module
 
 
@@ -91,6 +85,26 @@ def test_offsets_are_named_with_their_lines() -> None:
     assert symbols.name(0x1024) == "uniloader::win::crash::watch (src/win/crash.rs:275)"
     assert symbols.name(0x2004) == "uniloader::win::report::seen (src/win/report.rs:251)"
     assert symbols.name(0x3010) == "exported_thing + 0x10"
+
+
+def test_panic_frames_are_named_by_code_id(tmp_path: Path) -> None:
+    sym = tmp_path / "uniloader.sym"
+    sym.write_text(SYM)
+    log = (
+        "2026-10-24T16:51:35Z [INFO] before\n"
+        "2026-10-24T16:51:35Z [ERROR] uniloader::win::panics: panic in thread t: boom at a.rs:1:2\n"
+        "  at dwmapi.dll+0x1024 [6ADC8F25288000]\n"
+        "  at game.exe+0x10 [11111111aaaa]\n"
+        "  at 0x7ff00010\n"
+        "2026-10-24T16:51:36Z [INFO] after\n"
+    )
+    lines = crashdump.name_panics(log, {"6adc8f25288000": sym}, {})
+    assert lines == [
+        "2026-10-24T16:51:35Z [ERROR] uniloader::win::panics: panic in thread t: boom at a.rs:1:2",
+        "  at dwmapi.dll!uniloader::win::crash::watch (src/win/crash.rs:275)",
+        "  at game.exe + 0x10",
+        "  at 0x7ff00010",
+    ]
 
 
 def test_offsets_outside_functions_stay_unnamed() -> None:

@@ -9,11 +9,16 @@
 //!   it does not catch, an unhandled-exception filter writes `crash.dmp`; the engine may set
 //!   its own filter later, so the watchdog puts ours back in front of it, calling the one it
 //!   replaced afterwards.
+//! - Stack overflows: the overflowing thread has too little stack left for dbghelp, so a
+//!   vectored handler hands the dump to a thread started for that and waits for it.
+//!   A fail-fast (`__fastfail`, a Rust abort) reaches no handler at all; the panic hook
+//!   ([`super::panics`]) logs a panic before it aborts.
 //! - Freezes: the watchdog asks the game's main window to answer every second
 //!   (`SendMessageTimeout` with `WM_NULL`). Silent for [`FIRST_DUMP`], it writes
 //!   `freeze-1.dmp`, at [`SECOND_DUMP`] `freeze-2.dmp` (the same place twice: a hang; moved:
-//!   just slow). If the window answers again (a long load), the dumps are thrown away; if the
-//!   game is ended while frozen, the next start reports them.
+//!   just slow). If the window answers again, the dumps are thrown away; if the game is
+//!   ended while frozen, the next start reports them. While a plugin says the game is
+//!   loading (`report loading on`, for [`LOADING_CAP`] at most), silence is not counted.
 //! - A normal end: the main window going away marks the session closing, so the next start
 //!   knows the missing `DLL_PROCESS_DETACH` was not a crash; a main window that shows up
 //!   after that (a splash screen went first) takes it back. `ExitProcess` marks it too
@@ -25,21 +30,22 @@
 use std::fs;
 use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use windows::core::{s, BOOL, PCWSTR};
 use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, RECT, WPARAM};
 use windows::Win32::System::Diagnostics::Debug::{
-    SetUnhandledExceptionFilter, EXCEPTION_POINTERS, LPTOP_LEVEL_EXCEPTION_FILTER,
-    MINIDUMP_EXCEPTION_INFORMATION,
+    AddVectoredExceptionHandler, SetUnhandledExceptionFilter, EXCEPTION_POINTERS,
+    LPTOP_LEVEL_EXCEPTION_FILTER, MINIDUMP_EXCEPTION_INFORMATION,
 };
 use windows::Win32::System::LibraryLoader::{
     GetProcAddress, LoadLibraryExW, LOAD_LIBRARY_SEARCH_SYSTEM32,
 };
 use windows::Win32::System::Threading::{
-    GetCurrentProcess, GetCurrentProcessId, GetCurrentThreadId,
+    CreateEventW, GetCurrentProcess, GetCurrentProcessId, GetCurrentThreadId, SetEvent,
+    WaitForSingleObject, INFINITE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetWindow, GetWindowRect, GetWindowThreadProcessId, IsWindow, IsWindowVisible,
@@ -81,6 +87,8 @@ pub(super) fn write_raw(path: &[u16], bytes: &[u8]) {
 pub(super) const FIRST_DUMP: Duration = Duration::from_secs(20);
 /// Silent this long: the second.
 pub(super) const SECOND_DUMP: Duration = Duration::from_secs(40);
+/// Silent at least this long, then answering: logged (loads and hitches), no dump.
+const NOTE_SILENCE: Duration = Duration::from_secs(5);
 /// How long the window has to answer one ping.
 const PING_MS: u32 = 2_000;
 /// How often the watchdog looks.
@@ -91,6 +99,13 @@ const REARM_EVERY: Duration = Duration::from_secs(5);
 const DUMP_TYPE: i32 = 0x20 | 0x100 | 0x1000;
 /// `EXCEPTION_CONTINUE_SEARCH`.
 const CONTINUE_SEARCH: i32 = 0;
+/// `STATUS_STACK_OVERFLOW`.
+pub(super) const STACK_OVERFLOW: u32 = 0xC000_00FD;
+/// How long an overflowing thread waits for its dump.
+const OVERFLOW_DUMP_MS: u32 = 30_000;
+/// The longest a load keeps the watchdog quiet; a load said to go on longer counts as a
+/// freeze from then on.
+pub(super) const LOADING_CAP: Duration = Duration::from_secs(300);
 
 type MiniDumpFn = unsafe extern "system" fn(
     HANDLE,
@@ -109,8 +124,17 @@ static REPORTS: OnceLock<PathBuf> = OnceLock::new();
 static PREVIOUS: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(core::ptr::null_mut());
 /// Crashes written this session: one dump is enough, a second fault in the filter is not.
 static CRASHES: AtomicUsize = AtomicUsize::new(0);
+/// The overflow dumper's events ([`start_overflow_dumper`]).
+static DUMPER: OnceLock<(usize, usize)> = OnceLock::new();
+/// The stack overflow being dumped: its exception and its thread.
+static OVERFLOW: AtomicPtr<EXCEPTION_POINTERS> = AtomicPtr::new(core::ptr::null_mut());
+static OVERFLOW_THREAD: AtomicU32 = AtomicU32::new(0);
+/// When the game said its load ends at the latest, in milliseconds on [`clock`]; 0: not
+/// loading.
+static LOADING_UNTIL: AtomicU64 = AtomicU64::new(0);
+static CLOCK: OnceLock<Instant> = OnceLock::new();
 
-/// Loads dbghelp, remembers where reports go and puts the exception filter in place.
+/// Loads dbghelp, remembers where reports go and puts the exception handlers in place.
 pub(super) fn start(reports: &Path) {
     let _ = REPORTS.set(reports.to_path_buf());
     let loaded = MINIDUMP.get_or_init(load_minidump).is_some();
@@ -118,6 +142,29 @@ pub(super) fn start(reports: &Path) {
         log::warn!("reports: dbghelp.dll has no MiniDumpWriteDump; reports carry logs only");
     }
     rearm();
+    start_overflow_dumper();
+}
+
+/// Milliseconds since the first look at this clock.
+fn clock() -> u64 {
+    let start = *CLOCK.get_or_init(Instant::now);
+    u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+/// The game is loading (`on`), for [`LOADING_CAP`] at the most, or is done: a silent window
+/// is not a freeze while it loads.
+pub(super) fn loading(on: bool) {
+    let until = if on {
+        clock().saturating_add(u64::try_from(LOADING_CAP.as_millis()).unwrap_or(u64::MAX))
+    } else {
+        0
+    };
+    LOADING_UNTIL.store(until, Ordering::Release);
+}
+
+/// Whether the game said it is loading, within [`LOADING_CAP`].
+pub(super) fn is_loading() -> bool {
+    clock() < LOADING_UNTIL.load(Ordering::Acquire)
 }
 
 fn load_minidump() -> Option<MiniDumpFn> {
@@ -134,24 +181,23 @@ fn load_minidump() -> Option<MiniDumpFn> {
     }
 }
 
-/// Writes a dump of this process to `path`, for the exception in `exception` (on the thread
-/// that raised it) or none; whether it was written.
-pub(super) fn write_dump(path: &Path, exception: Option<*const EXCEPTION_POINTERS>) -> bool {
+/// Writes a dump of this process to `path`, for the exception in `exception` (its pointers
+/// and the id of the thread that raised it) or none; whether it was written.
+pub(super) fn write_dump(path: &Path, exception: Option<(*const EXCEPTION_POINTERS, u32)>) -> bool {
     let Some(Some(dump)) = MINIDUMP.get() else {
         return false;
     };
     let Ok(file) = fs::File::create(path) else {
         return false;
     };
-    let info = exception.map(|pointers| MINIDUMP_EXCEPTION_INFORMATION {
-        // SAFETY: plain query of the calling thread.
-        ThreadId: unsafe { GetCurrentThreadId() },
+    let info = exception.map(|(pointers, thread)| MINIDUMP_EXCEPTION_INFORMATION {
+        ThreadId: thread,
         ExceptionPointers: pointers.cast_mut(),
         ClientPointers: BOOL(0),
     });
     // SAFETY: the process and file handles are live for the call; `info` lives on this stack
     // frame; dbghelp reads the exception record it points at, which the OS keeps alive while
-    // the filter runs.
+    // the filter (or the stack overflow handler waiting for this thread) runs.
     let written = unsafe {
         dump(
             GetCurrentProcess(),
@@ -185,27 +231,45 @@ fn rearm() {
     }
 }
 
+/// The exception's code and address.
+///
+/// # Safety
+/// `pointers` is null or what the OS passed to an exception handler that is still running.
+unsafe fn code_and_address(pointers: *const EXCEPTION_POINTERS) -> (u32, usize) {
+    // SAFETY: the caller's contract; the record lives while the handler runs.
+    unsafe {
+        pointers
+            .as_ref()
+            .and_then(|p| p.ExceptionRecord.as_ref())
+            .map_or((0, 0), |r| {
+                (
+                    u32::from_ne_bytes(r.ExceptionCode.0.to_ne_bytes()),
+                    r.ExceptionAddress as usize,
+                )
+            })
+    }
+}
+
+/// A crash folder with the dump and what faulted, for the exception `pointers` on `thread`.
+///
+/// # Safety
+/// As [`code_and_address`]; `thread` raised it and waits in its handler.
+unsafe fn report_crash(pointers: *const EXCEPTION_POINTERS, thread: u32) {
+    let Some(reports) = REPORTS.get() else { return };
+    // SAFETY: the caller's contract.
+    let (code, address) = unsafe { code_and_address(pointers) };
+    super::report::crashed(reports, code, address, |path| {
+        write_dump(path, Some((pointers, thread)))
+    });
+}
+
 /// The unhandled-exception filter: a crash folder with the dump and what faulted, then the
 /// filter that was there before.
 unsafe extern "system" fn on_crash(pointers: *const EXCEPTION_POINTERS) -> i32 {
     if CRASHES.fetch_add(1, Ordering::AcqRel) == 0 {
-        if let Some(reports) = REPORTS.get() {
-            // SAFETY: the OS passes a valid record for the duration of the filter.
-            let (code, address) = unsafe {
-                pointers
-                    .as_ref()
-                    .and_then(|p| p.ExceptionRecord.as_ref())
-                    .map_or((0, 0), |r| {
-                        (
-                            u32::from_ne_bytes(r.ExceptionCode.0.to_ne_bytes()),
-                            r.ExceptionAddress as usize,
-                        )
-                    })
-            };
-            super::report::crashed(reports, code, address, |path| {
-                write_dump(path, Some(pointers))
-            });
-        }
+        // SAFETY: the OS passes a valid record for the duration of the filter, raised on this
+        // thread.
+        unsafe { report_crash(pointers, GetCurrentThreadId()) };
     }
     let previous = PREVIOUS.load(Ordering::Acquire);
     if previous.is_null() {
@@ -219,6 +283,75 @@ unsafe extern "system" fn on_crash(pointers: *const EXCEPTION_POINTERS) -> i32 {
         >(previous);
         filter(pointers)
     }
+}
+
+/// The thread that writes the dump of a stack overflow, waiting for one, and the handler
+/// that wakes it; started with the filter. Events as handle values (a `HANDLE` is not
+/// `Sync`): (an overflow happened, its dump is written).
+fn start_overflow_dumper() {
+    // SAFETY: two unnamed auto-reset events, kept for the process.
+    let events = unsafe {
+        (
+            CreateEventW(None, false, false, PCWSTR::null()),
+            CreateEventW(None, false, false, PCWSTR::null()),
+        )
+    };
+    let (Ok(asked), Ok(done)) = events else {
+        log::warn!("reports: no stack overflow dumps (no events)");
+        return;
+    };
+    let (asked, done) = (asked.0.expose_provenance(), done.0.expose_provenance());
+    let spawned = std::thread::Builder::new()
+        .name("uniloader-overflow-dumper".to_owned())
+        .spawn(move || loop {
+            // SAFETY: a live event handle; waiting forever is this thread's job.
+            unsafe { WaitForSingleObject(handle(asked), INFINITE) };
+            let pointers = OVERFLOW.load(Ordering::Acquire);
+            let thread = OVERFLOW_THREAD.load(Ordering::Acquire);
+            // SAFETY: the overflowing thread waits in its handler until `done` is set, which
+            // keeps its exception record alive.
+            unsafe {
+                report_crash(pointers, thread);
+                let _ = SetEvent(handle(done));
+            }
+        });
+    if let Err(e) = spawned {
+        log::warn!("reports: no stack overflow dumps: {e}");
+        return;
+    }
+    let _ = DUMPER.set((asked, done));
+    // SAFETY: a plain function as the first vectored handler, kept for the process.
+    if unsafe { AddVectoredExceptionHandler(1, Some(on_exception)) }.is_null() {
+        log::warn!("reports: no stack overflow dumps (no handler)");
+    }
+}
+
+fn handle(value: usize) -> HANDLE {
+    HANDLE(std::ptr::with_exposed_provenance_mut(value))
+}
+
+/// The first vectored handler: on a stack overflow the faulting thread has a few pages of
+/// stack left, too few for dbghelp, so it hands the dump to the dumper thread and waits.
+/// Every other exception goes on untouched; the filter sees the crashes.
+unsafe extern "system" fn on_exception(pointers: *mut EXCEPTION_POINTERS) -> i32 {
+    // SAFETY: the OS passes a valid record for the duration of the handler.
+    let (code, _) = unsafe { code_and_address(pointers) };
+    if code != STACK_OVERFLOW {
+        return CONTINUE_SEARCH;
+    }
+    let Some(&(asked, done)) = DUMPER.get() else {
+        return CONTINUE_SEARCH;
+    };
+    if CRASHES.fetch_add(1, Ordering::AcqRel) == 0 {
+        OVERFLOW.store(pointers, Ordering::Release);
+        // SAFETY: plain query; live event handles; the wait times out.
+        unsafe {
+            OVERFLOW_THREAD.store(GetCurrentThreadId(), Ordering::Release);
+            let _ = SetEvent(handle(asked));
+            WaitForSingleObject(handle(done), OVERFLOW_DUMP_MS);
+        }
+    }
+    CONTINUE_SEARCH
 }
 
 /// The process's main window: its largest visible, unowned top-level window.
@@ -287,7 +420,8 @@ fn answers(hwnd: HWND) -> bool {
 pub(super) enum Seen {
     /// Silent this long: dump number `n` is due.
     Frozen { n: u32, silent: Duration },
-    /// Answering again after being silent this long.
+    /// Answering again after being silent this long (dumps were written, or it was at least
+    /// [`NOTE_SILENCE`]).
     Recovered(Duration),
     /// The main window went away: the game is closing.
     Closing,
@@ -330,9 +464,14 @@ pub(super) fn watch(tell: fn(&Seen)) {
                     }
                 }
                 let Some(hwnd) = window else { continue };
+                // A freeze that began before the load was said keeps counting.
+                if dumps == 0 && is_loading() {
+                    silent_since = None;
+                    continue;
+                }
                 if answers(hwnd) {
                     if let Some(since) = silent_since.take() {
-                        if dumps > 0 {
+                        if dumps > 0 || since.elapsed() >= NOTE_SILENCE {
                             tell(&Seen::Recovered(since.elapsed()));
                         }
                         dumps = 0;

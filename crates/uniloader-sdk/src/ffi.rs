@@ -184,6 +184,7 @@ pub unsafe fn start<P: Plugin>(
     }
     let host = Host::new(api, handle);
     HostLogger::install(host);
+    install_panic_hook();
 
     let plugin = match catch_unwind(AssertUnwindSafe(|| P::start(host))) {
         Ok(Ok(plugin)) => plugin,
@@ -237,6 +238,33 @@ pub unsafe fn stop<P: Plugin>(slot: &'static Slot<P>, ctx: *mut c_void, reason: 
         return;
     }
     guard(state, "stop", |s| s.plugin.stop(&s.host, reason));
+}
+
+/// Logs every panic in this plugin's DLL (it has a standard library, and so a hook, of its
+/// own) with its message, where it was raised and the thread, through the host's log, which
+/// crash reports carry: a caught panic says no more than "panic in `on_event`" otherwise, and
+/// one that aborts the game says nothing at all. The hook that was there runs after.
+fn install_panic_hook() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let message = info
+                .payload()
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| info.payload().downcast_ref::<String>().map(String::as_str))
+                .unwrap_or("(no message)");
+            let place = info
+                .location()
+                .map_or_else(|| "?".to_owned(), ToString::to_string);
+            log::error!(
+                "panic in thread {}: {message} at {place}",
+                std::thread::current().name().unwrap_or("(unnamed)")
+            );
+            previous(info);
+        }));
+    });
 }
 
 /// Run a callback, turning a panic into a log line instead of unwinding into the loader.

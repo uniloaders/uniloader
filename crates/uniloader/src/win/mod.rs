@@ -21,6 +21,7 @@ mod hostapi_registry;
 mod http;
 mod input;
 mod lifecycle;
+mod panics;
 mod plugin_hooks;
 mod plugins;
 pub(crate) mod proxy;
@@ -117,6 +118,7 @@ fn start_logging(paths: &Paths, process: &Process) -> LoaderConfig {
     ) {
         console::print(&format!("could not open the log file: {e}"));
     }
+    panics::install();
     log::info!(
         "uniloader {} in {}",
         env!("CARGO_PKG_VERSION"),

@@ -579,7 +579,8 @@ pub const COMMAND_HELP: &str = "Crash and freeze reports: list them, make one no
                                 or save it to the Desktop.";
 /// The `report` command's usage.
 pub const COMMAND_USAGE: &str =
-    "report [list | now | send <zip> | desktop <zip> | url <https url> | attach <folder> | crash]";
+    "report [list | now | send <zip> | desktop <zip> | url <https url> | attach <folder> \
+     | loading on|off | crash [fault|stack|panic]]";
 
 #[cfg(test)]
 #[path = "reports_tests.rs"]

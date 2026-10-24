@@ -2,3 +2,4 @@
 **/*.rs.bk
 rustc-ice-*.txt
 /dist/
+__pycache__/

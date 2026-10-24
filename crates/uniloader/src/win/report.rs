@@ -13,6 +13,8 @@
 //! - `report send <zip>` POSTs it to the URL a plugin set (`report url <https url>`; the
 //!   loader has none of its own), `report desktop <zip>` copies it to the Desktop; both end
 //!   in [`topics::REPORT_DONE`]. A failed upload saves it to the Desktop instead.
+//! - `report loading on|off`: a plugin that knows the game is loading keeps the freeze
+//!   watchdog quiet meanwhile ([`crash::LOADING_CAP`] at most).
 
 // FFI module: the Desktop folder through shell32, the Windows version from the shared page.
 #![allow(unsafe_code)]
@@ -357,14 +359,16 @@ fn seen(what: &Seen) {
             );
         }
         Seen::Recovered(silent) => {
-            let silent = *silent;
+            let silent = silent.as_secs();
             if let Some(dir) = lock(&FREEZE).take() {
                 let _ = fs::remove_dir_all(dir);
+                log::info!(
+                    "reports: the game answers again after {silent} s; the freeze dumps are \
+                     discarded"
+                );
+            } else {
+                log::info!("reports: the game's window was silent for {silent} s");
             }
-            log::info!(
-                "reports: the game answers again after {} s; the freeze dumps are discarded",
-                silent.as_secs()
-            );
         }
         Seen::Closing => {
             write_marker(session, true);
@@ -388,8 +392,13 @@ pub(super) fn crashed(dir: &Path, code: u32, address: usize, dump: impl FnOnce(&
     let module = super::guard::module_of(address)
         .map(|(m, off)| format!(" ({m}+{off:#x})"))
         .unwrap_or_default();
+    let what = if code == crash::STACK_OVERFLOW {
+        " (stack overflow)"
+    } else {
+        ""
+    };
     let text = format!(
-        "{}\nexception {code:#010x} at {address:#x}{module}; dump written: {written}\n",
+        "{}\nexception {code:#010x}{what} at {address:#x}{module}; dump written: {written}\n",
         Kind::Crash.headline()
     );
     let _ = fs::write(incident.join(reports::INFO), text);
@@ -704,22 +713,24 @@ pub(super) fn command(args: &str) -> (Status, Vec<String>) {
             }
             None => (Status::NOT_FOUND, vec![format!("cannot save {rest}")]),
         },
-        "crash" => {
-            // A thread of the loader's own faults, so the loader's exception filter (not the
-            // game's) handles it: the path a crash in a plugin's thread takes.
-            log::warn!("reports: crashing the game on purpose (report crash)");
-            let spawned = std::thread::Builder::new()
-                .name("uniloader-report-crash".to_owned())
-                .spawn(|| {
-                    let at = std::ptr::with_exposed_provenance_mut::<u8>(0x10);
-                    // SAFETY: none; crashing is what this command is for.
-                    unsafe { at.write_volatile(0) };
-                });
-            match spawned {
-                Ok(_) => (Status::OK, vec!["crashing".to_owned()]),
-                Err(e) => (Status::ERROR, vec![e.to_string()]),
+        "crash" => crash_on_purpose(rest.trim()),
+        "loading" => match rest.trim() {
+            "on" => {
+                crash::loading(true);
+                (Status::OK, vec!["loading: freezes not counted".to_owned()])
             }
-        }
+            "off" => {
+                crash::loading(false);
+                (Status::OK, vec!["loaded: freezes counted".to_owned()])
+            }
+            _ => (
+                Status::INVALID_ARGUMENT,
+                vec![format!(
+                    "report loading on|off (now {})",
+                    if crash::is_loading() { "on" } else { "off" }
+                )],
+            ),
+        },
         "url" => {
             let url = rest.trim();
             if !url.is_empty() && super::http::split_url(url).is_none() {
@@ -752,6 +763,42 @@ pub(super) fn command(args: &str) -> (Status, Vec<String>) {
                 reports::COMMAND_USAGE
             )],
         ),
+    }
+}
+
+/// `report crash [fault|stack|panic]`: a thread of the loader's own faults, so the loader's
+/// handlers (not the game's) see it, the path a crash in a plugin's thread takes. `stack`
+/// overflows its stack; `panic` panics on it (logged, and only that thread ends).
+fn crash_on_purpose(how: &str) -> (Status, Vec<String>) {
+    #[expect(unconditional_recursion, reason = "overflowing the stack is the point")]
+    fn deeper(n: u64) -> u64 {
+        let frame = std::hint::black_box([n; 64]);
+        deeper(frame[usize::try_from(n % 64).unwrap_or(0)].wrapping_add(1)).wrapping_add(n)
+    }
+    let body: fn() = match how {
+        "" | "fault" => || {
+            let at = std::ptr::with_exposed_provenance_mut::<u8>(0x10);
+            // SAFETY: none; crashing is what this command is for.
+            unsafe { at.write_volatile(0) };
+        },
+        "stack" => || {
+            std::hint::black_box(deeper(1));
+        },
+        "panic" => || panic!("report crash panic: a panic on purpose"),
+        other => {
+            return (
+                Status::INVALID_ARGUMENT,
+                vec![format!("report crash [fault|stack|panic], not {other}")],
+            )
+        }
+    };
+    log::warn!("reports: crashing on purpose (report crash {how})");
+    match std::thread::Builder::new()
+        .name("uniloader-report-crash".to_owned())
+        .spawn(body)
+    {
+        Ok(_) => (Status::OK, vec!["crashing".to_owned()]),
+        Err(e) => (Status::ERROR, vec![e.to_string()]),
     }
 }
 
