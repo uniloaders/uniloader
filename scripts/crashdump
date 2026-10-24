@@ -1,0 +1,363 @@
+#!/usr/bin/env python3
+"""Read a uniloader crash report: every minidump in it walked, its frames named.
+
+    crashdump REPORT.zip|DUMP.dmp [SYMBOL_DIR...]   the crash reason and the crashing thread
+    crashdump --all REPORT.zip [SYMBOL_DIR...]      every thread
+    crashdump --info REPORT.zip                     the report's info.txt and file list only
+
+SYMBOL_DIR: folders holding the shipped binaries beside their PDBs, e.g. a release's
+dist/symbols/<version>/ (package-release.sh keeps one per version) or a development build's
+target/x86_64-pc-windows-msvc/release/. Without any: the folders in $CRASHDUMP_SYMBOLS (colon
+separated). Only binaries of the very same build match a dump's modules.
+
+Dumps written under Wine (Proton) carry no CodeView record per module, so rust-minidump cannot
+pair a module with its PDB; this tool pairs them by code id (the PE's timestamp and size) with
+the binaries in the symbol folders and names the frames from those PDBs' Breakpad symbols.
+
+Runs minidump-stackwalk and dump_syms (cargo install --locked minidump-stackwalk dump_syms)
+inside the build-box distrobox, re-executing itself there. Converted symbols are cached in
+${XDG_CACHE_HOME:-~/.cache}/crashdump/symbols, filed by debug id.
+"""
+
+from __future__ import annotations
+
+import argparse
+import bisect
+import json
+import os
+import shutil
+import struct
+import subprocess
+import sys
+import tempfile
+import zipfile
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Literal, TypedDict
+
+Mode = Literal["crashed", "all", "info"]
+
+CODEVIEW = 2
+PE32_PLUS = 0x20B
+
+
+@dataclass(frozen=True, slots=True)
+class PeIds:
+    """What ties a binary to a dump (code id) and to its PDB (debug file and id)."""
+
+    code_id: str
+    debug_file: str
+    debug_id: str
+
+
+def _rva_to_offset(data: bytes, sections: int, table: int, rva: int) -> int | None:
+    for i in range(sections):
+        at = table + 40 * i
+        size, address, raw_size, raw_at = struct.unpack_from("<IIII", data, at + 8)
+        if address <= rva < address + max(size, raw_size):
+            return int(raw_at + rva - address)
+    return None
+
+
+def pe_ids(data: bytes) -> PeIds | None:
+    """Return the code id and CodeView debug id of a PE image, as Breakpad spells them."""
+    try:
+        if data[:2] != b"MZ":
+            return None
+        pe = struct.unpack_from("<I", data, 0x3C)[0]
+        if data[pe : pe + 4] != b"PE\0\0":
+            return None
+        coff = pe + 4
+        sections, stamp = struct.unpack_from("<HI", data, coff + 2)
+        optional_size = struct.unpack_from("<H", data, coff + 16)[0]
+        optional = coff + 20
+        magic = struct.unpack_from("<H", data, optional)[0]
+        image_size = struct.unpack_from("<I", data, optional + 56)[0]
+        directories = optional + (112 if magic == PE32_PLUS else 96)
+        debug_rva, debug_size = struct.unpack_from("<II", data, directories + 8 * 6)
+        table = optional + optional_size
+        code_id = f"{stamp:08X}{image_size:x}"
+        start = _rva_to_offset(data, sections, table, debug_rva)
+        if start is None:
+            return None
+        for entry in range(start, start + debug_size, 28):
+            kind, size, _, raw = struct.unpack_from("<IIII", data, entry + 12)
+            if kind != CODEVIEW or data[raw : raw + 4] != b"RSDS":
+                continue
+            d1, d2, d3 = struct.unpack_from("<IHH", data, raw + 4)
+            d4 = data[raw + 12 : raw + 20]
+            age = struct.unpack_from("<I", data, raw + 20)[0]
+            name = data[raw + 24 : raw + size].split(b"\0", 1)[0].decode("utf-8", "replace")
+            debug_id = f"{d1:08X}{d2:04X}{d3:04X}{d4.hex().upper()}{age:X}"
+            return PeIds(code_id, name.replace("\\", "/").rsplit("/", 1)[-1], debug_id)
+    except struct.error:
+        return None
+    return None
+
+
+@dataclass(slots=True)
+class Function:
+    """One FUNC or PUBLIC record of a Breakpad symbol file."""
+
+    address: int
+    size: int | None
+    name: str
+    lines: list[tuple[int, int, int, int]] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class Symbols:
+    """A Breakpad symbol file, for naming module offsets."""
+
+    files: dict[int, str]
+    functions: list[Function]
+    starts: list[int]
+
+    @classmethod
+    def parse(cls, text: str) -> Symbols:
+        files: dict[int, str] = {}
+        functions: list[Function] = []
+        current: Function | None = None
+        for line in text.splitlines():
+            head, _, rest = line.partition(" ")
+            if head == "FILE":
+                file_number, _, name = rest.partition(" ")
+                files[int(file_number)] = name
+            elif head in ("FUNC", "PUBLIC"):
+                words = rest.split(" ")
+                if words and words[0] == "m":
+                    words = words[1:]
+                if head == "FUNC":
+                    current = Function(int(words[0], 16), int(words[1], 16), " ".join(words[3:]))
+                else:
+                    current = None
+                    functions.append(Function(int(words[0], 16), None, " ".join(words[2:])))
+                    continue
+                functions.append(current)
+            elif current is not None and head and all(c in "0123456789abcdef" for c in head):
+                current.lines.append(rest_ints(line))
+            else:
+                current = None
+        functions.sort(key=lambda f: f.address)
+        return cls(files, functions, [f.address for f in functions])
+
+    def name(self, offset: int) -> str | None:
+        """Return the function at `offset`, with its source line when known."""
+        at = bisect.bisect_right(self.starts, offset) - 1
+        if at < 0:
+            return None
+        function = self.functions[at]
+        if function.size is not None and offset >= function.address + function.size:
+            return None
+        for address, size, number, file in function.lines:
+            if address <= offset < address + size:
+                return f"{function.name} ({self.files.get(file, '?')}:{number})"
+        return f"{function.name} + {offset - function.address:#x}"
+
+
+def rest_ints(line: str) -> tuple[int, int, int, int]:
+    """Split a line record: address, size (hex), line number, file number."""
+    address, size, number, file = line.split(" ")[:4]
+    return int(address, 16), int(size, 16), int(number), int(file)
+
+
+class Frame(TypedDict, total=False):
+    module: str
+    module_offset: str
+    offset: str
+    function: str
+    file: str
+    line: int
+
+
+class Thread(TypedDict, total=False):
+    thread_name: str
+    frames: list[Frame]
+
+
+class Module(TypedDict, total=False):
+    filename: str
+    code_id: str
+    debug_id: str
+    base_addr: str
+    end_addr: str
+
+
+def tool(name: str) -> Path:
+    path = Path(os.environ.get("CARGO_HOME", Path.home() / ".cargo")) / "bin" / name
+    if not path.is_file():
+        sys.exit(f"error: {name} is missing: cargo install --locked {name} (in build-box)")
+    return path
+
+
+def index_symbols(dirs: list[Path], store: Path) -> dict[str, Path]:
+    """Code id (lower case) -> Breakpad symbol file, for every binary with its PDB beside it."""
+    dump_syms = tool("dump_syms")
+    found: dict[str, Path] = {}
+    for folder in dirs:
+        if not folder.is_dir():
+            sys.exit(f"error: no symbol folder {folder}")
+        for binary in sorted(folder.iterdir()):
+            if binary.suffix.lower() not in (".dll", ".exe"):
+                continue
+            ids = pe_ids(binary.read_bytes())
+            if ids is None:
+                continue
+            pdb = folder / ids.debug_file
+            sym = store / ids.debug_file / ids.debug_id / (Path(ids.debug_file).stem + ".sym")
+            if not sym.is_file() and pdb.is_file():
+                subprocess.run(
+                    [dump_syms, "--store", store, pdb],
+                    check=False,
+                    capture_output=True,
+                )
+            if sym.is_file():
+                found[ids.code_id.lower()] = sym
+    return found
+
+
+def walk(dump: Path, store: Path) -> dict[str, object]:
+    out = subprocess.run(
+        [tool("minidump-stackwalk"), "--json", dump, store],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if out.returncode != 0 or not out.stdout:
+        return {}
+    walked: dict[str, object] = json.loads(out.stdout)
+    return walked
+
+
+def module_at(modules: list[Module], address: int) -> Module | None:
+    for module in modules:
+        try:
+            if int(module["base_addr"], 16) <= address < int(module["end_addr"], 16):
+                return module
+        except (KeyError, ValueError):
+            continue
+    return None
+
+
+def describe(
+    frame: Frame,
+    modules: list[Module],
+    index: dict[str, Path],
+    cache: dict[Path, Symbols],
+) -> str:
+    where = frame.get("module") or "?"
+    offset = int(frame.get("module_offset") or "0x0", 16)
+    function = frame.get("function")
+    if function:
+        file = frame.get("file")
+        line = f" ({file}:{frame.get('line')})" if file else ""
+        return f"{where}!{function}{line}"
+    module = module_at(modules, int(frame.get("offset") or "0x0", 16))
+    sym = index.get((module or {}).get("code_id", "").lower()) if module else None
+    if sym is not None:
+        if sym not in cache:
+            cache[sym] = Symbols.parse(sym.read_text(errors="replace"))
+        name = cache[sym].name(offset)
+        if name is not None:
+            return f"{where}!{name}"
+    return f"{where} + {offset:#x}"
+
+
+def report(walked: dict[str, object], mode: Mode, index: dict[str, Path]) -> None:
+    crash = walked.get("crash_info")
+    if isinstance(crash, dict) and crash.get("type"):
+        print(f"crash: {crash.get('type')} at {crash.get('address')}")
+    else:
+        print("no crash (a freeze or manual dump)")
+    raw_modules = walked.get("modules")
+    modules: list[Module] = raw_modules if isinstance(raw_modules, list) else []
+    raw_threads = walked.get("threads")
+    threads: list[Thread] = raw_threads if isinstance(raw_threads, list) else []
+    crashed = crash.get("crashing_thread") if isinstance(crash, dict) else None
+    cache: dict[Path, Symbols] = {}
+    for number, thread in enumerate(threads):
+        if mode == "crashed" and number != crashed and crashed is not None:
+            continue
+        if mode == "crashed" and crashed is None and number != 0:
+            continue
+        print(f"thread {number} {thread.get('thread_name') or ''}")
+        for i, frame in enumerate(thread.get("frames", [])):
+            print(f"  {i:2} {describe(frame, modules, index, cache)}")
+
+
+def show_info(target: Path) -> None:
+    """Print the report's info.txt and its file list."""
+    with zipfile.ZipFile(target) as z:
+        if "report/info.txt" in z.namelist():
+            print(z.read("report/info.txt").decode("utf-8", "replace"))
+        for info in z.infolist():
+            print(f"{info.file_size:>10}  {info.filename}")
+
+
+def in_build_box(mode: Mode, target: Path, dirs: list[Path]) -> None:
+    """Run this tool again inside build-box, where the dump tools are installed."""
+    if shutil.which("distrobox") is None:
+        sys.exit("error: distrobox is required (the tools run in build-box)")
+    flag = ["--all"] if mode == "all" else []
+    script = str(Path(__file__).resolve())
+    argv = ["distrobox", "enter", "build-box", "--", script, *flag, str(target)]
+    os.execvp("distrobox", [*argv, *map(str, dirs)])
+
+
+def extract_dumps(target: Path, work: Path) -> list[tuple[str, Path]]:
+    """Return the dumps of a report zip (copied into `work`) or the one dump given."""
+    if target.suffix.lower() != ".zip":
+        return [(target.name, target)]
+    dumps: list[tuple[str, Path]] = []
+    with zipfile.ZipFile(target) as z:
+        for name in sorted(n for n in z.namelist() if n.lower().endswith(".dmp")):
+            # Under a flat name of our own: the zip's paths are not trusted.
+            out = work / f"{len(dumps)}.dmp"
+            out.write_bytes(z.read(name))
+            dumps.append((name, out))
+    return dumps
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("--all", action="store_true", help="every thread")
+    parser.add_argument("--info", action="store_true", help="info.txt and the file list only")
+    parser.add_argument("report", type=Path)
+    parser.add_argument("symbols", type=Path, nargs="*")
+    args = parser.parse_args()
+    mode: Mode = "info" if args.info else "all" if args.all else "crashed"
+    target: Path = args.report.resolve()
+    if not target.is_file():
+        sys.exit(f"error: no file {target}")
+    dirs: list[Path] = [p.resolve() for p in args.symbols]
+    if not dirs and os.environ.get("CRASHDUMP_SYMBOLS"):
+        dirs = [Path(p) for p in os.environ["CRASHDUMP_SYMBOLS"].split(":") if p]
+
+    if mode == "info":
+        show_info(target)
+        return
+    if os.environ.get("CONTAINER_ID") != "build-box":
+        in_build_box(mode, target, dirs)
+
+    cache_home = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+    store = cache_home / "crashdump" / "symbols"
+    store.mkdir(parents=True, exist_ok=True)
+    index = index_symbols(dirs, store)
+    with tempfile.TemporaryDirectory() as work:
+        dumps = extract_dumps(target, Path(work))
+        if not dumps:
+            sys.exit(f"error: no dumps in {target}")
+        for name, dump in dumps:
+            print(f"== {name}")
+            walked = walk(dump, store)
+            if not walked:
+                print("(minidump-stackwalk could not read it)")
+            else:
+                report(walked, mode, index)
+            print()
+
+
+if __name__ == "__main__":
+    main()

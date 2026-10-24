@@ -1,0 +1,21 @@
+# Lint rules for the Python tools in this folder (crashdump), as tswdump's.
+#   ruff format --check scripts/crashdump && ruff check scripts/crashdump
+#   mypy --strict --warn-unreachable scripts/crashdump   (and tests/test_crashdump.py)
+line-length = 100
+target-version = "py313"
+
+[lint]
+select = ["ALL"]
+ignore = [
+  "COM812",  # conflicts with the formatter
+  "D203", "D213",  # mutually exclusive with the docstring style used (D211, D212)
+  "D1",  # private CLI helpers; the module docstring and --help carry the documentation
+  "T201",  # a CLI: print to stdout is the output
+  "S101",  # assert is how pytest checks
+  "PLR2004",  # magic values in tests are the expected data
+  "CPY001",  # no licence header per file
+  "S603", "S606", "S607",  # it runs its own tools (distrobox, dump_syms, stackwalk) by design
+]
+
+[lint.per-file-ignores]
+"tests/*" = ["INP001"]  # pytest discovers tests/ without a package
