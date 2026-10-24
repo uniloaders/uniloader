@@ -84,4 +84,15 @@ pub mod topics {
     /// The update check found a newer version of a plugin. Payload, NUL separated UTF-8: its
     /// name, its version, the latest version, then where to download it (may be empty).
     pub const UPDATE_AVAILABLE: &str = "loader.update_available";
+    /// A crash, freeze or unexpected-exit report is ready for the player to decide about.
+    /// Payload, NUL separated UTF-8: the zip's name, its kind (`crash`, `freeze`, `exit`,
+    /// `manual`), the headline to show, the host it would be sent to (empty: it cannot be
+    /// sent, only saved), and where it was saved already (empty unless the setting saves
+    /// without asking). Answer with the console commands `report send <zip>` or
+    /// `report desktop <zip>`.
+    pub const REPORT_READY: &str = "loader.report_ready";
+    /// What became of a report. Payload, NUL separated UTF-8: the zip's name, `sent`,
+    /// `saved` or `failed`, then the detail (the server's report id, the file saved, or why
+    /// it failed).
+    pub const REPORT_DONE: &str = "loader.report_done";
 }

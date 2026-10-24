@@ -96,6 +96,12 @@ impl Paths {
         self.logs_dir.with_file_name("cache").join("updates.toml")
     }
 
+    /// `<root>/reports`: crash and freeze reports, next to `logs/`.
+    #[must_use]
+    pub fn reports_dir(&self) -> PathBuf {
+        self.logs_dir.with_file_name(crate::reports::DIR)
+    }
+
     /// A cfg file `exec` runs, for a name already checked by [`cfg_name`].
     #[must_use]
     pub fn cfg_file(&self, name: &str) -> PathBuf {

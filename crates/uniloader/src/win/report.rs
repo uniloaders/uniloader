@@ -1,0 +1,645 @@
+//! Crash, freeze and unexpected-exit reports on Windows: the incidents of a session, the zip
+//! the next start makes of them, and what the player decides (send it, or save it to the
+//! Desktop). What goes into a report and how it is scrubbed: [`crate::reports`]; the dumps
+//! and the watchdog: [`super::crash`].
+//!
+//! - At start: the previous session's `running.txt`, if it did not close normally and left
+//!   no incident of its own, becomes an `exit` incident. [`SETTLE`] later (plugins have
+//!   attached their folders by then: `report attach <folder>`, a game's own crash reports)
+//!   every incident is bundled, and the newest report is offered with
+//!   [`topics::REPORT_READY`] (the overlay asks the player). An `exit` incident that got
+//!   attached files is a crash the game reported itself.
+//! - Nobody listening, or the setting says Desktop: the report is saved to the Desktop.
+//! - `report send <zip>` POSTs it to the URL a plugin set (`report url <https url>`; the
+//!   loader has none of its own), `report desktop <zip>` copies it to the Desktop; both end
+//!   in [`topics::REPORT_DONE`]. A failed upload saves it to the Desktop instead.
+
+// FFI module: the Desktop folder through shell32, the Windows version from the shared page.
+#![allow(unsafe_code)]
+
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant, SystemTime};
+
+use uniloader_api::{topics, PluginHandle, Status};
+use windows::core::{s, GUID, HRESULT, PCWSTR, PWSTR};
+use windows::Win32::Foundation::HANDLE;
+use windows::Win32::System::LibraryLoader::{
+    GetProcAddress, LoadLibraryExW, LOAD_LIBRARY_SEARCH_SYSTEM32,
+};
+
+use super::crash::{self, Seen};
+use super::dispatch::deliver_event;
+use crate::config::Paths;
+use crate::reports::{self, Kind, Marker};
+
+/// Plugins get this long to attach their folders before the previous session is bundled.
+const SETTLE: Duration = Duration::from_secs(20);
+/// Milliseconds for each step of an upload.
+const UPLOAD_TIMEOUT_MS: i32 = 60_000;
+/// Biggest report sent; a bigger one is only saved.
+const MAX_UPLOAD: u64 = 32 << 20;
+/// Biggest answer to an upload read.
+const MAX_ANSWER: usize = 64 << 10;
+
+/// This session.
+struct Session {
+    /// `<root>/reports`.
+    dir: PathBuf,
+    /// `<root>/logs`.
+    logs: PathBuf,
+    /// When it started, Unix seconds.
+    started: u64,
+    since: Instant,
+    /// The previous session's marker, when it did not close normally.
+    previous: Option<Marker>,
+    /// The game's executable name without `.exe`.
+    game: String,
+}
+
+static SESSION: OnceLock<Session> = OnceLock::new();
+/// Where `report send` posts to; empty: nowhere.
+static URL: Mutex<String> = Mutex::new(String::new());
+/// Folders plugins attached.
+static ATTACHED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+/// The freeze incident being written.
+static FREEZE: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn now() -> u64 {
+    reports::unix(SystemTime::now())
+}
+
+/// The report setting's value.
+fn setting() -> String {
+    super::state()
+        .get_setting(
+            None,
+            &format!("{}.{}", crate::speed::NAME, reports::SETTING),
+        )
+        .unwrap_or_else(|_| reports::ASK.to_owned())
+}
+
+/// Starts reporting for this session: the marker, the crash filter, the watchdog, and the
+/// previous session's report. Call after the loader's entry is registered (the setting).
+pub(super) fn start(paths: &Paths) {
+    if setting() == reports::OFF {
+        log::info!("reports: off");
+        return;
+    }
+    let dir = paths.reports_dir();
+    if let Err(e) = fs::create_dir_all(&dir) {
+        log::warn!("reports: cannot create {}: {e}", dir.display());
+        return;
+    }
+    let marker = dir.join(reports::MARKER);
+    let previous = fs::read_to_string(&marker)
+        .ok()
+        .and_then(|t| Marker::parse(&t))
+        .filter(|m| !m.closing);
+    let started = now();
+    let mine = Marker {
+        pid: std::process::id(),
+        started,
+        closing: false,
+    };
+    if let Err(e) = fs::write(&marker, mine.render()) {
+        log::warn!("reports: cannot write {}: {e}", marker.display());
+    }
+    let game = super::proxy::module_path(None)
+        .file_stem()
+        .map_or_else(|| "game".to_owned(), |s| s.to_string_lossy().into_owned());
+    let session = Session {
+        dir: dir.clone(),
+        logs: paths.logs_dir.clone(),
+        started,
+        since: Instant::now(),
+        previous,
+        game,
+    };
+    if SESSION.set(session).is_err() {
+        return;
+    }
+    crash::start(&dir);
+    crash::watch(seen);
+    if let Some(previous) = previous {
+        previous_ended(&dir, previous);
+    }
+    let spawned = std::thread::Builder::new()
+        .name("uniloader-reports".to_owned())
+        .spawn(|| {
+            std::thread::sleep(SETTLE);
+            bundle_all();
+            offer_newest();
+        });
+    if let Err(e) = spawned {
+        log::warn!("reports: cannot bundle the previous session's report: {e}");
+    }
+    log::info!(
+        "reports: on (crash dumps, freeze watchdog), in {}",
+        dir.display()
+    );
+}
+
+/// The incident folders in `dir`, oldest first.
+fn incidents(dir: &Path) -> Vec<(String, PathBuf)> {
+    let mut found: Vec<(String, PathBuf)> = fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|e| (e.file_name().to_string_lossy().into_owned(), e.path()))
+        .filter(|(name, _)| reports::kind_of(name).is_some())
+        .collect();
+    found.sort();
+    found
+}
+
+/// The previous session ended without closing: an `exit` incident, unless it left a crash or
+/// freeze incident of its own.
+fn previous_ended(dir: &Path, previous: Marker) {
+    let since = reports::stamp(previous.started);
+    if incidents(dir).iter().any(|(name, _)| *name >= since) {
+        return;
+    }
+    let incident = dir.join(reports::incident_name(now(), Kind::Exit));
+    if fs::create_dir_all(&incident).is_err() {
+        return;
+    }
+    let text = format!(
+        "The session of process {} (started {} UTC) ended without closing normally. No crash \
+         dump of the loader's own; the game's own crash report is attached when a plugin \
+         found one.\n",
+        previous.pid, since
+    );
+    let _ = fs::write(incident.join(reports::INFO), info(Kind::Exit, &text));
+    log::warn!("reports: the previous session ended without closing normally");
+}
+
+/// The incident's `info.txt`: what happened, then the loader, the game, Windows and the
+/// plugins.
+fn info(kind: Kind, what: &str) -> String {
+    let mut lines = vec![
+        format!("{} ({})", kind.headline(), kind.key()),
+        what.trim_end().to_owned(),
+        String::new(),
+        format!("uniloader {}", env!("CARGO_PKG_VERSION")),
+        windows_version(),
+    ];
+    if let Some(session) = SESSION.get() {
+        lines.push(format!(
+            "session started {} UTC, {} s ago",
+            reports::stamp(session.started),
+            session.since.elapsed().as_secs()
+        ));
+    }
+    match super::try_state() {
+        Some(guard) => {
+            for name in [
+                "exe.name",
+                "pe.version.ProductName",
+                "pe.version.ProductVersion",
+                "pe.version.FileVersion",
+                "unreal.version",
+                "steam.build_id",
+            ] {
+                if let Some(value) = guard.facts.get(name) {
+                    lines.push(format!("{name} = {value}"));
+                }
+            }
+            lines.push("plugins:".to_owned());
+            for p in &guard.plugins {
+                lines.push(format!(
+                    "  {} {} {}",
+                    p.info.name,
+                    p.info.version,
+                    if p.enabled { "running" } else { "off" }
+                ));
+            }
+        }
+        None => lines.push("(the loader's state was busy: no plugin list)".to_owned()),
+    }
+    lines.join("\n") + "\n"
+}
+
+/// `windows 10.0 build 19045`, from the shared user page every process has.
+fn windows_version() -> String {
+    // KUSER_SHARED_DATA at 0x7FFE0000: NtBuildNumber (+0x260), NtMajorVersion (+0x26C),
+    // NtMinorVersion (+0x270); mapped read-only into every process.
+    let read = |offset: usize| {
+        // SAFETY: a documented, always mapped read-only page; aligned u32 reads.
+        unsafe { core::ptr::read_volatile((0x7FFE_0000usize + offset) as *const u32) }
+    };
+    format!(
+        "windows {}.{} build {}",
+        read(0x26C),
+        read(0x270),
+        read(0x260) & 0xFFFF
+    )
+}
+
+/// What the watchdog saw.
+fn seen(what: &Seen) {
+    let Some(session) = SESSION.get() else { return };
+    match what {
+        Seen::Frozen { n, silent } => {
+            let mut freeze = lock(&FREEZE);
+            let dir = freeze.get_or_insert_with(|| {
+                session
+                    .dir
+                    .join(reports::incident_name(now(), Kind::Freeze))
+            });
+            if fs::create_dir_all(&*dir).is_err() {
+                return;
+            }
+            let (n, silent) = (*n, *silent);
+            let written = crash::write_dump(&dir.join(format!("freeze-{n}.dmp")), None);
+            let text = format!(
+                "The game's window stopped answering; dump {n} after {} s (written: {written}).",
+                silent.as_secs()
+            );
+            let _ = fs::write(dir.join(reports::INFO), info(Kind::Freeze, &text));
+            log::warn!(
+                "reports: the game has not answered for {} s; freeze dump {n}",
+                silent.as_secs()
+            );
+        }
+        Seen::Recovered(silent) => {
+            let silent = *silent;
+            if let Some(dir) = lock(&FREEZE).take() {
+                let _ = fs::remove_dir_all(dir);
+            }
+            log::info!(
+                "reports: the game answers again after {} s; the freeze dumps are discarded",
+                silent.as_secs()
+            );
+        }
+        Seen::Closing => {
+            let marker = Marker {
+                pid: std::process::id(),
+                started: session.started,
+                closing: true,
+            };
+            let _ = fs::write(session.dir.join(reports::MARKER), marker.render());
+            log::info!("reports: the game window closed; the session ends normally");
+        }
+    }
+}
+
+/// From the exception filter: a crash incident with the dump `dump` writes and what faulted.
+/// Takes no lock the crashing thread might hold.
+pub(super) fn crashed(dir: &Path, code: u32, address: usize, dump: impl FnOnce(&Path) -> bool) {
+    let incident = dir.join(reports::incident_name(now(), Kind::Crash));
+    if fs::create_dir_all(&incident).is_err() {
+        return;
+    }
+    let written = dump(&incident.join("crash.dmp"));
+    let module = super::guard::module_of(address)
+        .map(|(m, off)| format!(" ({m}+{off:#x})"))
+        .unwrap_or_default();
+    let text = format!(
+        "{}\nexception {code:#010x} at {address:#x}{module}; dump written: {written}\n{}\n",
+        Kind::Crash.headline(),
+        windows_version()
+    );
+    let _ = fs::write(incident.join(reports::INFO), text);
+}
+
+/// Bundles every incident folder into its zip, then keeps the newest [`reports::KEEP`].
+fn bundle_all() {
+    let Some(session) = SESSION.get() else { return };
+    let since = session.previous.map(|m| m.started);
+    for (name, dir) in incidents(&session.dir) {
+        let current = lock(&FREEZE).as_deref() == Some(dir.as_path());
+        if current {
+            continue;
+        }
+        bundle(session, &name, &dir, since);
+    }
+    reports::prune(&session.dir);
+}
+
+/// The zip of one incident; its name.
+fn bundle(session: &Session, name: &str, dir: &Path, since: Option<u64>) -> Option<String> {
+    let mut parts = reports::parts_of(dir, "report", None);
+    parts.extend(reports::parts_of(&session.logs, "logs", None));
+    let mut attached = Vec::new();
+    for folder in lock(&ATTACHED).iter() {
+        let label = folder
+            .file_name()
+            .map_or_else(|| "folder".to_owned(), |n| n.to_string_lossy().into_owned());
+        attached.extend(reports::parts_of(
+            folder,
+            &format!("attached/{label}"),
+            since,
+        ));
+    }
+    let mut name = name.to_owned();
+    if reports::kind_of(&name) == Some(Kind::Exit) && !attached.is_empty() {
+        // the game reported a crash of its own
+        name = name.replacen("_exit", "_crash", 1);
+    }
+    parts.extend(attached);
+    let zip = session.dir.join(format!("{name}.zip"));
+    match reports::bundle(&zip, &parts) {
+        Ok(size) => {
+            let _ = fs::remove_dir_all(dir);
+            log::info!(
+                "reports: {name}.zip ({} KiB, {} files)",
+                size / 1024,
+                parts.len()
+            );
+            Some(format!("{name}.zip"))
+        }
+        Err(e) => {
+            log::warn!("reports: cannot write {}: {e}", zip.display());
+            None
+        }
+    }
+}
+
+/// Offers the newest undecided report (older ones are not asked about again).
+fn offer_newest() {
+    let Some(session) = SESSION.get() else { return };
+    let pending = reports::pending(&session.dir);
+    let Some((newest, older)) = pending.split_last() else {
+        return;
+    };
+    for name in older {
+        reports::mark_done(&session.dir, name, "skipped");
+    }
+    offer(session, newest, setting() == reports::DESKTOP);
+}
+
+/// Tells the plugins the report `name` is ready; saved to the Desktop at once when `save` or
+/// when nobody listens.
+fn offer(session: &Session, name: &str, save: bool) {
+    let kind = reports::kind_of(name).unwrap_or(Kind::Exit);
+    let host = super::http::split_url(&lock(&URL))
+        .map(|(h, _, _)| h)
+        .unwrap_or_default();
+    let listening = !super::state()
+        .subscribers(PluginHandle::NONE, topics::REPORT_READY)
+        .is_empty();
+    let saved = if save || !listening {
+        save_to_desktop(session, name)
+            .map(|p| p.display().to_string())
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let host = if save { String::new() } else { host };
+    deliver(
+        topics::REPORT_READY,
+        &[name, kind.key(), kind.headline(), &host, &saved],
+    );
+}
+
+fn deliver(topic: &str, fields: &[&str]) {
+    let targets = super::state().subscribers(PluginHandle::NONE, topic);
+    deliver_event(
+        PluginHandle::NONE,
+        &targets,
+        topic,
+        fields.join("\0").as_bytes(),
+    );
+}
+
+/// The Desktop folder (`FOLDERID_Desktop`, which follows a moved or synced Desktop), else
+/// `%USERPROFILE%\Desktop`.
+fn desktop() -> Option<PathBuf> {
+    type KnownFolderFn = unsafe extern "system" fn(*const GUID, u32, HANDLE, *mut PWSTR) -> HRESULT;
+    const DESKTOP: GUID = GUID::from_u128(0xb4bf_cc3a_db2c_424c_b029_7fe9_9a87_c641);
+    let name: Vec<u16> = "shell32.dll\0".encode_utf16().collect();
+    // SAFETY: NUL terminated name; system directory only.
+    let found =
+        unsafe { LoadLibraryExW(PCWSTR(name.as_ptr()), None, LOAD_LIBRARY_SEARCH_SYSTEM32) }
+            .ok()
+            .and_then(|module| {
+                // SAFETY: the documented signature of `SHGetKnownFolderPath`.
+                let f = unsafe { GetProcAddress(module, s!("SHGetKnownFolderPath")) }?;
+                // SAFETY: as above.
+                let f = unsafe {
+                    core::mem::transmute::<unsafe extern "system" fn() -> isize, KnownFolderFn>(f)
+                };
+                let mut path = PWSTR::null();
+                // SAFETY: `path` receives a string the shell allocates; it is read once and left
+                // allocated (a few bytes, once per saved report).
+                let ok = unsafe { f(&DESKTOP, 0, HANDLE::default(), &raw mut path) }.is_ok();
+                if !ok || path.is_null() {
+                    return None;
+                }
+                // SAFETY: on success `path` is a NUL terminated wide string.
+                unsafe { path.to_string() }.ok().map(PathBuf::from)
+            });
+    found.or_else(|| std::env::var_os("USERPROFILE").map(|p| PathBuf::from(p).join("Desktop")))
+}
+
+/// Copies the report `name` to the Desktop as `<game>-<kind>-report-<stamp>.zip`.
+fn save_to_desktop(session: &Session, name: &str) -> Option<PathBuf> {
+    let desktop = desktop()?;
+    let stem = name.strip_suffix(".zip").unwrap_or(name);
+    let (stamp, kind) = stem.rsplit_once('_')?;
+    let target = desktop.join(format!("{}-{kind}-report-{stamp}.zip", session.game));
+    match fs::copy(session.dir.join(name), &target) {
+        Ok(_) => {
+            reports::mark_done(&session.dir, name, &format!("saved {}", target.display()));
+            log::info!("reports: {name} saved to {}", target.display());
+            Some(target)
+        }
+        Err(e) => {
+            log::warn!("reports: cannot save {name} to {}: {e}", target.display());
+            None
+        }
+    }
+}
+
+/// Sends the report `name`; on its own thread.
+fn send(session: &'static Session, name: String) {
+    let url = lock(&URL).clone();
+    let spawned = std::thread::Builder::new()
+        .name("uniloader-report-upload".to_owned())
+        .spawn(move || {
+            let result = upload(session, &name, &url);
+            match result {
+                Ok(id) => {
+                    reports::mark_done(&session.dir, &name, &format!("sent {id}"));
+                    log::info!("reports: {name} sent, report id {id}");
+                    deliver(topics::REPORT_DONE, &[&name, "sent", &id]);
+                }
+                Err(why) => {
+                    log::warn!("reports: sending {name} failed: {why}");
+                    let saved = save_to_desktop(session, &name).map_or_else(
+                        || why.clone(),
+                        |p| format!("{why}; saved to {} instead", p.display()),
+                    );
+                    deliver(topics::REPORT_DONE, &[&name, "failed", &saved]);
+                }
+            }
+        });
+    if let Err(e) = spawned {
+        log::warn!("reports: cannot start the upload: {e}");
+    }
+}
+
+/// POSTs the report to `url`; the id the server gave it.
+fn upload(session: &Session, name: &str, url: &str) -> Result<String, String> {
+    if url.is_empty() {
+        return Err("no upload address (a plugin sets one with `report url`)".to_owned());
+    }
+    let path = session.dir.join(name);
+    let size = fs::metadata(&path).map_err(|e| e.to_string())?.len();
+    if size > MAX_UPLOAD {
+        return Err(format!("{} MiB is too large to send", size >> 20));
+    }
+    let body = fs::read(&path).map_err(|e| e.to_string())?;
+    let kind = reports::kind_of(name).unwrap_or(Kind::Exit).key();
+    let headers = format!(
+        "Content-Type: application/zip\r\nX-Report-Kind: {kind}\r\nX-Report-Game: {}\r\n\
+         X-Report-Loader: {}\r\n",
+        session.game,
+        env!("CARGO_PKG_VERSION")
+    );
+    let answer = super::http::request(
+        "POST",
+        url,
+        &headers,
+        &body,
+        (UPLOAD_TIMEOUT_MS, MAX_ANSWER),
+    )?;
+    let text = String::from_utf8_lossy(&answer.body);
+    if !(200..300).contains(&answer.status) {
+        return Err(format!("HTTP {}: {}", answer.status, text.trim()));
+    }
+    Ok(json_string(&text, "id").unwrap_or_else(|| "?".to_owned()))
+}
+
+/// The string value of `"key"` in a flat JSON object.
+fn json_string(text: &str, key: &str) -> Option<String> {
+    let at = text.find(&format!("\"{key}\""))?;
+    let rest = text[at + key.len() + 2..]
+        .trim_start()
+        .strip_prefix(':')?
+        .trim_start();
+    let rest = rest.strip_prefix('"')?;
+    Some(rest[..rest.find('"')?].to_owned())
+}
+
+/// The `report` console command.
+pub(super) fn command(args: &str) -> (Status, Vec<String>) {
+    let Some(session) = SESSION.get() else {
+        return (Status::UNSUPPORTED, vec!["reports are off".to_owned()]);
+    };
+    let mut words = args.split_whitespace();
+    let verb = words.next().unwrap_or("list");
+    let rest: Vec<&str> = words.collect();
+    let rest = rest.join(" ");
+    let named = || reports::checked_name(rest.trim()).map(str::to_owned);
+    match verb {
+        "list" => {
+            let mut lines: Vec<String> = reports::zips(&session.dir)
+                .into_iter()
+                .map(|z| {
+                    let done = fs::read_to_string(session.dir.join(format!("{z}.done")))
+                        .map_or_else(|_| "not decided".to_owned(), |d| d.trim().to_owned());
+                    format!("{z}: {done}")
+                })
+                .collect();
+            if lines.is_empty() {
+                lines.push("no reports".to_owned());
+            }
+            (Status::OK, lines)
+        }
+        "now" => {
+            let dir = session
+                .dir
+                .join(reports::incident_name(now(), Kind::Manual));
+            if fs::create_dir_all(&dir).is_err() {
+                return (Status::ERROR, vec!["cannot create the report".to_owned()]);
+            }
+            let written = crash::write_dump(&dir.join("session.dmp"), None);
+            let text = format!("Asked for from the console; dump written: {written}.");
+            let _ = fs::write(dir.join(reports::INFO), info(Kind::Manual, &text));
+            let name = dir
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            match bundle(session, &name, &dir, Some(session.started)) {
+                Some(zip) => {
+                    offer(session, &zip, setting() == reports::DESKTOP);
+                    (Status::OK, vec![format!("made {zip}")])
+                }
+                None => (Status::ERROR, vec!["cannot write the report".to_owned()]),
+            }
+        }
+        "send" => match named() {
+            Some(name) if session.dir.join(&name).is_file() => {
+                send(session, name.clone());
+                (Status::OK, vec![format!("sending {name}")])
+            }
+            _ => (Status::NOT_FOUND, vec![format!("no report {rest}")]),
+        },
+        "desktop" => match named().and_then(|n| save_to_desktop(session, &n).map(|p| (n, p))) {
+            Some((name, path)) => {
+                let shown = path.display().to_string();
+                deliver(topics::REPORT_DONE, &[&name, "saved", &shown]);
+                (Status::OK, vec![format!("saved to {shown}")])
+            }
+            None => (Status::NOT_FOUND, vec![format!("cannot save {rest}")]),
+        },
+        "url" => {
+            let url = rest.trim();
+            if !url.is_empty() && super::http::split_url(url).is_none() {
+                return (Status::INVALID_ARGUMENT, vec!["an https:// URL".to_owned()]);
+            }
+            url.clone_into(&mut lock(&URL));
+            (
+                Status::OK,
+                vec![format!(
+                    "reports go to {}",
+                    if url.is_empty() { "nowhere" } else { url }
+                )],
+            )
+        }
+        "attach" => {
+            let folder = PathBuf::from(rest.trim());
+            if !folder.is_dir() {
+                return (Status::NOT_FOUND, vec![format!("no folder {rest}")]);
+            }
+            let mut attached = lock(&ATTACHED);
+            if !attached.contains(&folder) {
+                attached.push(folder);
+            }
+            (Status::OK, vec![format!("attached {rest}")])
+        }
+        other => (
+            Status::INVALID_ARGUMENT,
+            vec![format!(
+                "unknown: report {other}; {}",
+                reports::COMMAND_USAGE
+            )],
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::json_string;
+
+    #[test]
+    fn ids_come_from_the_answer() {
+        assert_eq!(
+            json_string(r#"{"id": "a1b2"}"#, "id").as_deref(),
+            Some("a1b2")
+        );
+        assert_eq!(
+            json_string(r#"{"x":1,"id":"z"}"#, "id").as_deref(),
+            Some("z")
+        );
+        assert_eq!(json_string("nope", "id"), None);
+    }
+}

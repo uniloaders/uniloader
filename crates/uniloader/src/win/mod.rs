@@ -9,6 +9,7 @@
 
 mod caller;
 mod console;
+mod crash;
 mod deps;
 mod detour;
 mod dispatch;
@@ -17,12 +18,14 @@ mod foreign;
 mod guard;
 mod hostapi;
 mod hostapi_registry;
+mod http;
 mod input;
 mod lifecycle;
 mod plugin_hooks;
 mod plugins;
 pub(crate) mod proxy;
 mod rcon;
+mod report;
 mod speed;
 mod update;
 
@@ -62,6 +65,16 @@ pub(crate) fn state() -> MutexGuard<'static, State> {
         .get_or_init(|| Mutex::new(State::new(paths(), LoaderConfig::default())))
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The loader state if nobody holds it: for the freeze watchdog and the crash path, where
+/// the thread that hangs or faulted may be the one holding it.
+pub(crate) fn try_state() -> Option<MutexGuard<'static, State>> {
+    match STATE.get()?.try_lock() {
+        Ok(guard) => Some(guard),
+        Err(std::sync::TryLockError::Poisoned(p)) => Some(p.into_inner()),
+        Err(std::sync::TryLockError::WouldBlock) => None,
+    }
 }
 
 /// The host table handed to plugins.
@@ -162,6 +175,9 @@ fn init() -> bool {
         );
     speed::register(&own_file);
     identify_game();
+    // After the loader's entry (the setting) and the game's facts (for `info.txt`), before
+    // any plugin code runs.
+    report::start(&paths);
     plugins::load_all(&paths, &config.disabled_plugins);
     // After the plugins, so a plugin's hooks are in place before anything else runs code.
     foreign::load_all(&paths, config.asi, &config.load);

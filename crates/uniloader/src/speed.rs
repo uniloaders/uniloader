@@ -13,6 +13,8 @@ use crate::state::{Builtin, CommandInfo};
 
 /// The loader's name in the plugin list.
 pub const NAME: &str = "uniloader";
+/// The crash report command's name.
+pub const REPORT: &str = "report";
 /// The game speed setting's key.
 pub const SPEED: &str = "speed";
 /// Slowest speed the setting allows.
@@ -102,8 +104,9 @@ pub fn builtin(file: &str) -> (Described, Builtin) {
         name: NAME.to_owned(),
         title: "uniloader".to_owned(),
         version: env!("CARGO_PKG_VERSION").to_owned(),
-        description: "The loader itself: game speed, the remote console and the update check."
-            .to_owned(),
+        description:
+            "The loader itself: game speed, the remote console, the update check and crash reports."
+                .to_owned(),
         authors: vec![(
             "Bluscream".to_owned(),
             "https://github.com/Bluscream".to_owned(),
@@ -123,6 +126,7 @@ pub fn builtin(file: &str) -> (Described, Builtin) {
             .into_iter()
             .chain(crate::rcon::settings())
             .chain(crate::update::settings())
+            .chain(crate::reports::settings())
             .collect(),
         hashed: vec![crate::rcon::keys::PASSWORD.to_owned()],
         hotkeys: actions
@@ -140,6 +144,13 @@ pub fn builtin(file: &str) -> (Described, Builtin) {
                     },
                 )
             })
+            .chain([(
+                REPORT.to_owned(),
+                CommandInfo {
+                    help: crate::reports::COMMAND_HELP.to_owned(),
+                    usage: crate::reports::COMMAND_USAGE.to_owned(),
+                },
+            )])
             .collect(),
     };
     (info, builtin)

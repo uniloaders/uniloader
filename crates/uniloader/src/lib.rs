@@ -20,6 +20,7 @@ mod described;
 mod logging;
 mod process;
 mod rcon;
+mod reports;
 mod run;
 mod schema;
 mod scrollback;

@@ -41,6 +41,11 @@ impl std::fmt::Display for Fault {
     }
 }
 
+/// The file name of the module holding `address` and the offset into it.
+pub(super) fn module_of(address: usize) -> Option<(String, usize)> {
+    inner::module_of(address)
+}
+
 /// Whether hardware faults are contained as well as panics.
 pub(crate) const CONTAINS_HARDWARE_FAULTS: bool = cfg!(all(windows, target_env = "msvc"));
 

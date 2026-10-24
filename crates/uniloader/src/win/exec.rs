@@ -42,6 +42,16 @@ impl Effects for Platform {
         }
         match outcome.command {
             // The loader's own commands: no DLL to call.
+            Some((plugin, name, args))
+                if Some(plugin) == speed::owner() && name == crate::speed::REPORT =>
+            {
+                let (status, lines) = super::report::command(&args);
+                let mut guard = state();
+                for line in &lines {
+                    guard.console_print(line.clone());
+                }
+                (status, lines)
+            }
             Some((plugin, name, _)) if Some(plugin) == speed::owner() => {
                 let (status, line) = match speed::action(&name) {
                     Ok(line) => (Status::OK, line),
