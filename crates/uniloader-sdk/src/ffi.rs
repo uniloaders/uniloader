@@ -184,6 +184,7 @@ pub unsafe fn start<P: Plugin>(
     }
     let host = Host::new(api, handle);
     HostLogger::install(host);
+    crate::guard::install(host);
     install_panic_hook();
 
     let plugin = match catch_unwind(AssertUnwindSafe(|| P::start(host))) {

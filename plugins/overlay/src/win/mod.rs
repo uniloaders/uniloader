@@ -199,8 +199,9 @@ pub(crate) fn frame(swapchain: *mut c_void, sync_interval: u32, flags: u32) {
         return;
     };
     IN_FRAME.with(|f| f.set(true));
-    // The game's own code is below us: a panic unwinding into it would abort the process.
-    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    // The game's own code is below us: a panic unwinding into it would abort the process,
+    // a fault would crash it. A fault disables the plugin (the guard skips it from then on).
+    let outcome = uniloader_sdk::guard::call(|| {
         if !DRAWABLE.load(Ordering::Relaxed)
             && (render::device_of(&chain).is_some() || d3d12::device_of(&chain).is_some())
         {
@@ -215,11 +216,17 @@ pub(crate) fn frame(swapchain: *mut c_void, sync_interval: u32, flags: u32) {
         } else {
             OVERLAY.with_borrow_mut(|slot| let_go_when_idle(&mut slot.0));
         }
-    }));
+    });
     IN_FRAME.with(|f| f.set(false));
-    if outcome.is_err() {
-        log::error!("overlay frame panicked; the renderer is rebuilt on the next frame");
-        drop(OVERLAY.with_borrow_mut(|slot| slot.0.take()));
+    match outcome {
+        Ok(()) | Err(uniloader_sdk::guard::Failed::Disabled) => {}
+        Err(uniloader_sdk::guard::Failed::Panicked) => {
+            log::error!("overlay frame panicked; the renderer is rebuilt on the next frame");
+            drop(OVERLAY.with_borrow_mut(|slot| slot.0.take()));
+        }
+        Err(uniloader_sdk::guard::Failed::Faulted) => {
+            log::error!("overlay frame faulted; the overlay is off for this session");
+        }
     }
 }
 

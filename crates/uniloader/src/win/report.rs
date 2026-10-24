@@ -106,6 +106,8 @@ pub(super) fn start(paths: &Paths) {
     let previous = fs::read_to_string(&marker)
         .ok()
         .and_then(|t| Marker::parse(&t));
+    super::suspects::note_own();
+    super::suspects::start(&dir, previous.is_none_or(|m| m.closing));
     let started = now();
     let mine = Marker {
         pid: std::process::id(),
@@ -381,9 +383,17 @@ fn seen(what: &Seen) {
     }
 }
 
-/// From the exception filter: a crash incident with the dump `dump` writes and what faulted.
-/// Takes no lock the crashing thread might hold.
-pub(super) fn crashed(dir: &Path, code: u32, address: usize, dump: impl FnOnce(&Path) -> bool) {
+/// From the exception filter: a crash incident with the dump `dump` writes, what faulted
+/// and the first loaded module on the stack (`suspect`, [`super::suspects`]). Takes no lock
+/// the crashing thread might hold.
+pub(super) fn crashed(
+    dir: &Path,
+    code: u32,
+    address: usize,
+    suspect: Option<&str>,
+    dump: impl FnOnce(&Path) -> bool,
+) {
+    super::suspects::record(dir, suspect);
     let incident = dir.join(reports::incident_name(now(), Kind::Crash));
     if fs::create_dir_all(&incident).is_err() {
         return;
@@ -397,8 +407,10 @@ pub(super) fn crashed(dir: &Path, code: u32, address: usize, dump: impl FnOnce(&
     } else {
         ""
     };
+    let stack = suspect.map_or_else(String::new, |s| format!("{s} is on the crashing stack\n"));
     let text = format!(
-        "{}\nexception {code:#010x}{what} at {address:#x}{module}; dump written: {written}\n",
+        "{}\nexception {code:#010x}{what} at {address:#x}{module}; dump written: \
+         {written}\n{stack}",
         Kind::Crash.headline()
     );
     let _ = fs::write(incident.join(reports::INFO), text);
@@ -766,7 +778,7 @@ pub(super) fn command(args: &str) -> (Status, Vec<String>) {
     }
 }
 
-/// `report crash [fault|stack|panic]`: a thread of the loader's own faults, so the loader's
+/// `report crash [fault|call|stack|panic]`: a thread of the loader's own faults, so the loader's
 /// handlers (not the game's) see it, the path a crash in a plugin's thread takes. `stack`
 /// overflows its stack; `panic` panics on it (logged, and only that thread ends).
 fn crash_on_purpose(how: &str) -> (Status, Vec<String>) {
@@ -784,11 +796,22 @@ fn crash_on_purpose(how: &str) -> (Status, Vec<String>) {
         "stack" => || {
             std::hint::black_box(deeper(1));
         },
+        // Faults inside the C runtime's `memcpy`, a frame below the loader's own.
+        "call" => || {
+            let from = std::hint::black_box(vec![0u8; 4096]);
+            let to = std::ptr::with_exposed_provenance_mut::<u8>(0x10);
+            // SAFETY: none; crashing is what this command is for.
+            unsafe {
+                core::ptr::copy_nonoverlapping(from.as_ptr(), to, std::hint::black_box(4096));
+            };
+        },
         "panic" => || panic!("report crash panic: a panic on purpose"),
         other => {
             return (
                 Status::INVALID_ARGUMENT,
-                vec![format!("report crash [fault|stack|panic], not {other}")],
+                vec![format!(
+                    "report crash [fault|call|stack|panic], not {other}"
+                )],
             )
         }
     };

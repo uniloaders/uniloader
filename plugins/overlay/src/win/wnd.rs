@@ -23,6 +23,7 @@ use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicPtr, Ordering};
 use std::sync::Mutex;
 
 use egui::{Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, Vec2};
+use uniloader_sdk::guard::HookGuard;
 use uniloader_sdk::KeyModifiers;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::Input::{
@@ -241,20 +242,26 @@ unsafe extern "system" fn procedure(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    // After `stop` (when another subclasser kept us in the chain) only forwarding is left.
-    if crate::host().is_some() {
-        let capturing = shared::is_capturing();
-        let input = record(msg, wparam, lparam, capturing);
-        // A release whose press reached the game goes to the game too, even when capture
-        // began in between: swallowing it would leave the key held down there.
-        let owed = forwarded::release_owed(msg, wparam);
-        if capturing && input && !owed {
-            // Swallowed: the overlay has the keyboard and mouse while it is open.
-            return LRESULT(0);
-        }
-        if !capturing {
-            forwarded::note(msg, wparam);
-        }
+    static GUARD: HookGuard = HookGuard::new("overlay window procedure");
+    // After `stop` (when another subclasser kept us in the chain) only forwarding is left;
+    // after a failure in our part too.
+    let swallow = crate::host().is_some()
+        && GUARD
+            .run(|| {
+                let capturing = shared::is_capturing();
+                let input = record(msg, wparam, lparam, capturing);
+                // A release whose press reached the game goes to the game too, even when
+                // capture began in between: swallowing it would leave the key held down.
+                let owed = forwarded::release_owed(msg, wparam);
+                if !capturing {
+                    forwarded::note(msg, wparam);
+                }
+                // Swallowed: the overlay has the keyboard and mouse while it is open.
+                capturing && input && !owed
+            })
+            .unwrap_or(false);
+    if swallow {
+        return LRESULT(0);
     }
     let previous = PREVIOUS.load(Ordering::Acquire);
     if previous == 0 {

@@ -76,52 +76,56 @@ unsafe extern "C" fn panel_add(
     draw: Option<PanelFn>,
     ctx: *mut c_void,
 ) -> Status {
-    let Some(owner) = owner_of(caller) else {
-        return Status::NOT_FOUND;
-    };
-    // SAFETY: the ABI requires a valid descriptor or null.
-    let (Some(desc), Some(draw)) = (unsafe { read_desc(desc) }, draw) else {
-        return Status::INVALID_ARGUMENT;
-    };
-    // SAFETY: the descriptor's strings are valid for the call.
-    let (name, title) = unsafe { (read_str(desc.name), read_str(desc.title)) };
-    if !registry::valid_name(&name) {
-        return Status::INVALID_ARGUMENT;
-    }
-    let Some(plugin) = owner_name(owner) else {
-        return Status::NOT_FOUND;
-    };
-    let added = registry::add(registry::Panel {
-        owner,
-        id: format!("{plugin}.{name}"),
-        title: if title.is_empty() {
-            name.clone()
-        } else {
-            title
-        },
-        name,
-        open: desc.default_open,
-        draw,
-        ctx: ctx as usize,
-    });
-    if !added {
-        return Status::ALREADY_EXISTS;
-    }
-    shared::refresh();
-    Status::OK
+    uniloader_sdk::guard::service("panel_add", Status::ERROR, || {
+        let Some(owner) = owner_of(caller) else {
+            return Status::NOT_FOUND;
+        };
+        // SAFETY: the ABI requires a valid descriptor or null.
+        let (Some(desc), Some(draw)) = (unsafe { read_desc(desc) }, draw) else {
+            return Status::INVALID_ARGUMENT;
+        };
+        // SAFETY: the descriptor's strings are valid for the call.
+        let (name, title) = unsafe { (read_str(desc.name), read_str(desc.title)) };
+        if !registry::valid_name(&name) {
+            return Status::INVALID_ARGUMENT;
+        }
+        let Some(plugin) = owner_name(owner) else {
+            return Status::NOT_FOUND;
+        };
+        let added = registry::add(registry::Panel {
+            owner,
+            id: format!("{plugin}.{name}"),
+            title: if title.is_empty() {
+                name.clone()
+            } else {
+                title
+            },
+            name,
+            open: desc.default_open,
+            draw,
+            ctx: ctx as usize,
+        });
+        if !added {
+            return Status::ALREADY_EXISTS;
+        }
+        shared::refresh();
+        Status::OK
+    })
 }
 
 unsafe extern "C" fn panel_remove(caller: Caller, name: Str) -> Status {
-    let Some(owner) = owner_of(caller) else {
-        return Status::NOT_FOUND;
-    };
-    // SAFETY: valid for the call, per the ABI.
-    let name = unsafe { read_str(name) };
-    if !registry::remove(owner, &name) {
-        return Status::NOT_FOUND;
-    }
-    shared::refresh();
-    Status::OK
+    uniloader_sdk::guard::service("panel_remove", Status::ERROR, || {
+        let Some(owner) = owner_of(caller) else {
+            return Status::NOT_FOUND;
+        };
+        // SAFETY: valid for the call, per the ABI.
+        let name = unsafe { read_str(name) };
+        if !registry::remove(owner, &name) {
+            return Status::NOT_FOUND;
+        }
+        shared::refresh();
+        Status::OK
+    })
 }
 
 /// # Safety
@@ -137,40 +141,46 @@ unsafe fn set_open_with(owner: PluginHandle, name: Str, f: impl FnOnce(bool) -> 
 }
 
 unsafe extern "C" fn panel_set_open(caller: Caller, name: Str, open: bool) -> Status {
-    let Some(owner) = owner_of(caller) else {
-        return Status::NOT_FOUND;
-    };
-    // SAFETY: `name` comes straight from the caller, under the same ABI promise.
-    unsafe { set_open_with(owner, name, |_| open) }
+    uniloader_sdk::guard::service("panel_set_open", Status::ERROR, || {
+        let Some(owner) = owner_of(caller) else {
+            return Status::NOT_FOUND;
+        };
+        // SAFETY: `name` comes straight from the caller, under the same ABI promise.
+        unsafe { set_open_with(owner, name, |_| open) }
+    })
 }
 
 unsafe extern "C" fn panel_toggle(caller: Caller, name: Str) -> Status {
-    let Some(owner) = owner_of(caller) else {
-        return Status::NOT_FOUND;
-    };
-    // SAFETY: as above.
-    unsafe { set_open_with(owner, name, |open| !open) }
+    uniloader_sdk::guard::service("panel_toggle", Status::ERROR, || {
+        let Some(owner) = owner_of(caller) else {
+            return Status::NOT_FOUND;
+        };
+        // SAFETY: as above.
+        unsafe { set_open_with(owner, name, |open| !open) }
+    })
 }
 
 unsafe extern "C" fn panel_is_open(caller: Caller, name: Str, out: *mut bool) -> Status {
-    let Some(owner) = owner_of(caller) else {
-        return Status::NOT_FOUND;
-    };
-    if out.is_null() {
-        return Status::INVALID_ARGUMENT;
-    }
-    // SAFETY: valid for the call, per the ABI.
-    let name = unsafe { read_str(name) };
-    let Some(open) = registry::snapshot()
-        .into_iter()
-        .find(|p| p.owner == owner && p.name == name)
-        .map(|p| p.open)
-    else {
-        return Status::NOT_FOUND;
-    };
-    // SAFETY: checked non-null; the ABI requires a writable bool.
-    unsafe { out.write(open) };
-    Status::OK
+    uniloader_sdk::guard::service("panel_is_open", Status::ERROR, || {
+        let Some(owner) = owner_of(caller) else {
+            return Status::NOT_FOUND;
+        };
+        if out.is_null() {
+            return Status::INVALID_ARGUMENT;
+        }
+        // SAFETY: valid for the call, per the ABI.
+        let name = unsafe { read_str(name) };
+        let Some(open) = registry::snapshot()
+            .into_iter()
+            .find(|p| p.owner == owner && p.name == name)
+            .map(|p| p.open)
+        else {
+            return Status::NOT_FOUND;
+        };
+        // SAFETY: checked non-null; the ABI requires a writable bool.
+        unsafe { out.write(open) };
+        Status::OK
+    })
 }
 
 unsafe extern "C" fn widget(
@@ -180,27 +190,29 @@ unsafe extern "C" fn widget(
     text: Str,
     value: *mut UiValue,
 ) -> Status {
-    let Some(owner) = owner_of(caller) else {
-        return Status::NOT_FOUND;
-    };
-    // Outside the draw callback nothing is dereferenced: the pointers may be stale.
-    if !ui::frame::is_current(frame, owner) {
-        return Status::WRONG_PHASE;
-    }
-    // SAFETY: valid for the call, per the ABI.
-    let text = unsafe { read_str(text) };
-    let value = if value.is_null() {
-        None
-    } else {
-        // SAFETY: non-null; the size is checked before anything past it is touched.
-        let size = unsafe { (*value).struct_size };
-        if size < core::mem::size_of::<UiValue>() {
-            return Status::INVALID_ARGUMENT;
+    uniloader_sdk::guard::service("widget", Status::ERROR, || {
+        let Some(owner) = owner_of(caller) else {
+            return Status::NOT_FOUND;
+        };
+        // Outside the draw callback nothing is dereferenced: the pointers may be stale.
+        if !ui::frame::is_current(frame, owner) {
+            return Status::WRONG_PHASE;
         }
-        // SAFETY: a writable value of at least our size, exclusively ours for the call.
-        Some(unsafe { &mut *value })
-    };
-    ui::frame::widget(owner, frame, kind, &text, value)
+        // SAFETY: valid for the call, per the ABI.
+        let text = unsafe { read_str(text) };
+        let value = if value.is_null() {
+            None
+        } else {
+            // SAFETY: non-null; the size is checked before anything past it is touched.
+            let size = unsafe { (*value).struct_size };
+            if size < core::mem::size_of::<UiValue>() {
+                return Status::INVALID_ARGUMENT;
+            }
+            // SAFETY: a writable value of at least our size, exclusively ours for the call.
+            Some(unsafe { &mut *value })
+        };
+        ui::frame::widget(owner, frame, kind, &text, value)
+    })
 }
 
 unsafe extern "C" fn notice_show(
@@ -208,29 +220,31 @@ unsafe extern "C" fn notice_show(
     desc: *const NoticeDesc,
     out_id: *mut u64,
 ) -> Status {
-    let Some(owner) = owner_of(caller) else {
-        return Status::NOT_FOUND;
-    };
-    // SAFETY: the ABI requires a valid descriptor or null.
-    let Some(desc) = (unsafe { read_desc(desc) }) else {
-        return Status::INVALID_ARGUMENT;
-    };
-    // SAFETY: the descriptor's strings are valid for the call.
-    let (title, text) = unsafe { (read_str(desc.title), read_str(desc.text)) };
-    let id = notices::passing(
-        Some(owner),
-        desc.kind,
-        desc.level,
-        &title,
-        &text,
-        desc.seconds,
-    );
-    shared::recount();
-    if !out_id.is_null() {
-        // SAFETY: checked non-null; the ABI requires a writable `u64`.
-        unsafe { out_id.write(id) };
-    }
-    Status::OK
+    uniloader_sdk::guard::service("notice_show", Status::ERROR, || {
+        let Some(owner) = owner_of(caller) else {
+            return Status::NOT_FOUND;
+        };
+        // SAFETY: the ABI requires a valid descriptor or null.
+        let Some(desc) = (unsafe { read_desc(desc) }) else {
+            return Status::INVALID_ARGUMENT;
+        };
+        // SAFETY: the descriptor's strings are valid for the call.
+        let (title, text) = unsafe { (read_str(desc.title), read_str(desc.text)) };
+        let id = notices::passing(
+            Some(owner),
+            desc.kind,
+            desc.level,
+            &title,
+            &text,
+            desc.seconds,
+        );
+        shared::recount();
+        if !out_id.is_null() {
+            // SAFETY: checked non-null; the ABI requires a writable `u64`.
+            unsafe { out_id.write(id) };
+        }
+        Status::OK
+    })
 }
 
 unsafe extern "C" fn dialog_open(
@@ -240,80 +254,84 @@ unsafe extern "C" fn dialog_open(
     ctx: *mut c_void,
     out_id: *mut u64,
 ) -> Status {
-    let Some(owner) = owner_of(caller) else {
-        return Status::NOT_FOUND;
-    };
-    // SAFETY: the ABI requires a valid descriptor or null.
-    let Some(desc) = (unsafe { read_desc(desc) }) else {
-        return Status::INVALID_ARGUMENT;
-    };
-    // SAFETY: the descriptor's strings are valid for the call.
-    let strings = unsafe {
-        [
-            read_str(desc.title),
-            read_str(desc.text),
-            read_str(desc.default_text),
-            read_str(desc.accept_label),
-            read_str(desc.cancel_label),
-            read_str(desc.remember),
-        ]
-    };
-    let [title, text, default_text, accept, cancel, remember] = &strings;
-    let answer = answer.map(|callback| notices::Answer {
-        callback,
-        ctx: ctx as usize,
-    });
-    let remember = if remember.trim().is_empty() {
-        String::new()
-    } else {
-        let plugin = owner_name(owner).unwrap_or_default();
-        uniloader_overlay::remember::key(&plugin, remember)
-    };
-    let dismissed = !remember.is_empty()
-        && crate::host().is_some_and(|host| {
-            uniloader_overlay::remember::is_dismissed(&host.config_dir(), &remember)
-        });
-    let id = if dismissed {
-        let (id, answered) = notices::suppressed(owner, answer);
-        if let Some(answered) = answered {
-            // Delivered on the next frame, never from inside the owner's own call.
-            ui::queue_answer(answered);
-        }
-        id
-    } else {
-        let words = notices::DialogText {
-            title,
-            text,
-            default_text,
-            accept,
-            cancel,
-            remember: &remember,
+    uniloader_sdk::guard::service("dialog_open", Status::ERROR, || {
+        let Some(owner) = owner_of(caller) else {
+            return Status::NOT_FOUND;
         };
-        notices::dialog(owner, desc.kind, desc.level, &words, answer)
-    };
-    shared::recount();
-    if !out_id.is_null() {
-        // SAFETY: checked non-null; the ABI requires a writable `u64`.
-        unsafe { out_id.write(id) };
-    }
-    Status::OK
-}
-
-unsafe extern "C" fn close(caller: Caller, id: u64) -> Status {
-    let Some(owner) = owner_of(caller) else {
-        return Status::NOT_FOUND;
-    };
-    match notices::take_owned(owner, id) {
-        Err(()) => Status::NOT_FOUND,
-        Ok(answered) => {
+        // SAFETY: the ABI requires a valid descriptor or null.
+        let Some(desc) = (unsafe { read_desc(desc) }) else {
+            return Status::INVALID_ARGUMENT;
+        };
+        // SAFETY: the descriptor's strings are valid for the call.
+        let strings = unsafe {
+            [
+                read_str(desc.title),
+                read_str(desc.text),
+                read_str(desc.default_text),
+                read_str(desc.accept_label),
+                read_str(desc.cancel_label),
+                read_str(desc.remember),
+            ]
+        };
+        let [title, text, default_text, accept, cancel, remember] = &strings;
+        let answer = answer.map(|callback| notices::Answer {
+            callback,
+            ctx: ctx as usize,
+        });
+        let remember = if remember.trim().is_empty() {
+            String::new()
+        } else {
+            let plugin = owner_name(owner).unwrap_or_default();
+            uniloader_overlay::remember::key(&plugin, remember)
+        };
+        let dismissed = !remember.is_empty()
+            && crate::host().is_some_and(|host| {
+                uniloader_overlay::remember::is_dismissed(&host.config_dir(), &remember)
+            });
+        let id = if dismissed {
+            let (id, answered) = notices::suppressed(owner, answer);
             if let Some(answered) = answered {
                 // Delivered on the next frame, never from inside the owner's own call.
                 ui::queue_answer(answered);
             }
-            shared::recount();
-            Status::OK
+            id
+        } else {
+            let words = notices::DialogText {
+                title,
+                text,
+                default_text,
+                accept,
+                cancel,
+                remember: &remember,
+            };
+            notices::dialog(owner, desc.kind, desc.level, &words, answer)
+        };
+        shared::recount();
+        if !out_id.is_null() {
+            // SAFETY: checked non-null; the ABI requires a writable `u64`.
+            unsafe { out_id.write(id) };
         }
-    }
+        Status::OK
+    })
+}
+
+unsafe extern "C" fn close(caller: Caller, id: u64) -> Status {
+    uniloader_sdk::guard::service("close", Status::ERROR, || {
+        let Some(owner) = owner_of(caller) else {
+            return Status::NOT_FOUND;
+        };
+        match notices::take_owned(owner, id) {
+            Err(()) => Status::NOT_FOUND,
+            Ok(answered) => {
+                if let Some(answered) = answered {
+                    // Delivered on the next frame, never from inside the owner's own call.
+                    ui::queue_answer(answered);
+                }
+                shared::recount();
+                Status::OK
+            }
+        }
+    })
 }
 
 unsafe extern "C" fn present_subscribe(
@@ -321,60 +339,67 @@ unsafe extern "C" fn present_subscribe(
     callback: Option<PresentFn>,
     ctx: *mut c_void,
 ) -> Status {
-    let Some(owner) = owner_of(caller) else {
-        return Status::NOT_FOUND;
-    };
-    let Some(callback) = callback else {
-        return Status::INVALID_ARGUMENT;
-    };
-    registry::subscribe(registry::Subscriber {
-        owner,
-        callback,
-        ctx: ctx as usize,
-    });
-    Status::OK
+    uniloader_sdk::guard::service("present_subscribe", Status::ERROR, || {
+        let Some(owner) = owner_of(caller) else {
+            return Status::NOT_FOUND;
+        };
+        let Some(callback) = callback else {
+            return Status::INVALID_ARGUMENT;
+        };
+        registry::subscribe(registry::Subscriber {
+            owner,
+            callback,
+            ctx: ctx as usize,
+        });
+        Status::OK
+    })
 }
 
 unsafe extern "C" fn is_capturing() -> bool {
+    // One atomic read: nothing to guard.
     shared::is_capturing()
 }
 
 unsafe extern "C" fn card_set(caller: Caller, name: Str, desc: *const CardDesc) -> Status {
-    let Some(owner) = owner_of(caller) else {
-        return Status::NOT_FOUND;
-    };
-    // SAFETY: the ABI requires a valid descriptor or null, and a valid name.
-    let (Some(desc), name) = (unsafe { read_desc(desc) }, unsafe { read_str(name) }) else {
-        return Status::INVALID_ARGUMENT;
-    };
-    if !registry::valid_name(&name) {
-        return Status::INVALID_ARGUMENT;
-    }
-    // SAFETY: the descriptor's strings are valid for the call.
-    let card = unsafe {
-        ShownCard {
-            owner,
-            name,
-            badge: read_str(desc.badge),
-            title: read_str(desc.title),
-            text: read_str(desc.text),
-            icon: read_str(desc.icon),
-            level: desc.level,
+    uniloader_sdk::guard::service("card_set", Status::ERROR, || {
+        let Some(owner) = owner_of(caller) else {
+            return Status::NOT_FOUND;
+        };
+        // SAFETY: the ABI requires a valid descriptor or null, and a valid name.
+        let (Some(desc), name) = (unsafe { read_desc(desc) }, unsafe { read_str(name) }) else {
+            return Status::INVALID_ARGUMENT;
+        };
+        if !registry::valid_name(&name) {
+            return Status::INVALID_ARGUMENT;
         }
-    };
-    cards::set(card);
-    Status::OK
+        // SAFETY: the descriptor's strings are valid for the call.
+        let card = unsafe {
+            ShownCard {
+                owner,
+                name,
+                badge: read_str(desc.badge),
+                title: read_str(desc.title),
+                text: read_str(desc.text),
+                icon: read_str(desc.icon),
+                level: desc.level,
+            }
+        };
+        cards::set(card);
+        Status::OK
+    })
 }
 
 unsafe extern "C" fn card_remove(caller: Caller, name: Str) -> Status {
-    let Some(owner) = owner_of(caller) else {
-        return Status::NOT_FOUND;
-    };
-    // SAFETY: the ABI requires a valid name.
-    let name = unsafe { read_str(name) };
-    if cards::remove(owner, &name) {
-        Status::OK
-    } else {
-        Status::NOT_FOUND
-    }
+    uniloader_sdk::guard::service("card_remove", Status::ERROR, || {
+        let Some(owner) = owner_of(caller) else {
+            return Status::NOT_FOUND;
+        };
+        // SAFETY: the ABI requires a valid name.
+        let name = unsafe { read_str(name) };
+        if cards::remove(owner, &name) {
+            Status::OK
+        } else {
+            Status::NOT_FOUND
+        }
+    })
 }

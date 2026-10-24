@@ -32,6 +32,7 @@
 pub mod args;
 mod deps;
 mod ffi;
+pub mod guard;
 mod host;
 mod logger;
 mod meta;

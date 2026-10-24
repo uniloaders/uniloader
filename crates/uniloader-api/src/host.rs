@@ -249,7 +249,9 @@ pub struct HostApi {
     /// For a service calling back into a consumer: a panic or hardware fault inside `f`
     /// disables `target`, exactly as if a loader callback had faulted, and returns
     /// [`Status::ERROR`]. Returns [`Status::NOT_FOUND`] without calling `f` when `target` is
-    /// not running. Unlike the functions that act in the caller's own name, `target` is not
+    /// disabled or has stopped; a `target` still in its `start` runs guarded (a fault is
+    /// logged and returns [`Status::ERROR`]). Also for a plugin guarding its own hooks and
+    /// threads (`target` itself). Unlike the functions that act in the caller's own name, `target` is not
     /// checked against the caller (blaming another plugin is the point); the loader cannot
     /// tell whose code `f` is, so a service must only pass the target's own callbacks.
     pub guarded_call: unsafe extern "C" fn(

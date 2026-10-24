@@ -64,17 +64,15 @@ pub(crate) fn install(host: &Host) {
     if hook(host) {
         return;
     }
-    let watcher = std::thread::Builder::new()
-        .name("overlay-gl-watch".into())
-        .spawn(|| {
-            let until = Instant::now() + WATCH_FOR;
-            while Instant::now() < until {
-                std::thread::sleep(WATCH_EVERY);
-                if crate::host().is_some_and(hook) {
-                    return;
-                }
+    let watcher = uniloader_sdk::guard::spawn("overlay-gl-watch", || {
+        let until = Instant::now() + WATCH_FOR;
+        while Instant::now() < until {
+            std::thread::sleep(WATCH_EVERY);
+            if crate::host().is_some_and(hook) {
+                return;
             }
-        });
+        }
+    });
     if let Err(e) = watcher {
         log::debug!("no thread to watch for OpenGL ({e})");
     }
@@ -127,8 +125,10 @@ unsafe extern "system" fn swap_buffers(hdc: HDC) -> BOOL {
     }
     if !IN_FRAME.with(Cell::get) {
         IN_FRAME.with(|f| f.set(true));
-        // The game's own code is below us: a panic unwinding into it would abort the process.
-        if std::panic::catch_unwind(|| frame(hdc)).is_err() {
+        // The game's own code is below us: a panic unwinding into it would abort the
+        // process, a fault would crash it (a fault disables the plugin).
+        if uniloader_sdk::guard::call(|| frame(hdc)) == Err(uniloader_sdk::guard::Failed::Panicked)
+        {
             log::error!("OpenGL overlay frame panicked; the renderer is rebuilt on the next frame");
             OVERLAY.with_borrow_mut(Option::take);
         }

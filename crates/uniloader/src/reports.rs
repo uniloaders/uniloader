@@ -577,10 +577,22 @@ pub fn settings() -> Vec<uniloader_core::settings::Desc> {
 /// The `report` command's help and usage.
 pub const COMMAND_HELP: &str = "Crash and freeze reports: list them, make one now, send one \
                                 or save it to the Desktop.";
+/// A crash that named none of the loader's modules, in the suspects list.
+pub const NO_SUSPECT: &str = "-";
+
+/// The module the suspects list's last two crashes name, when both name the same one: a
+/// crash loop.
+#[must_use]
+pub fn crash_loop(list: &str) -> Option<String> {
+    let mut newest = list.lines().map(str::trim).filter(|l| !l.is_empty()).rev();
+    let (a, b) = (newest.next()?, newest.next()?);
+    (a != NO_SUSPECT && a.eq_ignore_ascii_case(b)).then(|| a.to_owned())
+}
+
 /// The `report` command's usage.
 pub const COMMAND_USAGE: &str =
     "report [list | now | send <zip> | desktop <zip> | url <https url> | attach <folder> \
-     | loading on|off | crash [fault|stack|panic]]";
+     | loading on|off | crash [fault|call|stack|panic]]";
 
 #[cfg(test)]
 #[path = "reports_tests.rs"]

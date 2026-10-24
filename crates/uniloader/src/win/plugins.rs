@@ -108,16 +108,24 @@ pub(crate) fn find_by_name(name: &str) -> Option<&'static Active> {
 }
 
 /// Run `body` on behalf of `target` under the fault guard, disabling `target` if it faults.
+///
+/// A plugin that is still starting is not published yet, but its hooks and threads may run
+/// already: `body` runs guarded all the same, and a fault is logged (the plugin is disabled
+/// once the guard can find it, through its hook's own trip switch until then).
 pub(crate) fn guarded(target: PluginHandle, body: impl FnOnce()) -> Status {
-    let Some(plugin) = find(target).filter(|p| p.is_enabled()) else {
+    let plugin = find(target);
+    if plugin.is_some_and(|p| !p.is_enabled()) {
         return Status::NOT_FOUND;
-    };
+    }
     // SAFETY: the caller passes a closure performing one call into `target`; the guard
     // contains a fault inside it.
     match unsafe { super::guard::call(body) } {
         Ok(()) => Status::OK,
         Err(fault) => {
-            plugin.disable(&format!("service callback {fault}"));
+            match plugin {
+                Some(plugin) => plugin.disable(&format!("guarded call {fault}")),
+                None => log::error!("plugin {} (starting): guarded call {fault}", target.0),
+            }
             Status::ERROR
         }
     }
@@ -329,6 +337,9 @@ pub(super) fn describe_one(file: &Path) -> Result<Described, String> {
     let module =
         unsafe { LoadLibraryExW(PCWSTR(path.as_ptr()), None, LOAD_WITH_ALTERED_SEARCH_PATH) }
             .map_err(|e| format!("cannot load: {e}"))?;
+    if let Some(name) = file.file_name() {
+        super::suspects::note(module, &name.to_string_lossy());
+    }
     let exports = exports(module).ok_or_else(|| {
         format!("not a plugin: missing {DESCRIBE_EXPORT}, {START_EXPORT} or {STOP_EXPORT}")
     })?;
@@ -594,6 +605,15 @@ fn load_all_now(paths: &Paths, disabled: &[String]) {
             .unwrap_or_default();
         if disabled.iter().any(|d| d.eq_ignore_ascii_case(&stem)) {
             log::info!("skipping {stem}: disabled in loader.toml");
+            continue;
+        }
+        let file_name = file
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if super::suspects::skipped(&file_name) {
+            log::warn!("skipping {stem}: {}", super::suspects::REASON);
+            not_running.push((stem, super::suspects::REASON.to_owned()));
             continue;
         }
         match describe_one(&file) {

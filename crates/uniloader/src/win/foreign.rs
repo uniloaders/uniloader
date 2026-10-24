@@ -58,6 +58,14 @@ fn load_one(paths: &Paths, file: &Path, kind: &'static str, initialize: bool) ->
         .ok()
         .and_then(|bytes| uniloader_core::pe::product_version(&bytes))
         .unwrap_or_default();
+    let file_name = file
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if super::suspects::skipped(&file_name) {
+        log::warn!("skipping {shown}: {}", super::suspects::REASON);
+        return None;
+    }
     let path = wide(file);
     // SAFETY: `path` is NUL terminated; the altered search path lets the DLL find its own
     // dependencies next to itself, which is how UE4SS ships.
@@ -70,6 +78,7 @@ fn load_one(paths: &Paths, file: &Path, kind: &'static str, initialize: bool) ->
                 return None;
             }
         };
+    super::suspects::note(module, &file_name);
     if initialize {
         // SAFETY: valid module handle and a NUL terminated name.
         if let Some(init) = unsafe { GetProcAddress(module, s!("InitializeASI")) } {

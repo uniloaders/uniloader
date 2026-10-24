@@ -218,17 +218,15 @@ pub(crate) fn install(host: &Host) {
     if try_install(host) {
         return;
     }
-    let watcher = std::thread::Builder::new()
-        .name("overlay-vk-watch".into())
-        .spawn(|| {
-            let until = Instant::now() + WATCH_FOR;
-            while Instant::now() < until {
-                std::thread::sleep(WATCH_EVERY);
-                if crate::host().is_some_and(try_install) {
-                    return;
-                }
+    let watcher = uniloader_sdk::guard::spawn("overlay-vk-watch", || {
+        let until = Instant::now() + WATCH_FOR;
+        while Instant::now() < until {
+            std::thread::sleep(WATCH_EVERY);
+            if crate::host().is_some_and(try_install) {
+                return;
             }
-        });
+        }
+    });
     if let Err(e) = watcher {
         log::debug!("no thread to watch for Vulkan ({e})");
     }
@@ -403,6 +401,15 @@ unsafe fn original<F: Copy>(real: &AtomicUsize) -> Option<F> {
     (address != 0).then(|| unsafe { core::mem::transmute_copy::<usize, F>(&address) })
 }
 
+/// The overlay's bookkeeping inside a Vulkan hook. It runs while the plugin is disabled too
+/// (skipping it would leave a destroyed device or swapchain tracked), so it only catches a
+/// panic, which must not unwind into the game.
+fn bookkeeping(hook: &str, f: impl FnOnce()) {
+    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).is_err() {
+        log::error!("{hook} hook: the overlay's bookkeeping panicked");
+    }
+}
+
 unsafe extern "system" fn create_device(
     physical: vk::PhysicalDevice,
     info: *const vk::DeviceCreateInfo<'_>,
@@ -418,7 +425,9 @@ unsafe extern "system" fn create_device(
     if result == vk::Result::SUCCESS && !out.is_null() {
         // SAFETY: written by the successful call.
         let device = unsafe { *out };
-        tracked().devices.insert(device.as_raw(), physical);
+        bookkeeping("vkCreateDevice", || {
+            tracked().devices.insert(device.as_raw(), physical);
+        });
     }
     result
 }
@@ -431,20 +440,22 @@ unsafe extern "system" fn destroy_device(
     let Some(real) = (unsafe { original::<vk::PFN_vkDestroyDevice>(&REAL.destroy_device) }) else {
         return;
     };
-    let slot = {
-        let mut t = tracked();
-        t.devices.remove(&device.as_raw());
-        t.queues.retain(|_, (d, _)| *d != device);
-        t.swapchains.retain(|_, s| s.device != device);
-        t.renderers.remove(&device.as_raw())
-    };
-    if let Some(slot) = slot {
-        if drawing_with(&slot) {
-            LATER.with_borrow_mut(|later| later.push(Later::DeviceGone));
-        } else if let Some(mut renderer) = lock(&slot).take() {
-            renderer.destroy();
+    bookkeeping("vkDestroyDevice", || {
+        let slot = {
+            let mut t = tracked();
+            t.devices.remove(&device.as_raw());
+            t.queues.retain(|_, (d, _)| *d != device);
+            t.swapchains.retain(|_, s| s.device != device);
+            t.renderers.remove(&device.as_raw())
+        };
+        if let Some(slot) = slot {
+            if drawing_with(&slot) {
+                LATER.with_borrow_mut(|later| later.push(Later::DeviceGone));
+            } else if let Some(mut renderer) = lock(&slot).take() {
+                renderer.destroy();
+            }
         }
-    }
+    });
     // SAFETY: forwarding the caller's arguments.
     unsafe { real(device, allocator) };
 }
@@ -464,7 +475,9 @@ unsafe extern "system" fn get_device_queue(
     unsafe { real(device, family, index, out) };
     // SAFETY: written by the call when it is not null.
     if let Some(queue) = unsafe { out.as_ref() } {
-        tracked().queues.insert(queue.as_raw(), (device, family));
+        bookkeeping("vkGetDeviceQueue", || {
+            tracked().queues.insert(queue.as_raw(), (device, family));
+        });
     }
 }
 
@@ -482,9 +495,11 @@ unsafe extern "system" fn get_device_queue2(
     unsafe { real(device, info, out) };
     // SAFETY: the caller's create info, and the queue written by the call.
     if let (Some(info), Some(queue)) = unsafe { (info.as_ref(), out.as_ref()) } {
-        tracked()
-            .queues
-            .insert(queue.as_raw(), (device, info.queue_family_index));
+        bookkeeping("vkGetDeviceQueue2", || {
+            tracked()
+                .queues
+                .insert(queue.as_raw(), (device, info.queue_family_index));
+        });
     }
 }
 
@@ -504,7 +519,9 @@ unsafe extern "system" fn create_surface(
     if result == vk::Result::SUCCESS {
         // SAFETY: the caller's create info, and the surface written by the call.
         if let (Some(info), Some(surface)) = unsafe { (info.as_ref(), out.as_ref()) } {
-            tracked().surfaces.insert(surface.as_raw(), info.hwnd);
+            bookkeeping("vkCreateWin32SurfaceKHR", || {
+                tracked().surfaces.insert(surface.as_raw(), info.hwnd);
+            });
         }
     }
     result
@@ -526,18 +543,20 @@ unsafe extern "system" fn create_swapchain(
     if result == vk::Result::SUCCESS {
         // SAFETY: the caller's create info, and the swapchain written by the call.
         if let (Some(info), Some(swapchain)) = unsafe { (info.as_ref(), out.as_ref()) } {
-            let mut t = tracked();
-            let hwnd = t.surfaces.get(&info.surface.as_raw()).copied();
-            t.swapchains.insert(
-                swapchain.as_raw(),
-                Swapchain {
-                    device,
-                    format: info.image_format,
-                    extent: info.image_extent,
-                    usage: info.image_usage,
-                    hwnd,
-                },
-            );
+            bookkeeping("vkCreateSwapchainKHR", || {
+                let mut t = tracked();
+                let hwnd = t.surfaces.get(&info.surface.as_raw()).copied();
+                t.swapchains.insert(
+                    swapchain.as_raw(),
+                    Swapchain {
+                        device,
+                        format: info.image_format,
+                        extent: info.image_extent,
+                        usage: info.image_usage,
+                        hwnd,
+                    },
+                );
+            });
         }
     }
     result
@@ -554,18 +573,20 @@ unsafe extern "system" fn destroy_swapchain(
     else {
         return;
     };
-    let slot = {
-        let mut t = tracked();
-        t.swapchains.remove(&swapchain.as_raw());
-        t.renderers.get(&device.as_raw()).cloned()
-    };
-    if let Some(slot) = slot {
-        if drawing_with(&slot) {
-            LATER.with_borrow_mut(|later| later.push(Later::Forget(swapchain)));
-        } else if let Some(renderer) = lock(&slot).as_mut() {
-            renderer.forget(swapchain);
+    bookkeeping("vkDestroySwapchainKHR", || {
+        let slot = {
+            let mut t = tracked();
+            t.swapchains.remove(&swapchain.as_raw());
+            t.renderers.get(&device.as_raw()).cloned()
+        };
+        if let Some(slot) = slot {
+            if drawing_with(&slot) {
+                LATER.with_borrow_mut(|later| later.push(Later::Forget(swapchain)));
+            } else if let Some(renderer) = lock(&slot).as_mut() {
+                renderer.forget(swapchain);
+            }
         }
-    }
+    });
     // SAFETY: forwarding the caller's arguments.
     unsafe { real(device, swapchain, allocator) };
 }
@@ -586,10 +607,17 @@ unsafe extern "system" fn queue_present(
     let mut ours = None;
     if !IN_FRAME.with(Cell::get) {
         IN_FRAME.with(|f| f.set(true));
-        // The game's own code is below us: a panic unwinding into it would abort the process.
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| frame(queue, present))) {
+        // The game's own code is below us: a panic unwinding into it would abort the
+        // process, a fault would crash it (a fault disables the plugin).
+        match uniloader_sdk::guard::call(|| frame(queue, present)) {
             Ok(semaphore) => ours = semaphore,
-            Err(_) => log::error!("Vulkan overlay frame panicked"),
+            Err(
+                why @ (uniloader_sdk::guard::Failed::Panicked
+                | uniloader_sdk::guard::Failed::Faulted),
+            ) => {
+                log::error!("Vulkan overlay frame: {why:?}");
+            }
+            Err(_) => {}
         }
         IN_FRAME.with(|f| f.set(false));
     }

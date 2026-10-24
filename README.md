@@ -27,7 +27,13 @@ From the DayZ loader, made game-agnostic:
 - **Hooks the loader owns**: byte patches, vtable slots, inline detours, undone when the
   plugin stops.
 - **Isolation**: every call into a plugin is guarded against panics and hardware faults. A
-  faulting plugin is disabled; the game and the other plugins keep running.
+  faulting plugin is disabled; the game and the other plugins keep running. Code the game
+  calls directly (detours, vtable hooks, window procedures), service functions and a
+  plugin's own threads get the same guard through `uniloader_sdk::guard` (`HookGuard`,
+  `service`, `spawn`): a broken hook falls back to the game's original.
+- **Crash reports and crash loops**: dumps of crashes, stack overflows and freezes, logged
+  panics with their frames, sent or saved on the player's say. A plugin or `.asi` on the
+  stack of the last two crashes is left out for one session.
 
 Game knowledge is not in the loader. It comes from **adapter plugins** that publish services
 to other plugins: an Unreal Engine adapter (objects, names, reflection, the game tick) and an

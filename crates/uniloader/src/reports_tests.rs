@@ -159,3 +159,20 @@ fn old_reports_are_pruned_and_decided_ones_not_offered() {
     assert_eq!(pending(&dir).len(), KEEP - 1);
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn two_crashes_in_the_same_module_make_a_loop() {
+    assert_eq!(
+        crash_loop("coop.dll\ncoop.dll\n").as_deref(),
+        Some("coop.dll")
+    );
+    assert_eq!(
+        crash_loop("tsw.dll\ncoop.dll\nCOOP.DLL\n").as_deref(),
+        Some("COOP.DLL")
+    );
+    assert_eq!(crash_loop("coop.dll\ntsw.dll\n"), None);
+    assert_eq!(crash_loop("coop.dll\n-\ncoop.dll\n"), None);
+    assert_eq!(crash_loop("-\n-\n"), None);
+    assert_eq!(crash_loop("coop.dll\n"), None);
+    assert_eq!(crash_loop(""), None);
+}

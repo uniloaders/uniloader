@@ -166,31 +166,41 @@ unsafe extern "system" fn execute_command_lists(
     count: u32,
     lists: *const *mut c_void,
 ) {
+    static GUARD: uniloader_sdk::guard::HookGuard =
+        uniloader_sdk::guard::HookGuard::new("overlay ExecuteCommandLists");
     let address = REAL_EXECUTE.load(Ordering::Acquire);
     if address == 0 {
         return;
     }
     // Not after `stop`, which released the reference this would take again.
     if QUEUE.load(Ordering::Acquire) == 0 && crate::host().is_some() {
-        // SAFETY: `this` is the queue the game called through; borrowed for the call.
-        if let Some(queue) = unsafe { ID3D12CommandQueue::from_raw_borrowed(&this) } {
-            // SAFETY: a live queue; only its description is read.
-            if unsafe { queue.GetDesc() }.Type == D3D12_COMMAND_LIST_TYPE_DIRECT {
-                let owned = queue.clone().into_raw() as usize;
-                if QUEUE
-                    .compare_exchange(0, owned, Ordering::AcqRel, Ordering::Acquire)
-                    .is_err()
-                {
-                    // SAFETY: the reference just taken, which lost the race.
-                    drop(unsafe { ID3D12CommandQueue::from_raw(owned as *mut c_void) });
-                }
-            }
-        }
+        let _ = GUARD.run(|| keep_queue(this));
     }
     // SAFETY: the slot held an `ExecuteFn`, and a function pointer is a `usize` wide.
     let real: ExecuteFn = unsafe { core::mem::transmute::<usize, ExecuteFn>(address) };
     // SAFETY: forwarding the caller's arguments to the original.
     unsafe { real(this, count, lists) };
+}
+
+/// Keeps a reference to the direct queue `this` when it is one: the queue a `Direct3D` 12
+/// overlay submits to.
+fn keep_queue(this: *mut c_void) {
+    // SAFETY: `this` is the queue the game called through; borrowed for the call.
+    let Some(queue) = (unsafe { ID3D12CommandQueue::from_raw_borrowed(&this) }) else {
+        return;
+    };
+    // SAFETY: a live queue; only its description is read.
+    if unsafe { queue.GetDesc() }.Type != D3D12_COMMAND_LIST_TYPE_DIRECT {
+        return;
+    }
+    let owned = queue.clone().into_raw() as usize;
+    if QUEUE
+        .compare_exchange(0, owned, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        // SAFETY: the reference just taken, which lost the race.
+        drop(unsafe { ID3D12CommandQueue::from_raw(owned as *mut c_void) });
+    }
 }
 
 /// The `Direct3D` 12 device behind a swapchain, when it is one.

@@ -28,6 +28,7 @@ pub(crate) mod proxy;
 mod rcon;
 mod report;
 mod speed;
+mod suspects;
 mod update;
 
 use std::sync::{Mutex, MutexGuard, OnceLock};

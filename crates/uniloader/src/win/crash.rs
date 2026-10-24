@@ -258,7 +258,10 @@ unsafe fn report_crash(pointers: *const EXCEPTION_POINTERS, thread: u32) {
     let Some(reports) = REPORTS.get() else { return };
     // SAFETY: the caller's contract.
     let (code, address) = unsafe { code_and_address(pointers) };
-    super::report::crashed(reports, code, address, |path| {
+    // SAFETY: as above; the context is the faulting thread's, which waits in its handler.
+    let suspect = unsafe { pointers.as_ref().and_then(|p| p.ContextRecord.as_ref()) }
+        .and_then(super::suspects::on_stack);
+    super::report::crashed(reports, code, address, suspect.as_deref(), |path| {
         write_dump(path, Some((pointers, thread)))
     });
 }
