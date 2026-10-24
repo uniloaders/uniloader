@@ -33,6 +33,7 @@ mod inject;
 mod layout;
 mod notices;
 mod registry;
+mod reports;
 mod service;
 mod shared;
 mod ui;
@@ -129,6 +130,8 @@ impl Plugin for OverlayPlugin {
         host.subscribe(topics::PLUGIN_NOT_RUNNING)?;
         host.subscribe(topics::PLUGIN_MISMATCH)?;
         host.subscribe(topics::UPDATE_AVAILABLE)?;
+        host.subscribe(topics::REPORT_READY)?;
+        host.subscribe(topics::REPORT_DONE)?;
         // SAFETY: `service::TABLE` is the `OverlayApi` layout of this version, and every
         // function in it is thread safe.
         let provided = unsafe {
@@ -193,6 +196,9 @@ impl Plugin for OverlayPlugin {
     }
 
     fn on_event(&self, host: &Host, _from: PluginRef, topic: &str, payload: &[u8]) {
+        if reports::on_event(host, topic, payload) {
+            return;
+        }
         if topic == topics::PLUGIN_MISMATCH {
             if let Some(event) = MismatchEvent::parse(payload) {
                 own_dialog(
