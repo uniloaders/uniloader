@@ -39,6 +39,8 @@ use crate::reports::{self, Kind, Marker};
 
 /// Plugins get this long to attach their folders before the previous session is bundled.
 const SETTLE: Duration = Duration::from_secs(20);
+/// Lines of the previous session's log quoted in an `exit` incident.
+const LAST_LINES: usize = 15;
 /// Milliseconds for each step of an upload.
 const UPLOAD_TIMEOUT_MS: i32 = 60_000;
 /// Biggest report sent; a bigger one is only saved.
@@ -204,10 +206,18 @@ fn previous_ended(dir: &Path, previous: Marker) {
     if fs::create_dir_all(&incident).is_err() {
         return;
     }
+    let last = SESSION
+        .get()
+        .and_then(|s| fs::read_to_string(s.logs.join(crate::logging::PREV_LOG_FILE)).ok())
+        .map(|log| reports::last_lines(&log, LAST_LINES))
+        .filter(|l| !l.is_empty())
+        .map_or_else(String::new, |l| {
+            format!("\nThe last lines of its log:\n{l}\n")
+        });
     let text = format!(
         "The session of process {} (started {} UTC) ended without closing normally. No crash \
          dump of the loader's own; the game's own crash report is attached when a plugin \
-         found one.\n",
+         found one.\n{last}",
         previous.pid, since
     );
     let _ = fs::write(incident.join(reports::INFO), info(Kind::Exit, &text));

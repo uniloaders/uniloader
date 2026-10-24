@@ -577,6 +577,15 @@ pub fn settings() -> Vec<uniloader_core::settings::Desc> {
 /// The `report` command's help and usage.
 pub const COMMAND_HELP: &str = "Crash and freeze reports: list them, make one now, send one \
                                 or save it to the Desktop.";
+/// The last `n` lines of a log, redacted as reports are: what a session was doing when it
+/// ended without a word.
+#[must_use]
+pub fn last_lines(log: &str, n: usize) -> String {
+    let lines: Vec<&str> = log.lines().collect();
+    let start = lines.len().saturating_sub(n);
+    redact(&lines[start..].join("\n"))
+}
+
 /// A crash that named none of the loader's modules, in the suspects list.
 pub const NO_SUSPECT: &str = "-";
 

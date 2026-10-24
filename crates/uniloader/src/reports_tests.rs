@@ -176,3 +176,11 @@ fn two_crashes_in_the_same_module_make_a_loop() {
     assert_eq!(crash_loop("coop.dll\n"), None);
     assert_eq!(crash_loop(""), None);
 }
+
+#[test]
+fn the_last_lines_are_kept_and_redacted() {
+    let log = "one\ntwo\njoined 203.0.113.9\nfour\n";
+    assert_eq!(last_lines(log, 2), "joined [ip]\nfour");
+    assert_eq!(last_lines(log, 10), "one\ntwo\njoined [ip]\nfour");
+    assert_eq!(last_lines("", 3), "");
+}
