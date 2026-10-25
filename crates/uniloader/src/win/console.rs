@@ -121,23 +121,6 @@ pub(crate) fn print(line: &str) {
     let _ = out.flush();
 }
 
-/// `HH:MM:SS` of the local clock, for prefixing a console line.
-///
-/// The log file carries full timestamps; the window only needs enough to see how long ago
-/// something happened, and a date on every line would eat the width.
-pub(crate) fn clock() -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    let seconds = now % 86400;
-    format!(
-        "{:02}:{:02}:{:02}",
-        seconds / 3600,
-        (seconds % 3600) / 60,
-        seconds % 60
-    )
-}
-
 /// Start the thread that reads typed lines and executes them.
 ///
 /// Deliberately not part of [`attach`]: that runs before the loader's state exists, and the

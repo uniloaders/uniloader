@@ -361,7 +361,7 @@ unsafe extern "C" fn console_print(_host: *mut c_void, plugin: PluginHandle, lin
     // event as a plugin logging. The scrollback keeps its own clock per line, so only the
     // external window, which prints raw text, gets one written in.
     let line = format!("[INFO ] [{name}] {body}");
-    console::print(&format!("{} {line}", console::clock()));
+    console::print(&format!("{} {line}", crate::scrollback::clock()));
     state().console_print(line);
 }
 

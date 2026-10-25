@@ -107,7 +107,8 @@ pub fn take() -> Vec<(log::Level, String, String)> {
     queue().drain(..).collect()
 }
 
-/// `HH:MM:SS` of the local clock, for stamping a console line.
+/// `HH:MM:SS` UTC, for stamping a console line: the same clock as the log file's timestamps,
+/// so a console line and its log record carry the same time.
 ///
 /// The log file carries full timestamps; the console only needs enough to see how long ago
 /// something happened, and a date on every line would eat the width.
