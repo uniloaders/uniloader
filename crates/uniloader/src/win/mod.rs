@@ -10,9 +10,11 @@
 mod caller;
 mod console;
 mod crash;
+mod crashinfo;
 mod deps;
 mod detour;
 mod dispatch;
+mod dumper;
 mod exec;
 mod foreign;
 mod guard;
@@ -30,6 +32,7 @@ mod report;
 mod speed;
 mod suspects;
 mod update;
+mod wer;
 
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
@@ -147,6 +150,10 @@ fn start_logging(paths: &Paths, process: &Process) -> LoaderConfig {
 }
 
 fn init() -> bool {
+    // The crash dump helper loads this DLL only for its export.
+    if dumper::is_helper() {
+        return false;
+    }
     let paths = paths();
     let process = Process::current();
     let config = start_logging(&paths, &process);

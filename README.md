@@ -32,8 +32,11 @@ From the DayZ loader, made game-agnostic:
   plugin's own threads get the same guard through `uniloader_sdk::guard` (`HookGuard`,
   `service`, `spawn`): a broken hook falls back to the game's original.
 - **Crash reports and crash loops**: dumps of crashes, stack overflows and freezes, logged
-  panics with their frames, sent or saved on the player's say. A plugin or `.asi` on the
-  stack of the last two crashes is left out for one session.
+  panics with their frames, sent or saved on the player's say. A helper process
+  (`rundll32 <loader>,UniloaderDumper`) writes the dumps from outside the game. Each crash's
+  `info.txt` also gives the registers, the stack as module+offset and the module list in
+  words, written before the dump, and Windows Error Reporting's record of the crash is added.
+  A plugin or `.asi` on the stack of the last two crashes is left out for one session.
 
 Game knowledge is not in the loader. It comes from **adapter plugins** that publish services
 to other plugins: an Unreal Engine adapter (objects, names, reflection, the game tick) and an

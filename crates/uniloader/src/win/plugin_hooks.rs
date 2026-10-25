@@ -102,6 +102,30 @@ pub(super) fn accessible_from(address: usize) -> usize {
     (info.BaseAddress as usize + info.RegionSize).saturating_sub(address)
 }
 
+/// For a refused detour: who hooked `target` first, when its entry (`readable` bytes) begins
+/// with a jump (an overlay's hook, as a rule), so the log names the other program.
+fn hooked_by(target: usize, readable: usize) -> String {
+    // SAFETY: `readable` bytes from `target` are committed and accessible (checked by the
+    // caller); only the first instruction's bytes are read.
+    let code = unsafe { core::slice::from_raw_parts(target as *const u8, readable.min(16)) };
+    let Some((to, through)) = super::detour::leading_jump(code, target as u64) else {
+        return String::new();
+    };
+    let mut to = usize::try_from(to).unwrap_or(0);
+    if through {
+        if accessible_from(to) < 8 {
+            return String::new();
+        }
+        // SAFETY: eight accessible bytes, checked above; unaligned reads are fine on x86.
+        to = unsafe { (to as *const usize).read_unaligned() };
+    }
+    let place = super::guard::module_of(to).map_or_else(
+        || "memory of no module".to_owned(),
+        |(m, off)| format!("{m}+{off:#x}"),
+    );
+    format!("; its entry already jumps to {to:#x} ({place}): another program hooked it first")
+}
+
 /// Write bytes into the game's code, returning what was there.
 ///
 /// # Safety
@@ -293,7 +317,8 @@ pub(super) fn detour_with(
     };
 
     let installed = installed.map_err(|e| {
-        log::error!("cannot detour {target:p}: {e}");
+        let hooked = hooked_by(target as usize, readable);
+        log::error!("cannot detour {target:p}: {e}{hooked}");
         Status::UNSUPPORTED
     })?;
     let trampoline = installed.trampoline;

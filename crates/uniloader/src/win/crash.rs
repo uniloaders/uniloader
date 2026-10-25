@@ -2,8 +2,11 @@
 //!
 //! - Dumps: `MiniDumpWriteDump` from `dbghelp.dll`, loaded from the system directory at
 //!   start (never imported, and not loaded in a crashing process). The stacks and registers
-//!   of every thread, the module list and the threads' details; no heap, so a dump is small
-//!   and holds little of the player's data.
+//!   of every thread, the module list, the threads' details and the few bytes the stacks
+//!   point at; no heap beyond that, so a dump is small and holds little of the player's
+//!   data. A helper process writes it from outside the game ([`super::dumper`]); without
+//!   one the game writes it itself. Before the dump, `info.txt` gets the faulting thread's
+//!   registers, its stack and the module list in words ([`super::crashinfo`]).
 //! - Crashes: a game engine usually catches its own crashes and writes its own report (UE's
 //!   `Saved/Crashes`), which [`super::report`] picks up from what plugins attach. For a crash
 //!   it does not catch, an unhandled-exception filter writes `crash.dmp`; the engine may set
@@ -95,8 +98,9 @@ const PING_MS: u32 = 2_000;
 const EVERY: Duration = Duration::from_secs(1);
 /// How often our exception filter is put back in front.
 const REARM_EVERY: Duration = Duration::from_secs(5);
-/// `MiniDumpWithUnloadedModules | MiniDumpWithProcessThreadData | MiniDumpWithThreadInfo`.
-const DUMP_TYPE: i32 = 0x20 | 0x100 | 0x1000;
+/// `MiniDumpWithUnloadedModules | MiniDumpWithIndirectlyReferencedMemory |
+/// MiniDumpWithProcessThreadData | MiniDumpWithThreadInfo`.
+const DUMP_TYPE: i32 = 0x20 | 0x40 | 0x100 | 0x1000;
 /// `EXCEPTION_CONTINUE_SEARCH`.
 const CONTINUE_SEARCH: i32 = 0;
 /// `STATUS_STACK_OVERFLOW`.
@@ -107,7 +111,7 @@ const OVERFLOW_DUMP_MS: u32 = 30_000;
 /// freeze from then on.
 pub(super) const LOADING_CAP: Duration = Duration::from_secs(300);
 
-type MiniDumpFn = unsafe extern "system" fn(
+pub(super) type MiniDumpFn = unsafe extern "system" fn(
     HANDLE,
     u32,
     HANDLE,
@@ -143,6 +147,10 @@ pub(super) fn start(reports: &Path) {
     }
     rearm();
     start_overflow_dumper();
+    let own = super::proxy::forwarding().map(|f| f.own_path.clone());
+    if loaded && !own.as_deref().is_some_and(super::dumper::start) {
+        log::warn!("reports: no dump helper; the game writes its own dumps");
+    }
 }
 
 /// Milliseconds since the first look at this clock.
@@ -167,7 +175,7 @@ pub(super) fn is_loading() -> bool {
     clock() < LOADING_UNTIL.load(Ordering::Acquire)
 }
 
-fn load_minidump() -> Option<MiniDumpFn> {
+pub(super) fn load_minidump() -> Option<MiniDumpFn> {
     let name: Vec<u16> = "dbghelp.dll\0".encode_utf16().collect();
     // SAFETY: NUL terminated name; the search is limited to the system directory.
     let module =
@@ -182,12 +190,13 @@ fn load_minidump() -> Option<MiniDumpFn> {
 }
 
 /// Writes a dump of this process to `path`, for the exception in `exception` (its pointers
-/// and the id of the thread that raised it) or none; whether it was written.
+/// and the id of the thread that raised it) or none; whether it was written. The helper
+/// process writes it when it runs, else this process does.
 pub(super) fn write_dump(path: &Path, exception: Option<(*const EXCEPTION_POINTERS, u32)>) -> bool {
+    if let Some(written) = super::dumper::dump(path, exception) {
+        return written;
+    }
     let Some(Some(dump)) = MINIDUMP.get() else {
-        return false;
-    };
-    let Ok(file) = fs::File::create(path) else {
         return false;
     };
     let info = exception.map(|(pointers, thread)| MINIDUMP_EXCEPTION_INFORMATION {
@@ -195,13 +204,31 @@ pub(super) fn write_dump(path: &Path, exception: Option<(*const EXCEPTION_POINTE
         ExceptionPointers: pointers.cast_mut(),
         ClientPointers: BOOL(0),
     });
+    // SAFETY: plain queries; a pseudo handle of this process.
+    let (process, pid) = unsafe { (GetCurrentProcess(), GetCurrentProcessId()) };
+    // dbghelp reads the exception record `info` points at, which the OS keeps alive while the
+    // filter (or the stack overflow handler waiting for this thread) runs.
+    write_dump_of(*dump, process, pid, path, info)
+}
+
+/// Writes a dump of the process `process` (id `pid`) to `path` with `dump`, for the
+/// exception `info` describes; whether it was written.
+pub(super) fn write_dump_of(
+    dump: MiniDumpFn,
+    process: HANDLE,
+    pid: u32,
+    path: &Path,
+    info: Option<MINIDUMP_EXCEPTION_INFORMATION>,
+) -> bool {
+    let Ok(file) = fs::File::create(path) else {
+        return false;
+    };
     // SAFETY: the process and file handles are live for the call; `info` lives on this stack
-    // frame; dbghelp reads the exception record it points at, which the OS keeps alive while
-    // the filter (or the stack overflow handler waiting for this thread) runs.
+    // frame, its pointers are the caller's to keep alive.
     let written = unsafe {
         dump(
-            GetCurrentProcess(),
-            GetCurrentProcessId(),
+            process,
+            pid,
             HANDLE(file.as_raw_handle()),
             DUMP_TYPE,
             info.as_ref().map_or(core::ptr::null(), core::ptr::from_ref),
@@ -255,13 +282,30 @@ unsafe fn code_and_address(pointers: *const EXCEPTION_POINTERS) -> (u32, usize) 
 /// # Safety
 /// As [`code_and_address`]; `thread` raised it and waits in its handler.
 unsafe fn report_crash(pointers: *const EXCEPTION_POINTERS, thread: u32) {
+    use super::crashinfo;
     let Some(reports) = REPORTS.get() else { return };
     // SAFETY: the caller's contract.
     let (code, address) = unsafe { code_and_address(pointers) };
     // SAFETY: as above; the context is the faulting thread's, which waits in its handler.
-    let suspect = unsafe { pointers.as_ref().and_then(|p| p.ContextRecord.as_ref()) }
-        .and_then(super::suspects::on_stack);
-    super::report::crashed(reports, code, address, suspect.as_deref(), |path| {
+    let context = unsafe { pointers.as_ref().and_then(|p| p.ContextRecord.as_ref()) };
+    let suspect = context.and_then(super::suspects::on_stack);
+    let modules = crashinfo::modules();
+    let mut words = context.map_or_else(String::new, |c| {
+        format!(
+            "{}\n{}\n",
+            crashinfo::registers(c),
+            crashinfo::stack(c, &modules)
+        )
+    });
+    words.push_str(&crashinfo::module_list(&modules));
+    let crash = super::report::Crash {
+        code,
+        address,
+        place: crashinfo::named(&modules, address as u64),
+        suspect: suspect.as_deref(),
+        words: &words,
+    };
+    super::report::crashed(reports, &crash, |path| {
         write_dump(path, Some((pointers, thread)))
     });
 }
@@ -467,6 +511,11 @@ pub(super) fn watch(tell: fn(&Seen)) {
                     }
                 }
                 let Some(hwnd) = window else { continue };
+                // A crash is being handled (its dump, the engine's own crash reporter): the
+                // silent window is that, not a freeze.
+                if CRASHES.load(Ordering::Acquire) > 0 {
+                    continue;
+                }
                 // A freeze that began before the load was said keeps counting.
                 if dumps == 0 && is_loading() {
                     silent_since = None;

@@ -164,6 +164,24 @@ pub(super) fn start(paths: &Paths) {
         .spawn(move || {
             let dir = incidents_dir;
             std::thread::sleep(SETTLE);
+            if super::dumper::ready() {
+                log::info!(
+                    "reports: the dump helper runs; dumps are written from outside the game"
+                );
+            }
+            // Overlays and recorders inject their hooks by now; a crash in a hook of theirs
+            // looks like ours.
+            let modules = super::crashinfo::modules();
+            if modules.is_empty() {
+                log::warn!("reports: cannot list the game's modules");
+            }
+            let others = super::crashinfo::other_programs(&modules);
+            if !others.is_empty() {
+                log::info!(
+                    "modules of other programs in the game: {}",
+                    others.join(", ")
+                );
+            }
             // After the settle time, so the incident's plugin list is this start's whole one
             // (the same plugins, as a rule, as the session that ended).
             if let Some(previous) = previous.filter(|m| !m.closing) {
@@ -393,41 +411,51 @@ fn seen(what: &Seen) {
     }
 }
 
-/// From the exception filter: a crash incident with the dump `dump` writes, what faulted
-/// and the first loaded module on the stack (`suspect`, [`super::suspects`]). Takes no lock
-/// the crashing thread might hold.
-pub(super) fn crashed(
-    dir: &Path,
-    code: u32,
-    address: usize,
-    suspect: Option<&str>,
-    dump: impl FnOnce(&Path) -> bool,
-) {
-    super::suspects::record(dir, suspect);
+/// What faulted, for [`crashed`].
+pub(super) struct Crash<'a> {
+    pub(super) code: u32,
+    pub(super) address: usize,
+    /// The address as `module+offset`.
+    pub(super) place: String,
+    /// The first loaded module on the stack ([`super::suspects`]).
+    pub(super) suspect: Option<&'a str>,
+    /// Registers, stack and modules in words ([`super::crashinfo`]).
+    pub(super) words: &'a str,
+}
+
+/// From the exception filter: a crash incident with what faulted and the dump `dump`
+/// writes. Takes no lock the crashing thread might hold.
+pub(super) fn crashed(dir: &Path, crash: &Crash<'_>, dump: impl FnOnce(&Path) -> bool) {
+    super::suspects::record(dir, crash.suspect);
     let incident = dir.join(reports::incident_name(now(), Kind::Crash));
     if fs::create_dir_all(&incident).is_err() {
         return;
     }
-    let module = super::guard::module_of(address)
-        .map(|(m, off)| format!(" ({m}+{off:#x})"))
-        .unwrap_or_default();
-    let what = if code == crash::STACK_OVERFLOW {
+    let what = if crash.code == crash::STACK_OVERFLOW {
         " (stack overflow)"
     } else {
         ""
     };
-    let stack = suspect.map_or_else(String::new, |s| format!("{s} is on the crashing stack\n"));
+    let stack = crash
+        .suspect
+        .map_or_else(String::new, |s| format!("{s} is on the crashing stack\n"));
     let text = format!(
-        "{}\nexception {code:#010x}{what} at {address:#x}{module}\n{stack}",
-        Kind::Crash.headline()
+        "{}\nexception {:#010x}{what} at {:#x} ({})\n{stack}",
+        Kind::Crash.headline(),
+        crash.code,
+        crash.address,
+        crash.place
     );
     // What faulted goes to disk before the dump: a process that dies while dbghelp writes
     // (a stack overflow's dumper thread runs out of time) kept only an empty crash.dmp and
     // no reason (a friend's Windows game, 2026-10-25).
     let info = incident.join(reports::INFO);
-    let _ = fs::write(&info, &text);
+    let _ = fs::write(&info, format!("{text}\n{}", crash.words));
     let written = dump(&incident.join("crash.dmp"));
-    let _ = fs::write(info, format!("{text}dump written: {written}\n"));
+    let _ = fs::write(
+        info,
+        format!("{text}dump written: {written}\n\n{}", crash.words),
+    );
 }
 
 /// Bundles every incident folder into its zip, then keeps the newest [`reports::KEEP`].
@@ -437,18 +465,63 @@ fn bundle_all() {
     if let Some(previous) = session.previous {
         game_crashed(session, previous);
     }
+    let exe = super::proxy::module_path(None)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
     for (name, dir) in incidents(&session.dir) {
         let current = lock(&FREEZE).as_deref() == Some(dir.as_path());
         if current {
             continue;
+        }
+        // Windows' own report of the previous session's end, for an incident of that session.
+        if let Some(previous) = session
+            .previous
+            .filter(|_| reports::kind_of(&name) != Some(Kind::Manual))
+        {
+            if name >= reports::stamp(previous.started) {
+                let found = super::wer::collect(&dir, &exe, previous.started);
+                if found > 0 {
+                    log::info!("reports: {found} Windows error report(s) added to {name}");
+                }
+            }
         }
         bundle(session, &name, &dir, since);
     }
     reports::prune(&session.dir);
 }
 
+/// Removes the empty dumps in `dir` (the game ended while one was written); a line for
+/// `info.txt` about each.
+fn drop_empty_dumps(dir: &Path) -> String {
+    fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let empty = entry.metadata().is_ok_and(|m| m.is_file() && m.len() == 0);
+            if !empty || reports::content_of(&name) != Some(reports::Content::Dump) {
+                return None;
+            }
+            let _ = fs::remove_file(entry.path());
+            Some(format!(
+                "{name} was empty (the game ended while it was written); left out\n"
+            ))
+        })
+        .collect()
+}
+
 /// The zip of one incident; its name.
 fn bundle(session: &Session, name: &str, dir: &Path, since: Option<u64>) -> Option<String> {
+    let empty = drop_empty_dumps(dir);
+    if !empty.is_empty() {
+        let info = dir.join(reports::INFO);
+        if let Ok(text) = fs::read_to_string(&info) {
+            let (head, rest) = text.split_once("\n\n").unwrap_or((&text, ""));
+            let _ = fs::write(&info, format!("{head}\n{empty}\n{rest}"));
+        }
+    }
     let mut parts = reports::parts_of(dir, "report", None);
     parts.extend(reports::parts_of(&session.logs, "logs", None));
     let mut attached = Vec::new();

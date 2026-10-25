@@ -95,6 +95,26 @@ fn stolen_length(code: &[u8], address: u64) -> Result<usize, String> {
     }
 }
 
+/// Where an entry that begins with a jump goes: another program's hook, as a rule. A
+/// `jmp rel32` gives its target, a `jmp qword [rip+x]` the address of the pointer it jumps
+/// through (`true`).
+pub(super) fn leading_jump(code: &[u8], address: u64) -> Option<(u64, bool)> {
+    let mut decoder = Decoder::with_ip(64, code, address, DecoderOptions::NONE);
+    if !decoder.can_decode() {
+        return None;
+    }
+    let instruction = decoder.decode();
+    match instruction.flow_control() {
+        FlowControl::UnconditionalBranch => {
+            Some((instruction.near_branch_target(), false)).filter(|(to, _)| *to != 0)
+        }
+        FlowControl::IndirectBranch if instruction.is_ip_rel_memory_operand() => {
+            Some((instruction.ip_rel_memory_address(), true))
+        }
+        _ => None,
+    }
+}
+
 /// `jmp qword [rip+0]; <address>`: an absolute jump that clobbers no register.
 fn absolute_jump(to: usize) -> [u8; ABSOLUTE_JUMP_LEN] {
     let mut bytes = [0u8; ABSOLUTE_JUMP_LEN];
@@ -267,6 +287,11 @@ mod tests {
 
         // jmp rel32 as the very first instruction: a thunk, not a function body.
         let jump = [0xE9, 0x00, 0x10, 0x00, 0x00, 0x90];
+        assert_eq!(leading_jump(&jump, 0x1000), Some((0x2005, false)));
+        // jmp qword [rip+0x10]: through a pointer at the next instruction + 0x10.
+        let through = [0xFF, 0x25, 0x10, 0x00, 0x00, 0x00];
+        assert_eq!(leading_jump(&through, 0x1000), Some((0x1016, true)));
+        assert_eq!(leading_jump(&[0x55, 0x48, 0x89, 0xE5], 0x1000), None);
         let refusal = stolen_length(&jump, 0x1000);
         assert!(
             matches!(&refusal, Err(e) if e.contains("changes control flow")),

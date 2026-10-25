@@ -115,7 +115,7 @@ pub(super) fn on_stack(context: &CONTEXT) -> Option<String> {
 }
 
 /// One frame up: `context` becomes its caller's. Whether that worked.
-fn unwind(context: &mut CONTEXT) -> bool {
+pub(super) fn unwind(context: &mut CONTEXT) -> bool {
     let mut base = 0u64;
     // SAFETY: a lookup in this process's loaded modules' tables.
     let entry = unsafe { RtlLookupFunctionEntry(context.Rip, &raw mut base, None) };
