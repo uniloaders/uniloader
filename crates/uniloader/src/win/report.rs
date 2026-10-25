@@ -408,7 +408,6 @@ pub(super) fn crashed(
     if fs::create_dir_all(&incident).is_err() {
         return;
     }
-    let written = dump(&incident.join("crash.dmp"));
     let module = super::guard::module_of(address)
         .map(|(m, off)| format!(" ({m}+{off:#x})"))
         .unwrap_or_default();
@@ -419,11 +418,16 @@ pub(super) fn crashed(
     };
     let stack = suspect.map_or_else(String::new, |s| format!("{s} is on the crashing stack\n"));
     let text = format!(
-        "{}\nexception {code:#010x}{what} at {address:#x}{module}; dump written: \
-         {written}\n{stack}",
+        "{}\nexception {code:#010x}{what} at {address:#x}{module}\n{stack}",
         Kind::Crash.headline()
     );
-    let _ = fs::write(incident.join(reports::INFO), text);
+    // What faulted goes to disk before the dump: a process that dies while dbghelp writes
+    // (a stack overflow's dumper thread runs out of time) kept only an empty crash.dmp and
+    // no reason (a friend's Windows game, 2026-10-25).
+    let info = incident.join(reports::INFO);
+    let _ = fs::write(&info, &text);
+    let written = dump(&incident.join("crash.dmp"));
+    let _ = fs::write(info, format!("{text}dump written: {written}\n"));
 }
 
 /// Bundles every incident folder into its zip, then keeps the newest [`reports::KEEP`].
@@ -505,7 +509,9 @@ fn bundle(session: &Session, name: &str, dir: &Path, since: Option<u64>) -> Opti
     }
 }
 
-/// Offers the newest undecided report (older ones are not asked about again).
+/// Offers the newest undecided report. Older undecided ones were offered to a session that
+/// ended before the player could answer (a crash at every start never shows the prompt), so
+/// they go to the Desktop instead of being asked about again.
 fn offer_newest() {
     let Some(session) = SESSION.get() else { return };
     let pending = reports::pending(&session.dir);
@@ -513,7 +519,9 @@ fn offer_newest() {
         return;
     };
     for name in older {
-        reports::mark_done(&session.dir, name, "skipped");
+        if save_to_desktop(session, name).is_none() {
+            reports::mark_done(&session.dir, name, "skipped");
+        }
     }
     offer(session, newest, setting() == reports::DESKTOP);
 }
