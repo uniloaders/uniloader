@@ -261,6 +261,14 @@ unsafe extern "system" fn procedure(
             })
             .unwrap_or(false);
     if swallow {
+        if msg == WM_INPUT {
+            // Kept from the game, but the default procedure frees the raw input it carries,
+            // which Windows asks of every `WM_INPUT` handler.
+            // SAFETY: forwarding our own arguments to the default procedure.
+            return unsafe {
+                windows::Win32::UI::WindowsAndMessaging::DefWindowProcW(hwnd, msg, wparam, lparam)
+            };
+        }
         return LRESULT(0);
     }
     let previous = PREVIOUS.load(Ordering::Acquire);
@@ -368,6 +376,12 @@ fn push(events: &mut Vec<Event>, event: Event) {
 fn record(msg: u32, wparam: WPARAM, lparam: LPARAM, capturing: bool) -> bool {
     match msg {
         WM_MOUSEMOVE => {
+            if !shared::is_visible() {
+                // Nobody reads the pointer while hidden: no cursor queries for every move of
+                // a 1000 Hz mouse, only where it was last, for when the overlay opens.
+                pending().pointer = client_position(lparam);
+                return true;
+            }
             let held = cursor_held();
             let mut guard = pending();
             if !held {
@@ -480,7 +494,8 @@ fn keyboard(msg: u32, wparam: WPARAM, lparam: LPARAM) {
     }
     let mut guard = pending();
     // egui expects the pasted text as an event rather than reading the clipboard itself.
-    if pressed && modifiers.ctrl && vk == u16::from(b'V') {
+    // Only while shown: reading the clipboard can wait on the program that owns it.
+    if pressed && modifiers.ctrl && vk == u16::from(b'V') && shared::is_visible() {
         if let Some(text) = clipboard::text() {
             push(&mut guard.events, Event::Paste(text));
         }
