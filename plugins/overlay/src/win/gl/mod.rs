@@ -43,8 +43,10 @@ static REFUSED: AtomicBool = AtomicBool::new(false);
 static DRAWABLE: AtomicBool = AtomicBool::new(false);
 
 /// How long a game is watched for loading `opengl32.dll` after the plugin started.
-const WATCH_FOR: Duration = Duration::from_secs(60);
+const WATCH_FOR: Duration = Duration::from_secs(90);
 const WATCH_EVERY: Duration = Duration::from_millis(250);
+/// How long after the plugin started a DXGI present still says "not an `OpenGL` game".
+const DXGI_GRACE: Duration = Duration::from_secs(15);
 
 thread_local! {
     static OVERLAY: RefCell<Option<GlOverlay>> = const { RefCell::new(None) };
@@ -59,16 +61,23 @@ struct GlOverlay {
     started: Instant,
 }
 
-/// Hook `wglSwapBuffers` now if `opengl32.dll` is loaded, else watch for it a while.
-pub(crate) fn install(host: &Host) {
-    if hook(host) {
-        return;
-    }
+/// Hook `wglSwapBuffers` once it is clear the game draws with `OpenGL`: `opengl32.dll` is
+/// loaded and no DXGI present came for [`DXGI_GRACE`]. A `Direct3D` game often has the
+/// library loaded by another program (an overlay, a recorder) that hooked `wglSwapBuffers`
+/// itself; detouring it there would only patch code inside that program's hook chain. Under
+/// Wine's own `Direct3D` (wined3d) DXGI presents end in `wglSwapBuffers`, which would also
+/// draw the overlay twice. The renderer is made on the first frame drawn, so hooking late
+/// costs a game nothing but the overlay's first seconds.
+pub(crate) fn install() {
     let watcher = uniloader_sdk::guard::spawn("overlay-gl-watch", || {
-        let until = Instant::now() + WATCH_FOR;
-        while Instant::now() < until {
+        let started = Instant::now();
+        while started.elapsed() < WATCH_FOR {
             std::thread::sleep(WATCH_EVERY);
-            if crate::host().is_some_and(hook) {
+            if super::dxgi_presented() {
+                log::debug!("the game presents through DXGI; wglSwapBuffers is left alone");
+                return;
+            }
+            if started.elapsed() >= DXGI_GRACE && crate::host().is_some_and(hook) {
                 return;
             }
         }
@@ -123,7 +132,8 @@ unsafe extern "system" fn swap_buffers(hdc: HDC) -> BOOL {
     if real == 0 {
         return BOOL(0);
     }
-    if !IN_FRAME.with(Cell::get) {
+    // A game that began presenting through DXGI after all: that hook draws.
+    if !IN_FRAME.with(Cell::get) && !super::dxgi_recent() {
         IN_FRAME.with(|f| f.set(true));
         // The game's own code is below us: a panic unwinding into it would abort the
         // process, a fault would crash it (a fault disables the plugin).

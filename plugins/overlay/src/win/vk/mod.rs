@@ -214,7 +214,19 @@ impl Loader {
 }
 
 /// Hook Vulkan now if `vulkan-1.dll` is loaded, else watch for it a while.
+///
+/// On Windows itself only for a game whose executable imports `vulkan-1.dll`: the probe makes
+/// a real instance and device, which loads every installed implicit layer (overlays, capture
+/// tools, switchable-graphics layers) and the GPU's Vulkan driver into the game, and a
+/// `Direct3D` game that has the library loaded (by one of those tools, as a rule) presents
+/// through DXGI anyway. A Vulkan game that loads the library at run time therefore gets no
+/// overlay on Windows. Under Wine every `Direct3D` game runs on Vulkan and this path is the
+/// tested one, so it stays as it is there.
 pub(crate) fn install(host: &Host) {
+    if !super::under_wine() && !super::exe_imports("vulkan-1.dll") {
+        log::info!("no Vulkan overlay: the game does not import vulkan-1.dll");
+        return;
+    }
     if try_install(host) {
         return;
     }

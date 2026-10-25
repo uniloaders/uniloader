@@ -55,6 +55,95 @@ fn millis_since_epoch() -> u64 {
     u64::try_from(EPOCH.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
+/// Whether DXGI presented at all this session.
+fn dxgi_presented() -> bool {
+    DXGI_PRESENTED.load(Ordering::Relaxed) != 0
+}
+
+/// Whether this process runs under Wine (Proton included): its `ntdll` says so.
+#[allow(unsafe_code, reason = "two plain lookups in a loaded module")]
+fn under_wine() -> bool {
+    use windows::core::{s, w};
+    use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
+    // SAFETY: a constant name of a module every process has.
+    let Ok(ntdll) = (unsafe { GetModuleHandleW(w!("ntdll.dll")) }) else {
+        return false;
+    };
+    // SAFETY: a loaded module and a constant export name.
+    unsafe { GetProcAddress(ntdll, s!("wine_get_version")) }.is_some()
+}
+
+/// Whether the game's executable imports `dll` (by name, any case), directly or delay-loaded:
+/// read from its import directories in memory.
+#[allow(unsafe_code, reason = "reads of the mapped executable's own headers")]
+fn exe_imports(dll: &str) -> bool {
+    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    // SAFETY: a null name asks for the executable's own module.
+    let Ok(module) = (unsafe { GetModuleHandleW(None) }) else {
+        return false;
+    };
+    let base = module.0 as usize;
+    let size = image_size(base);
+    let read = |offset: usize| -> Option<u32> {
+        (offset.checked_add(4)? <= size).then(|| {
+            // SAFETY: `base` is the mapped executable, whose `size` bytes are readable, and
+            // the read ends inside them (checked above).
+            unsafe { core::ptr::read_unaligned((base + offset) as *const u32) }
+        })
+    };
+    let Some(nt) = read(0x3C).map(|v| v as usize) else {
+        return false;
+    };
+    // PE32+: data directories at optional header + 112; import is #1, delay import #13.
+    let directories = nt + 24 + 112;
+    let names = |directory: usize, entry_size: usize, name_at: usize| -> Vec<String> {
+        let Some(rva) = read(directories + directory * 8).map(|v| v as usize) else {
+            return Vec::new();
+        };
+        let mut found = Vec::new();
+        let mut entry = rva;
+        while rva != 0 && found.len() < 512 {
+            match read(entry + name_at).map(|v| v as usize) {
+                Some(name) if name != 0 => found.push(ascii_at(base, name, size)),
+                _ => break,
+            }
+            entry += entry_size;
+        }
+        found
+    };
+    let imports = names(1, 20, 12).into_iter().chain(names(13, 32, 4));
+    imports
+        .into_iter()
+        .any(|name| name.eq_ignore_ascii_case(dll))
+}
+
+/// `SizeOfImage` of the module at `base` (PE32+), or 0.
+#[allow(unsafe_code, reason = "reads of a mapped module's headers")]
+fn image_size(base: usize) -> usize {
+    // SAFETY: `base` is a mapped module: its DOS header and NT headers are readable.
+    unsafe {
+        let nt = core::ptr::read_unaligned((base + 0x3C) as *const u32) as usize;
+        if nt > 0x1000 {
+            return 0;
+        }
+        core::ptr::read_unaligned((base + nt + 0x50) as *const u32) as usize
+    }
+}
+
+/// The NUL terminated ASCII string at `rva` in the module at `base` of `size` bytes.
+#[allow(unsafe_code, reason = "reads inside a mapped module")]
+fn ascii_at(base: usize, rva: usize, size: usize) -> String {
+    let end = size.min(rva.saturating_add(260));
+    let bytes: Vec<u8> = (rva..end)
+        .map(|at| {
+            // SAFETY: inside the module's `size` mapped bytes (`end` is at most `size`).
+            unsafe { core::ptr::read((base + at) as *const u8) }
+        })
+        .take_while(|b| *b != 0)
+        .collect();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
 /// Says through the `drawing` setting whether the overlay draws in this game.
 fn announce(host: &Host, drawing: bool) {
     if let Err(e) = host.set("drawing", if drawing { "true" } else { "false" }) {
@@ -168,7 +257,7 @@ pub(crate) fn install(host: &Host) {
     // Started before any present can arrive, so the first one measures from it.
     LazyLock::force(&EPOCH);
     hooks::install(host);
-    gl::install(host);
+    gl::install();
     vk::install(host);
 }
 
