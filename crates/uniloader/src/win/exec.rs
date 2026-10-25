@@ -25,7 +25,7 @@ impl Effects for Platform {
 
     fn perform(&self, outcome: Outcome) -> (Status, Vec<String>) {
         for persist in outcome.persist {
-            persist.write();
+            persist.queue();
         }
         dispatch::deliver(outcome.notify);
         if let Some(action) = outcome.hotkey {

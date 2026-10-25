@@ -264,7 +264,7 @@ pub(super) unsafe extern "C" fn hotkey_rebind(
     let saved = state().rebind_hotkey(&text(name), &text(binding));
     match saved {
         Ok(persist) => {
-            persist.write();
+            persist.queue();
             Status::OK
         }
         Err(status) => status,

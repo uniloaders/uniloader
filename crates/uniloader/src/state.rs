@@ -153,7 +153,26 @@ pub(crate) fn write_atomic(path: &std::path::Path, text: &str) -> std::io::Resul
 }
 
 impl Persist {
-    /// Writes the file, unless a later set of it was written already (two sets can race
+    /// Hands the file to the writer thread ([`crate::persist`]), which writes the newest
+    /// version of each file a moment later: the caller may be the game's or the render
+    /// thread, and a slider drag sets a value every frame.
+    pub fn queue(self) {
+        crate::persist::queue(self);
+    }
+
+    /// The file this writes.
+    #[must_use]
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
+    /// Its place in the order of sets; a higher one is newer.
+    #[must_use]
+    pub fn seq(&self) -> u64 {
+        self.seq
+    }
+
+    /// Writes the file now, unless a later set of it was written already (two sets can race
     /// between the lock and here). Writes of one file wait for each other; writes of
     /// different files do not.
     pub fn write(self) {

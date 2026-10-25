@@ -258,7 +258,7 @@ unsafe extern "C" fn setting_set(
     match outcome {
         Ok(changed) => {
             if let Some(persist) = changed.persist {
-                persist.write();
+                persist.queue();
             }
             plugins::deliver(changed.notify.into_iter().collect());
             Status::OK

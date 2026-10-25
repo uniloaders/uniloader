@@ -279,6 +279,7 @@ fn quit() -> Vec<String> {
     log::info!("quit requested from the console");
     std::thread::spawn(|| {
         plugins::stop_all();
+        crate::persist::flush();
         std::process::exit(0);
     });
     vec!["stopping plugins and closing the game".to_owned()]
@@ -324,6 +325,7 @@ pub(crate) fn shutdown(terminating: bool) {
     report::ending();
     if !terminating {
         plugins::stop_all();
+        crate::persist::flush();
         log::info!("loader shut down");
     }
 }

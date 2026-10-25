@@ -18,6 +18,7 @@ mod config;
 mod console;
 mod described;
 mod logging;
+mod persist;
 mod process;
 mod rcon;
 mod reports;

@@ -455,7 +455,7 @@ pub(super) fn action(name: &str) -> Result<String, Status> {
         status
     })?;
     if let Some(persist) = changed.persist {
-        persist.write();
+        persist.queue();
     }
     super::dispatch::deliver(changed.notify.into_iter().collect());
     Ok(format!("{key} = {value}"))
