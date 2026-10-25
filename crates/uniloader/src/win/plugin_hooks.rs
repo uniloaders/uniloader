@@ -108,11 +108,11 @@ fn hooked_by(target: usize, readable: usize) -> String {
     // SAFETY: `readable` bytes from `target` are committed and accessible (checked by the
     // caller); only the first instruction's bytes are read.
     let code = unsafe { core::slice::from_raw_parts(target as *const u8, readable.min(16)) };
-    let Some((to, through)) = super::detour::leading_jump(code, target as u64) else {
+    let Some(jump) = super::detour::leading_jump(code, target as u64) else {
         return String::new();
     };
-    let mut to = usize::try_from(to).unwrap_or(0);
-    if through {
+    let mut to = usize::try_from(jump.to).unwrap_or(0);
+    if jump.through {
         if accessible_from(to) < 8 {
             return String::new();
         }
