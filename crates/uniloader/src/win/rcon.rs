@@ -15,6 +15,18 @@ use super::{exec, state};
 
 static SERVER: Mutex<Option<Server>> = Mutex::new(None);
 
+/// [`reconfigure`] on a thread of its own. Two of them in a row are fine: each reads the
+/// settings when it runs and they take turns on [`SERVER`].
+pub(super) fn reconfigure_later() {
+    let spawned = std::thread::Builder::new()
+        .name("uniloader-rcon-config".to_owned())
+        .spawn(reconfigure);
+    if let Err(e) = spawned {
+        log::warn!("rcon: no thread to restart on ({e}); restarting here");
+        reconfigure();
+    }
+}
+
 /// Stop the server if it runs, then start it again if the settings say so.
 pub(super) fn reconfigure() {
     let (values, audit) = {

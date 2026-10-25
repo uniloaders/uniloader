@@ -97,7 +97,9 @@ pub(crate) fn deliver(notifications: Vec<Notify>) {
             if key == crate::speed::SPEED {
                 super::speed::apply(&value);
             } else if key.starts_with("rcon") {
-                super::rcon::reconfigure();
+                // Restarting the server waits for its listener (up to a second): not on the
+                // setter's thread, which may be the game's.
+                super::rcon::reconfigure_later();
             } else if key.starts_with("update") {
                 super::update::start();
             }
