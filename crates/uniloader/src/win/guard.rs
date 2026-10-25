@@ -180,4 +180,35 @@ mod tests {
         let result: Result<(), Fault> = unsafe { call(|| panic!("plugin bug")) };
         assert_eq!(result, Err(Fault::Panic));
     }
+
+    /// The second overflow on one thread is contained as well: the first one's guard page
+    /// was put back. Without that the process ends at the second one.
+    #[cfg(target_env = "msvc")]
+    #[test]
+    fn a_thread_survives_two_stack_overflows() {
+        fn deeper(n: u64) -> u64 {
+            let pad = std::hint::black_box([n; 64]);
+            if n == u64::MAX {
+                return 0;
+            }
+            deeper(n + 1).wrapping_add(pad[7])
+        }
+        let overflowed = std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                (0..2)
+                    .map(|_| {
+                        // SAFETY: plain Rust; the overflow is what is contained.
+                        let outcome = unsafe { call(|| deeper(0)) };
+                        matches!(outcome, Err(Fault::Exception(code, _))
+                            if code == super::super::crash::STACK_OVERFLOW)
+                    })
+                    .collect::<Vec<bool>>()
+            })
+            .map(std::thread::JoinHandle::join);
+        assert!(
+            matches!(overflowed, Ok(Ok(ref both)) if both == &[true, true]),
+            "{overflowed:?}"
+        );
+    }
 }
