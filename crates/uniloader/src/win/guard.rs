@@ -73,7 +73,12 @@ pub(crate) unsafe fn call<R>(f: impl FnOnce() -> R) -> Result<R, Fault> {
     match outcome {
         Ok(()) if panicked => Err(Fault::Panic),
         Ok(()) => slot.ok_or(Fault::Panic),
-        Err((code, address)) => Err(Fault::Exception(code, address)),
+        Err((code, address)) => {
+            if code == super::crash::STACK_OVERFLOW {
+                inner::overflow_contained();
+            }
+            Err(Fault::Exception(code, address))
+        }
     }
 }
 
@@ -89,6 +94,41 @@ mod inner {
     /// address.
     pub(super) fn protect(f: impl FnMut()) -> Result<(), (u32, usize)> {
         microseh::try_seh(f).map_err(|e| (e.raw_code(), e.address() as usize))
+    }
+
+    /// A stack overflow was caught and the stack unwound: the thread's guard page was used
+    /// up by it, so the next overflow on this thread would end the process with no handler
+    /// and no report. The CRT's `_resetstkoflw` puts it back; it is looked up at run time
+    /// (`ucrtbase.dll`, which every Rust MSVC build loads, else `msvcrt.dll`) so a C runtime
+    /// without it costs the re-arm, not the loader. The crash count the overflow handler
+    /// raised goes back too: the game lives on, and the watchdog and the next real crash
+    /// must not stay muted (the report written for the overflow stays, it names the plugin).
+    pub(super) fn overflow_contained() {
+        use windows::core::{s, w};
+        use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
+        type Reset = unsafe extern "C" fn() -> i32;
+        let reset = [w!("ucrtbase.dll"), w!("msvcrt.dll")]
+            .into_iter()
+            .find_map(|name| {
+                // SAFETY: a constant NUL terminated name; no reference is taken.
+                let module = unsafe { GetModuleHandleW(name) }.ok()?;
+                // SAFETY: a loaded module and a constant export name.
+                unsafe { GetProcAddress(module, s!("_resetstkoflw")) }
+            });
+        let restored = reset.is_some_and(|f| {
+            // SAFETY: `_resetstkoflw` takes nothing and returns whether it worked; it is
+            // called after the unwind, outside any handler, as it must be.
+            unsafe { core::mem::transmute::<unsafe extern "system" fn() -> isize, Reset>(f)() != 0 }
+        });
+        super::super::crash::overflow_contained();
+        log::error!(
+            "a stack overflow was contained; the thread's guard page {}",
+            if restored {
+                "is back"
+            } else {
+                "could not be restored, so another overflow on it ends the game"
+            }
+        );
     }
 
     /// The file name of the module holding `address` and the offset into it.
@@ -123,6 +163,9 @@ mod inner {
     pub(super) fn module_of(_address: usize) -> Option<(String, usize)> {
         None
     }
+
+    /// Never reached: nothing is contained without the structured handler.
+    pub(super) fn overflow_contained() {}
 }
 
 #[cfg(test)]

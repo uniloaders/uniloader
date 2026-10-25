@@ -105,8 +105,9 @@ const DUMP_TYPE: i32 = 0x20 | 0x40 | 0x100 | 0x1000;
 const CONTINUE_SEARCH: i32 = 0;
 /// `STATUS_STACK_OVERFLOW`.
 pub(super) const STACK_OVERFLOW: u32 = 0xC000_00FD;
-/// How long an overflowing thread waits for its dump.
-const OVERFLOW_DUMP_MS: u32 = 30_000;
+/// How long an overflowing thread waits for its dump: the helper's own wait plus time for
+/// `info.txt`, so the process is still alive while the helper reads it.
+const OVERFLOW_DUMP_MS: u32 = super::dumper::DUMP_WAIT_MS + 15_000;
 /// The longest a load keeps the watchdog quiet; a load said to go on longer counts as a
 /// freeze from then on.
 pub(super) const LOADING_CAP: Duration = Duration::from_secs(300);
@@ -288,7 +289,14 @@ unsafe fn report_crash(pointers: *const EXCEPTION_POINTERS, thread: u32) {
     let (code, address) = unsafe { code_and_address(pointers) };
     // SAFETY: as above; the context is the faulting thread's, which waits in its handler.
     let context = unsafe { pointers.as_ref().and_then(|p| p.ContextRecord.as_ref()) };
-    let suspect = context.and_then(super::suspects::on_stack);
+    // The walk reads the crashed stack, which may point anywhere: a fault in it is contained
+    // and names no suspect, rather than ending the process before the report exists.
+    let suspect = context.and_then(|c| {
+        // SAFETY: plain Rust over the context the caller vouches for.
+        unsafe { super::guard::call(|| super::suspects::on_stack(c)) }
+            .ok()
+            .flatten()
+    });
     let modules = crashinfo::modules();
     let mut words = context.map_or_else(String::new, |c| {
         format!(
@@ -371,6 +379,12 @@ fn start_overflow_dumper() {
     if unsafe { AddVectoredExceptionHandler(1, Some(on_exception)) }.is_null() {
         log::warn!("reports: no stack overflow dumps (no handler)");
     }
+}
+
+/// A stack overflow the fault guard contained: the game goes on, so the crash the overflow
+/// handler counted is not the session's end, and the watchdog and the filter work again.
+pub(super) fn overflow_contained() {
+    CRASHES.store(0, Ordering::Release);
 }
 
 fn handle(value: usize) -> HANDLE {

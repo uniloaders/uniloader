@@ -41,7 +41,7 @@ use windows::Win32::System::Threading::{
 /// UTF-16 units of the dump's path, NUL included.
 const PATH_LEN: usize = 1024;
 /// How long the game waits for the helper's dump.
-const DUMP_WAIT_MS: u32 = 60_000;
+pub(super) const DUMP_WAIT_MS: u32 = 60_000;
 /// The export rundll32 calls.
 const ENTRY: &str = "UniloaderDumper";
 
