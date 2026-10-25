@@ -37,6 +37,7 @@ mod host;
 mod logger;
 mod meta;
 mod plugin;
+mod posted;
 mod registry;
 mod settings;
 

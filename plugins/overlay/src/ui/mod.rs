@@ -295,10 +295,10 @@ impl Gui {
         }
         resolve(host, &after.painted);
         if let Some(line) = after.submitted {
-            if let Err(e) = host.console_exec(&line) {
-                log::debug!("console line {line:?}: {e}");
-            }
-            self.console.ran(host);
+            // Not here: this is the render thread, which must not wait for a busy console
+            // nor run a `plugin load` or a script inline.
+            host.console_post(&line);
+            self.console.ran();
         }
     }
 }

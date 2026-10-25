@@ -8,6 +8,7 @@ mod complete;
 mod view;
 
 use std::collections::VecDeque;
+use std::time::{Duration, Instant};
 
 use egui::{Context, Key, Modifiers, RichText, TextEdit};
 use uniloader_sdk::{ConsoleEntry, Host};
@@ -21,6 +22,8 @@ const HISTORY: usize = 100;
 const SCROLLBACK: usize = 2000;
 /// Room kept right of the input box for the Run button.
 const RUN_BUTTON_WIDTH: f32 = 44.0;
+/// How long after a submitted line its output may still bring new names.
+const NAMES_AFTER: Duration = Duration::from_secs(5);
 
 /// What the input box's keys asked for this frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,6 +70,9 @@ pub(crate) struct ConsolePanel {
     mark: u64,
     /// What Tab completes against, refreshed when the console opens and after each command.
     names: Vec<String>,
+    /// A submitted line runs on the console thread: until this moment the names are read
+    /// again whenever something was printed (its echo comes first, its effects later).
+    names_due: Option<Instant>,
 }
 
 impl Default for ConsolePanel {
@@ -86,6 +92,7 @@ impl Default for ConsolePanel {
             lines: VecDeque::new(),
             mark: 0,
             names: Vec::new(),
+            names_due: None,
         }
     }
 }
@@ -97,15 +104,20 @@ impl ConsolePanel {
         self.names = host.console_names();
     }
 
-    /// Called after a submitted line ran: it may have loaded a plugin with new names.
-    pub(crate) fn ran(&mut self, host: &Host) {
-        self.names = host.console_names();
+    /// Called when a line was submitted: it may load a plugin with new names (or define an
+    /// alias), which [`ConsolePanel::pull`] picks up once the line printed.
+    pub(crate) fn ran(&mut self) {
+        self.names_due = Some(Instant::now() + NAMES_AFTER);
     }
 
     /// Pull whatever was printed since the last frame.
     pub(crate) fn pull(&mut self, host: &Host) {
         let (fresh, next) = host.console_read(self.mark);
         self.mark = next;
+        self.names_due = self.names_due.filter(|until| Instant::now() < *until);
+        if self.names_due.is_some() && !fresh.is_empty() {
+            self.names = host.console_names();
+        }
         self.lines.extend(fresh);
         let excess = self.lines.len().saturating_sub(SCROLLBACK);
         self.lines.drain(..excess);

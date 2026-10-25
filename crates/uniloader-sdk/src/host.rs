@@ -425,6 +425,14 @@ impl Host {
         check(unsafe { (self.api.console_exec)(self.api.host, self.handle, Str::new(line)) })
     }
 
+    /// Execute a console line as if typed, on this plugin's console thread, and return at
+    /// once; a failure is logged. For the game's and the render thread, which must not wait
+    /// for a busy console (up to five seconds) nor run whatever the line asks for (a plugin
+    /// load, a script) inline. Lines run one after another, in the order posted.
+    pub fn console_post(&self, line: &str) {
+        crate::posted::post(*self, line);
+    }
+
     /// Execute a console line and collect everything it printed. The status is returned
     /// alongside the output instead of as an error, because a failed command's message is
     /// in those lines.

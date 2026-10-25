@@ -140,10 +140,8 @@ unsafe extern "C" fn answered(ctx: *mut c_void, _id: u64, answer: UiAnswer, _tex
         _ => return,
     };
     if let Some(host) = crate::host() {
-        let line = format!("uniloader.report {verb} {}", prompt.name);
-        if let Err(e) = host.console_exec(&line) {
-            log::warn!("{line}: {e}");
-        }
+        // Answered on the render thread; saving copies a zip and sending starts an upload.
+        host.console_post(&format!("uniloader.report {verb} {}", prompt.name));
     }
 }
 
