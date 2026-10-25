@@ -82,14 +82,15 @@ pub fn settings() -> Vec<Desc> {
          console can, as if typed in the game. Needs a password.",
     );
     enabled.advanced = false;
-    let mut port = desc(
+    // No bounds on purpose: bounds make a slider in the settings screens, which moved through
+    // a thousand ports a frame and restarted the server for each.
+    let port = desc(
         keys::PORT,
         "RCON port",
         Kind::Int,
         &DEFAULT_PORT.to_string(),
-        "TCP port the remote console listens on.",
+        "TCP port the remote console listens on, 1 to 65535.",
     );
-    (port.min, port.max) = (1.0, 65535.0);
     let mut password = desc(
         keys::PASSWORD,
         "RCON password",
