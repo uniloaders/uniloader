@@ -469,6 +469,8 @@ fn bundle_all() {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
+    // Windows' archives are read once, on the first incident that wants them.
+    let mut wer: Option<Vec<String>> = None;
     for (name, dir) in incidents(&session.dir) {
         let current = lock(&FREEZE).as_deref() == Some(dir.as_path());
         if current {
@@ -480,7 +482,8 @@ fn bundle_all() {
             .filter(|_| reports::kind_of(&name) != Some(Kind::Manual))
         {
             if name >= reports::stamp(previous.started) {
-                let found = super::wer::collect(&dir, &exe, previous.started);
+                let found = wer.get_or_insert_with(|| super::wer::find(&exe, previous.started));
+                let found = super::wer::write(&dir, found);
                 if found > 0 {
                     log::info!("reports: {found} Windows error report(s) added to {name}");
                 }

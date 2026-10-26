@@ -60,9 +60,9 @@ fn is_about(text: &str, exe: &str) -> bool {
     })
 }
 
-/// Copies Windows' reports about `exe` made since `since` (Unix seconds) into `into`; how
-/// many.
-pub(super) fn collect(into: &Path, exe: &str, since: u64) -> usize {
+/// Windows' reports about `exe` made since `since` (Unix seconds), the newest
+/// [`MAX_REPORTS`], newest first: what [`write`] puts into an incident.
+pub(super) fn find(exe: &str, since: u64) -> Vec<String> {
     let exe = exe.to_lowercase();
     let mut found: Vec<(SystemTime, String)> = Vec::new();
     for root in roots() {
@@ -95,14 +95,19 @@ pub(super) fn collect(into: &Path, exe: &str, since: u64) -> usize {
     }
     found.sort_by_key(|(when, _)| std::cmp::Reverse(*when));
     found.truncate(MAX_REPORTS);
-    let mut copied = 0;
-    for (n, (_, text)) in found.iter().enumerate() {
+    found.into_iter().map(|(_, text)| text).collect()
+}
+
+/// Writes `reports` ([`find`]) into the incident folder `into`; how many.
+pub(super) fn write(into: &Path, reports: &[String]) -> usize {
+    let mut written = 0;
+    for (n, text) in reports.iter().enumerate() {
         let target = into.join(format!("wer-{}.txt", n + 1));
         if fs::write(target, super::crashinfo::shown_text(text)).is_ok() {
-            copied += 1;
+            written += 1;
         }
     }
-    copied
+    written
 }
 
 #[cfg(test)]
