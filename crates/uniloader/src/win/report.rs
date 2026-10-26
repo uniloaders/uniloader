@@ -5,7 +5,8 @@
 //!
 //! - At start: the previous session's `running.txt`, if it did not close normally and left
 //!   no incident of its own, becomes an `exit` incident. [`SETTLE`] later (plugins have
-//!   attached their folders by then: `report attach <folder>`, a game's own crash reports)
+//!   attached theirs by then: `report attach <folder|file>`, a game's own crash reports, a
+//!   plugin's log)
 //!   every incident is bundled, and the newest report is offered with
 //!   [`topics::REPORT_READY`] (the overlay asks the player). An `exit` incident that got
 //!   attached files is a crash the game reported itself.
@@ -66,7 +67,7 @@ struct Session {
 static SESSION: OnceLock<Session> = OnceLock::new();
 /// Where `report send` posts to; empty: nowhere.
 static URL: Mutex<String> = Mutex::new(String::new());
-/// Folders plugins attached.
+/// Folders and files plugins attached.
 static ATTACHED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 /// The marker's path (NUL terminated UTF-16) and its closing text, made at start so that
 /// [`ending`] neither allocates nor locks.
@@ -528,15 +529,9 @@ fn bundle(session: &Session, name: &str, dir: &Path, since: Option<u64>) -> Opti
     let mut parts = reports::parts_of(dir, "report", None);
     parts.extend(reports::parts_of(&session.logs, "logs", None));
     let mut attached = Vec::new();
-    for folder in lock(&ATTACHED).iter() {
-        let label = folder
-            .file_name()
-            .map_or_else(|| "folder".to_owned(), |n| n.to_string_lossy().into_owned());
-        attached.extend(reports::parts_of(
-            folder,
-            &format!("attached/{label}"),
-            since,
-        ));
+    let paths = lock(&ATTACHED).clone();
+    for (path, label) in paths.iter().zip(reports::attached_labels(&paths)) {
+        attached.extend(reports::parts_of(path, &format!("attached/{label}"), since));
     }
     let mut name = name.to_owned();
     let dumped = attached
@@ -852,13 +847,23 @@ pub(super) fn command(args: &str) -> (Status, Vec<String>) {
             )
         }
         "attach" => {
-            let folder = PathBuf::from(rest.trim());
-            if !folder.is_dir() {
-                return (Status::NOT_FOUND, vec![format!("no folder {rest}")]);
+            let path = PathBuf::from(rest.trim());
+            if path.is_file() {
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                if reports::content_of(&name).is_none() {
+                    return (
+                        Status::INVALID_ARGUMENT,
+                        vec![format!(
+                            "{rest} is not a kind that goes into reports (.log, .txt, .xml, .dmp)"
+                        )],
+                    );
+                }
+            } else if !path.is_dir() {
+                return (Status::NOT_FOUND, vec![format!("no folder or file {rest}")]);
             }
             let mut attached = lock(&ATTACHED);
-            if !attached.contains(&folder) {
-                attached.push(folder);
+            if !attached.contains(&path) {
+                attached.push(path);
             }
             (Status::OK, vec![format!("attached {rest}")])
         }

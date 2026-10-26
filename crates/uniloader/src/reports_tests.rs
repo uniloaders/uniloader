@@ -176,6 +176,58 @@ fn a_bundle_holds_scrubbed_text_and_dumps_only() {
 }
 
 #[test]
+fn an_attached_file_goes_in_scrubbed_under_its_own_name() {
+    let dir = scratch("file");
+    let log = dir.join("tswcoop-native.log");
+    fs::write(&log, "invite to 203.0.113.7\n").unwrap_or_else(|e| panic!("{e}"));
+    let key = dir.join("host.key");
+    fs::write(&key, "secret").unwrap_or_else(|e| panic!("{e}"));
+    let parts = parts_of(&log, "attached/tswcoop-native.log", None);
+    assert_eq!(
+        parts,
+        [Part {
+            path: log.clone(),
+            name: "attached/tswcoop-native.log".to_owned()
+        }]
+    );
+    assert_eq!(
+        parts_of(&key, "attached/host.key", None),
+        Vec::<Part>::new()
+    );
+    assert_eq!(
+        parts_of(&log, "attached/tswcoop-native.log", Some(u64::MAX)),
+        Vec::<Part>::new(),
+        "not changed since"
+    );
+    let out = dir.join("report.zip");
+    bundle(&out, &parts).unwrap_or_else(|e| panic!("{e}"));
+    let mut zip = zip::ZipArchive::new(fs::File::open(&out).unwrap_or_else(|e| panic!("{e}")))
+        .unwrap_or_else(|e| panic!("{e}"));
+    let mut text = String::new();
+    zip.by_name("attached/tswcoop-native.log")
+        .unwrap_or_else(|e| panic!("{e}"))
+        .read_to_string(&mut text)
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(text, "invite to [ip]\n");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn attached_paths_of_the_same_name_get_their_own_labels() {
+    let paths = [
+        PathBuf::from("C:/game/Saved/Logs"),
+        PathBuf::from("C:/other/logs"),
+        PathBuf::from("C:/a/game.log"),
+        PathBuf::from("C:/b/game.log"),
+        PathBuf::from("C:/c/game.log"),
+    ];
+    assert_eq!(
+        attached_labels(&paths),
+        ["Logs", "logs-2", "game.log", "game-2.log", "game-3.log"]
+    );
+}
+
+#[test]
 fn old_reports_are_pruned_and_decided_ones_not_offered() {
     let dir = scratch("prune");
     for i in 0..(KEEP + 2) {

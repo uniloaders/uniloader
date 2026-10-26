@@ -4,7 +4,7 @@
 //!
 //! An incident is a folder under `<root>/reports/` (`2026-10-24_08-12-05_freeze/`) that the
 //! platform layer fills with dumps and an `info.txt`; [`bundle`] turns it, the session's logs
-//! and whatever plugins attached (a game's own crash folder) into
+//! and whatever plugins attached (a game's own crash folder, a plugin's log file) into
 //! `<root>/reports/2026-10-24_08-12-05_freeze.zip`. Text is tail-cut and passed through
 //! [`redact`]; only dumps go in as bytes, and files of any other kind are left out, so a key
 //! or config file in an attached folder never travels.
@@ -406,12 +406,17 @@ pub struct Part {
     pub name: String,
 }
 
-/// The reportable files of `dir` and its subfolders (two levels), named under `prefix/`;
-/// with `since`, only those changed since then (Unix seconds).
+/// The reportable files at `path`: a folder's files and its subfolders' (two levels), named
+/// under `prefix/`, or a single file, named `prefix` (which then needs its extension); with
+/// `since`, only those changed since then (Unix seconds).
 #[must_use]
-pub fn parts_of(dir: &Path, prefix: &str, since: Option<u64>) -> Vec<Part> {
+pub fn parts_of(path: &Path, prefix: &str, since: Option<u64>) -> Vec<Part> {
     let mut parts = Vec::new();
-    collect(dir, prefix, since, 2, &mut parts);
+    match fs::metadata(path) {
+        Ok(meta) if meta.is_dir() => collect(path, prefix, since, 2, &mut parts),
+        Ok(meta) => parts.extend(part(path.to_path_buf(), prefix.to_owned(), &meta, since)),
+        Err(_) => {}
+    }
     parts.sort_by(|a, b| a.name.cmp(&b.name));
     parts
 }
@@ -430,13 +435,42 @@ fn collect(dir: &Path, prefix: &str, since: Option<u64>, depth: u32, parts: &mut
             }
             continue;
         }
-        let fresh = since.is_none_or(|s| meta.modified().is_ok_and(|m| unix(m) >= s));
-        if fresh && content_of(&name).is_some() {
-            parts.push(Part {
-                path,
-                name: format!("{prefix}/{name}"),
-            });
+        parts.extend(part(path, format!("{prefix}/{name}"), &meta, since));
+    }
+}
+
+/// The file at `path` as `name` in the zip, when it is of a kind that goes in and changed
+/// since `since`.
+fn part(path: PathBuf, name: String, meta: &fs::Metadata, since: Option<u64>) -> Option<Part> {
+    let fresh = since.is_none_or(|s| meta.modified().is_ok_and(|m| unix(m) >= s));
+    (meta.is_file() && fresh && content_of(&name).is_some()).then_some(Part { path, name })
+}
+
+/// The zip folder or file name for each attached path: its own name, with `-2`, `-3`… on a
+/// name taken before (a zip holds each name once; two `Logs` folders would fail the bundle).
+#[must_use]
+pub fn attached_labels(paths: &[PathBuf]) -> Vec<String> {
+    let mut taken: Vec<String> = Vec::with_capacity(paths.len());
+    for path in paths {
+        let own = path
+            .file_name()
+            .map_or_else(|| "folder".to_owned(), |n| n.to_string_lossy().into_owned());
+        let mut label = own.clone();
+        let mut n = 2;
+        while taken.iter().any(|t| t.eq_ignore_ascii_case(&label)) {
+            label = numbered(&own, n);
+            n += 1;
         }
+        taken.push(label);
+    }
+    taken
+}
+
+/// `name` with `-n` before its extension (`game.log` → `game-2.log`), so it keeps its kind.
+fn numbered(name: &str, n: u32) -> String {
+    match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => format!("{stem}-{n}.{ext}"),
+        _ => format!("{name}-{n}"),
     }
 }
 
@@ -619,8 +653,8 @@ pub fn crash_loop(list: &str) -> Option<String> {
 
 /// The `report` command's usage.
 pub const COMMAND_USAGE: &str =
-    "report [list | now | send <zip> | desktop <zip> | url <https url> | attach <folder> \
-     | loading on|off | crash [fault|call|stack|panic]]";
+    "report [list | now | send <zip> | desktop <zip> | url <https url> \
+     | attach <folder|file> | loading on|off | crash [fault|call|stack|panic]]";
 
 #[cfg(test)]
 #[path = "reports_tests.rs"]
