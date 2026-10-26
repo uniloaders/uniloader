@@ -116,6 +116,25 @@ fn bad_logins_answer_minus_one_and_ban_the_address() {
 }
 
 #[test]
+fn the_ban_also_ends_the_connection_that_kept_guessing() {
+    let (server, dir) = server("one connection only");
+    let mut c = connect(&server);
+    for attempt in 0..3 {
+        send(&mut c, 1, AUTH, "a wrong guess");
+        assert_eq!(recv(&mut c).kind, RESPONSE_VALUE, "attempt {attempt}");
+        assert_eq!(recv(&mut c).id, AUTH_FAILED_ID, "attempt {attempt}");
+    }
+    assert!(
+        closed(&mut c),
+        "a fourth guess on the same connection is not read"
+    );
+    server.stop();
+    let log = std::fs::read_to_string(dir.join("rcon.log")).unwrap_or_default();
+    assert!(log.contains("closed: address banned"), "{log}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn commands_before_login_and_oversized_packets_close_the_connection() {
     let (server, dir) = server("another password");
     let mut c = connect(&server);

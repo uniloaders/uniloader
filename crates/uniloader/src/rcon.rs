@@ -272,21 +272,26 @@ impl Shared {
         }
     }
 
-    /// Count a failed login; returns whether that banned the address.
+    /// Count a failed login; returns whether the address is banned now.
+    ///
+    /// Addresses whose failures and bans have run out are dropped on the way, so a stream of
+    /// failures from ever new addresses does not grow either map for good.
     fn failed(&self, ip: IpAddr) -> bool {
         let now = Instant::now();
         let mut failures = self.failures.lock().unwrap_or_else(PoisonError::into_inner);
+        failures.retain(|_, at| {
+            at.retain(|at| now.duration_since(*at) < FAILURE_WINDOW);
+            !at.is_empty()
+        });
         let recent = failures.entry(ip).or_default();
-        recent.retain(|at| now.duration_since(*at) < FAILURE_WINDOW);
         recent.push(now);
+        let mut banned = self.banned.lock().unwrap_or_else(PoisonError::into_inner);
+        banned.retain(|_, until| *until > now);
         if recent.len() < MAX_FAILURES {
-            return false;
+            return banned.contains_key(&ip);
         }
-        recent.clear();
-        self.banned
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(ip, now + BAN);
+        failures.remove(&ip);
+        banned.insert(ip, now + BAN);
         true
     }
 }
@@ -420,13 +425,25 @@ fn accept(shared: &Arc<Shared>, listener: &TcpListener) {
 }
 
 /// One connection, from login to close.
+///
+/// The login has [`LOGIN_TIMEOUT`] in total, not per packet, and a failed login that bans
+/// the address also ends the connection it came on: otherwise one connection kept open could
+/// go on guessing a password a second for as long as it liked.
 fn serve(shared: &Shared, mut stream: TcpStream, peer: SocketAddr, id: usize) {
     let who = format!("{peer} #{id}");
     shared.audit(&format!("{who} connected"));
-    let _ = stream.set_read_timeout(Some(LOGIN_TIMEOUT));
+    let login_by = Instant::now() + LOGIN_TIMEOUT;
     let mut authed = false;
     let mut recent: Vec<Instant> = Vec::new();
     loop {
+        if !authed {
+            let left = login_by.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                shared.audit(&format!("{who} closed: no login within {LOGIN_TIMEOUT:?}"));
+                return;
+            }
+            let _ = stream.set_read_timeout(Some(left));
+        }
         let packet = match Packet::read_from(&mut stream, MAX_REQUEST_BODY) {
             Ok(p) => p,
             Err(e) => {
@@ -437,6 +454,7 @@ fn serve(shared: &Shared, mut stream: TcpStream, peer: SocketAddr, id: usize) {
         if shared.stop.load(Ordering::SeqCst) {
             return;
         }
+        let mut banned = false;
         let answer = if authed {
             command(shared, &who, &packet, &mut recent)
         } else if packet.kind == AUTH {
@@ -446,7 +464,7 @@ fn serve(shared: &Shared, mut stream: TcpStream, peer: SocketAddr, id: usize) {
                 let _ = stream.set_read_timeout(Some(IDLE_TIMEOUT));
                 shared.audit(&format!("{who} auth ok"));
             } else {
-                let banned = shared.failed(peer.ip());
+                banned = shared.failed(peer.ip());
                 shared.audit(&format!(
                     "{who} auth failed{}",
                     if banned {
@@ -469,6 +487,10 @@ fn serve(shared: &Shared, mut stream: TcpStream, peer: SocketAddr, id: usize) {
         let bytes: Vec<u8> = answer.iter().flat_map(Packet::encode).collect();
         if let Err(e) = stream.write_all(&bytes) {
             shared.audit(&format!("{who} closed: {e}"));
+            return;
+        }
+        if banned {
+            shared.audit(&format!("{who} closed: address banned"));
             return;
         }
     }
