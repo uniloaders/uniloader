@@ -515,3 +515,15 @@ fn gui_pass(
     }
     renderer_output
 }
+
+#[cfg(test)]
+mod tests {
+    /// The test program's own imports, read the way the game's are: every Rust program on
+    /// Windows imports kernel32, none of them Vulkan.
+    #[test]
+    fn the_executables_imports_are_read_from_its_image() {
+        assert!(super::exe_imports("kernel32.dll"));
+        assert!(super::exe_imports("KERNEL32.DLL"), "any case");
+        assert!(!super::exe_imports("vulkan-1.dll"));
+    }
+}
