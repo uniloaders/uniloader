@@ -365,10 +365,23 @@ pub(super) fn describe_one(file: &Path) -> Result<Described, String> {
             core::mem::size_of::<PluginInfo>()
         ));
     }
-    let text = super::hostapi::text;
+    let text = |s| {
+        // SAFETY: the describe struct and everything it points at stay valid while the DLL
+        // is loaded (the ABI's contract), and a plugin DLL is never unloaded.
+        unsafe { super::hostapi::text(s) }
+    };
     let name = text(info.name);
     let title = text(info.title);
-    external::register_provider(&name, &external::provided(info));
+    // SAFETY: as in `text`.
+    let (provided, authors, targets, declared) = unsafe {
+        (
+            external::provided(info),
+            authors(info),
+            targets(info),
+            external::declared(info),
+        )
+    };
+    external::register_provider(&name, &provided);
     Ok(Described {
         file: file.to_path_buf(),
         info: crate::described::Described {
@@ -380,7 +393,7 @@ pub(super) fn describe_one(file: &Path) -> Result<Described, String> {
             name,
             version: text(info.version),
             description: text(info.description),
-            authors: authors(info),
+            authors,
             links: crate::described::Links {
                 homepage: text(info.homepage),
                 issues: text(info.issues),
@@ -388,10 +401,10 @@ pub(super) fn describe_one(file: &Path) -> Result<Described, String> {
             },
             update_github: text(info.update.github),
             update_url: text(info.update.url),
-            targets: targets(info),
+            targets,
             refuse_mismatch: info.target_policy == TargetPolicy::REFUSE,
         },
-        declared: external::declared(info),
+        declared,
         exports,
     })
 }
@@ -409,29 +422,39 @@ unsafe fn list<'a, T>(ptr: *const T, count: usize) -> &'a [T] {
     unsafe { core::slice::from_raw_parts(ptr, count) }
 }
 
-fn authors(info: &PluginInfo) -> Vec<(String, String)> {
-    let text = super::hostapi::text;
-    // SAFETY: the describe struct's lists are valid while the DLL is loaded.
-    unsafe { list(info.authors, info.author_count) }
-        .iter()
-        .map(|a| (text(a.name), text(a.url)))
-        .collect()
+/// The describe struct's authors.
+///
+/// # Safety
+/// `info` must be what a plugin's describe export returned: its lists and strings valid, as
+/// the ABI requires while the DLL is loaded.
+unsafe fn authors(info: &PluginInfo) -> Vec<(String, String)> {
+    // SAFETY: the caller's contract covers the list and every string in it.
+    unsafe {
+        list(info.authors, info.author_count)
+            .iter()
+            .map(|a| (super::hostapi::text(a.name), super::hostapi::text(a.url)))
+            .collect()
+    }
 }
 
-fn targets(info: &PluginInfo) -> Vec<uniloader_core::target::Filter> {
-    let text = super::hostapi::text;
-    // SAFETY: as in `authors`.
-    unsafe { list(info.targets, info.target_count) }
-        .iter()
-        .map(|t| uniloader_core::target::Filter {
-            property: text(t.property),
-            // SAFETY: as in `authors`.
-            values: unsafe { list(t.values, t.value_count) }
-                .iter()
-                .map(|v| text(*v))
-                .collect(),
-        })
-        .collect()
+/// The describe struct's target filters.
+///
+/// # Safety
+/// As [`authors`].
+unsafe fn targets(info: &PluginInfo) -> Vec<uniloader_core::target::Filter> {
+    // SAFETY: the caller's contract covers both levels of lists and every string in them.
+    unsafe {
+        list(info.targets, info.target_count)
+            .iter()
+            .map(|t| uniloader_core::target::Filter {
+                property: super::hostapi::text(t.property),
+                values: list(t.values, t.value_count)
+                    .iter()
+                    .map(|v| super::hostapi::text(*v))
+                    .collect(),
+            })
+            .collect()
+    }
 }
 
 impl Described {

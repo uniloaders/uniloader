@@ -177,7 +177,8 @@ pub(super) unsafe extern "C" fn setting_enumerate(
     let Some(sink) = sink else {
         return Status::INVALID_ARGUMENT;
     };
-    let only = text(plugin_name);
+    // SAFETY: the ABI requires `plugin_name` to be readable for this call.
+    let only = unsafe { text(plugin_name) };
     let owned: Vec<(String, settings::Desc, String)> = {
         let guard = state();
         guard
@@ -261,7 +262,9 @@ pub(super) unsafe extern "C" fn hotkey_rebind(
     name: Str,
     binding: Str,
 ) -> Status {
-    let saved = state().rebind_hotkey(&text(name), &text(binding));
+    // SAFETY: the ABI requires both strings to be readable for this call.
+    let (name, binding) = unsafe { (text(name), text(binding)) };
+    let saved = state().rebind_hotkey(&name, &binding);
     match saved {
         Ok(persist) => {
             persist.queue();
@@ -281,7 +284,8 @@ pub(super) unsafe extern "C" fn service_register(
     if !super::caller::is(host, plugin, "service_register") {
         return Status::INVALID_ARGUMENT;
     }
-    let name = text(name);
+    // SAFETY: the ABI requires `name` to be readable for this call.
+    let name = unsafe { text(name) };
     let result = state().register_service(plugin, &name, version, table as usize);
     match result {
         Ok(()) => {
@@ -311,7 +315,9 @@ pub(super) unsafe extern "C" fn service_get(
     if size < core::mem::size_of::<ServiceInfo>() {
         return Status::UNSUPPORTED;
     }
-    let Some(service) = state().service(&text(name)) else {
+    // SAFETY: the ABI requires `name` to be readable for this call.
+    let name = unsafe { text(name) };
+    let Some(service) = state().service(&name) else {
         return Status::NOT_FOUND;
     };
     // SAFETY: as above.

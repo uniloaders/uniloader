@@ -133,22 +133,31 @@ pub(crate) fn build(paths: &Paths, process: &Process) -> &'static HostApi {
     }))
 }
 
-/// Borrow a `Str` a plugin passed us. Invalid UTF-8 becomes the replacement character
+/// Copy a `Str` a plugin passed us. Invalid UTF-8 becomes the replacement character
 /// rather than an error, so a C plugin's mistake cannot abort a call.
-pub(super) fn text(s: Str) -> String {
+///
+/// # Safety
+/// `s` must be null, empty, or describe `s.len` readable bytes for the duration of the call,
+/// as the ABI requires of every `Str` a plugin hands over. `Str`'s fields are public, so
+/// nothing but this contract makes that true.
+pub(super) unsafe fn text(s: Str) -> String {
     if s.ptr.is_null() || s.len == 0 {
         return String::new();
     }
-    // SAFETY: the ABI requires ptr/len to describe readable memory for this call.
+    // SAFETY: readable for `s.len` bytes, the caller's contract.
     let bytes = unsafe { core::slice::from_raw_parts(s.ptr, s.len) };
     String::from_utf8_lossy(bytes).into_owned()
 }
 
-fn payload(b: Bytes) -> Vec<u8> {
+/// Copy a `Bytes` a plugin passed us.
+///
+/// # Safety
+/// As [`text`]: null, empty, or `b.len` readable bytes for the duration of the call.
+unsafe fn payload(b: Bytes) -> Vec<u8> {
     if b.ptr.is_null() || b.len == 0 {
         return Vec::new();
     }
-    // SAFETY: the ABI requires ptr/len to describe readable memory for this call.
+    // SAFETY: readable for `b.len` bytes, the caller's contract.
     unsafe { core::slice::from_raw_parts(b.ptr, b.len) }.to_vec()
 }
 
@@ -161,7 +170,8 @@ fn plugin_name(plugin: PluginHandle) -> String {
 
 unsafe extern "C" fn host_log(_host: *mut c_void, plugin: PluginHandle, level: LogLevel, msg: Str) {
     let name = plugin_name(plugin);
-    let message = text(msg);
+    // SAFETY: the ABI requires `msg` to be readable for this call.
+    let message = unsafe { text(msg) };
     match level {
         LogLevel::ERROR => log::error!("[{name}] {message}"),
         LogLevel::WARN => log::warn!("[{name}] {message}"),
@@ -185,11 +195,14 @@ unsafe extern "C" fn setting_register(
     if d.struct_size < core::mem::size_of::<SettingDesc>() {
         return Status::UNSUPPORTED;
     }
-    let (choices, labels) = settings::parse_choices(&text(d.choices));
+    // SAFETY: the ABI requires the descriptor's strings to be readable for this call.
+    let [key, title, description, default, choices] =
+        unsafe { [d.key, d.title, d.description, d.default, d.choices].map(|s| text(s)) };
+    let (choices, labels) = settings::parse_choices(&choices);
     let desc = settings::Desc {
-        key: text(d.key),
-        title: text(d.title),
-        description: text(d.description),
+        key,
+        title,
+        description,
         kind: match d.kind {
             SettingKind::BOOL => settings::Kind::Bool,
             SettingKind::INT => settings::Kind::Int,
@@ -207,7 +220,7 @@ unsafe extern "C" fn setting_register(
             // A kind this loader does not know cannot be validated; refuse the setting.
             _ => return Status::UNSUPPORTED,
         },
-        default: text(d.default),
+        default,
         min: d.min,
         max: d.max,
         choices,
@@ -233,7 +246,9 @@ unsafe extern "C" fn setting_get(
     if out_len.is_null() {
         return Status::INVALID_ARGUMENT;
     }
-    let value = match state().get_setting(Some(plugin), &text(name)) {
+    // SAFETY: the ABI requires `name` to be readable for this call.
+    let name = unsafe { text(name) };
+    let value = match state().get_setting(Some(plugin), &name) {
         Ok(v) => v,
         Err(e) => return e,
     };
@@ -253,7 +268,8 @@ unsafe extern "C" fn setting_set(
     name: Str,
     value: Str,
 ) -> Status {
-    let (name, mut value) = (text(name), text(value));
+    // SAFETY: the ABI requires both strings to be readable for this call.
+    let (name, mut value) = unsafe { (text(name), text(value)) };
     // A password is hashed (Argon2, tens of ms) without the state lock, which every host
     // call of every thread takes.
     let needs_hash = state().needs_hash(Some(plugin), &name, &value);
@@ -300,13 +316,11 @@ unsafe extern "C" fn hotkey_register(
     if d.struct_size < core::mem::size_of::<HotkeyDesc>() {
         return Status::UNSUPPORTED;
     }
+    // SAFETY: the ABI requires the descriptor's strings to be readable for this call.
+    let [action, title, binding] =
+        unsafe { [d.action, d.title, d.default_binding].map(|s| text(s)) };
     state()
-        .register_hotkey(
-            plugin,
-            &text(d.action),
-            &text(d.title),
-            &text(d.default_binding),
-        )
+        .register_hotkey(plugin, &action, &title, &binding)
         .map_or_else(|e| e, |_| Status::OK)
 }
 
@@ -323,14 +337,11 @@ unsafe extern "C" fn bind_default(
     if d.struct_size < core::mem::size_of::<BindDesc>() {
         return Status::UNSUPPORTED;
     }
+    // SAFETY: the ABI requires the descriptor's strings to be readable for this call.
+    let [name, title, binding, script] =
+        unsafe { [d.name, d.title, d.default_binding, d.script].map(|s| text(s)) };
     state()
-        .register_suggestion(
-            plugin,
-            &text(d.name),
-            &text(d.title),
-            &text(d.default_binding),
-            &text(d.script),
-        )
+        .register_suggestion(plugin, &name, &title, &binding, &script)
         .map_or_else(|e| e, |_| Status::OK)
 }
 
@@ -340,8 +351,10 @@ unsafe extern "C" fn keys_reserve(
     label: Str,
     chords: Str,
 ) -> Status {
+    // SAFETY: the ABI requires both strings to be readable for this call.
+    let (label, chords) = unsafe { (text(label), text(chords)) };
     state()
-        .reserve_keys(&text(label), &text(chords))
+        .reserve_keys(&label, &chords)
         .map_or_else(|e| e, |()| Status::OK)
 }
 
@@ -358,19 +371,18 @@ unsafe extern "C" fn command_register(
     if d.struct_size < core::mem::size_of::<CommandDesc>() {
         return Status::UNSUPPORTED;
     }
-    let info = CommandInfo {
-        help: text(d.help),
-        usage: text(d.usage),
-    };
+    // SAFETY: the ABI requires the descriptor's strings to be readable for this call.
+    let [name, help, usage] = unsafe { [d.name, d.help, d.usage].map(|s| text(s)) };
     state()
-        .register_command(plugin, &text(d.name), info)
+        .register_command(plugin, &name, CommandInfo { help, usage })
         .map_or_else(|e| e, |()| Status::OK)
 }
 
 unsafe extern "C" fn console_print(_host: *mut c_void, plugin: PluginHandle, line: Str) {
     // The plugin's text is read and the window written with no lock held: a slow console
     // write must not stall every other host call.
-    let body = text(line);
+    // SAFETY: the ABI requires `line` to be readable for this call.
+    let body = unsafe { text(line) };
     let name = state()
         .plugin(plugin)
         .map_or_else(|| "?".to_owned(), |p| p.name().to_owned());
@@ -391,7 +403,9 @@ fn plugin_ctx(plugin: PluginHandle) -> crate::console::Ctx {
 }
 
 unsafe extern "C" fn console_exec(_host: *mut c_void, plugin: PluginHandle, line: Str) -> Status {
-    super::run_console_line(plugin_ctx(plugin), &text(line))
+    // SAFETY: the ABI requires `line` to be readable for this call.
+    let line = unsafe { text(line) };
+    super::run_console_line(plugin_ctx(plugin), &line)
 }
 
 unsafe extern "C" fn console_capture(
@@ -401,7 +415,9 @@ unsafe extern "C" fn console_capture(
     sink: Option<LineFn>,
     line_ctx: *mut c_void,
 ) -> Status {
-    let (status, printed) = super::run_console_line_capture(plugin_ctx(plugin), &text(line));
+    // SAFETY: the ABI requires `line` to be readable for this call.
+    let script = unsafe { text(line) };
+    let (status, printed) = super::run_console_line_capture(plugin_ctx(plugin), &script);
     if let Some(sink) = sink {
         for line in &printed {
             // SAFETY: the ABI requires `sink` to accept a borrowed line for the duration of
@@ -417,7 +433,9 @@ unsafe extern "C" fn plugin_find(_host: *mut c_void, name: Str, out: *mut Plugin
     if out.is_null() {
         return Status::INVALID_ARGUMENT;
     }
-    let Some(handle) = state().find_plugin(&text(name)) else {
+    // SAFETY: the ABI requires `name` to be readable for this call.
+    let name = unsafe { text(name) };
+    let Some(handle) = state().find_plugin(&name) else {
         return Status::NOT_FOUND;
     };
     // SAFETY: checked non-null; the ABI requires a writable handle.
@@ -458,7 +476,9 @@ unsafe extern "C" fn plugin_message(
     if !caller::is(host, from, "plugin_message") {
         return Status::INVALID_ARGUMENT;
     }
-    plugins::deliver_message(from, to, &text(topic), &payload(data), reply, reply_ctx)
+    // SAFETY: the ABI requires `topic` and `data` to be readable for this call.
+    let (topic, data) = unsafe { (text(topic), payload(data)) };
+    plugins::deliver_message(from, to, &topic, &data, reply, reply_ctx)
 }
 
 unsafe extern "C" fn event_subscribe(
@@ -469,8 +489,10 @@ unsafe extern "C" fn event_subscribe(
     if !caller::is(host, plugin, "event_subscribe") {
         return Status::INVALID_ARGUMENT;
     }
+    // SAFETY: the ABI requires `topic` to be readable for this call.
+    let topic = unsafe { text(topic) };
     state()
-        .subscribe(plugin, &text(topic))
+        .subscribe(plugin, &topic)
         .map_or_else(|e| e, |()| Status::OK)
 }
 
@@ -483,8 +505,8 @@ unsafe extern "C" fn event_publish(
     if !caller::is(host, from, "event_publish") {
         return Status::INVALID_ARGUMENT;
     }
-    let topic = text(topic);
-    let data = payload(data);
+    // SAFETY: the ABI requires `topic` and `data` to be readable for this call.
+    let (topic, data) = unsafe { (text(topic), payload(data)) };
     let targets = state().subscribers(from, &topic);
     plugins::deliver_event(from, &targets, &topic, &data);
     Status::OK
@@ -510,7 +532,9 @@ unsafe extern "C" fn hook_patch(
     // SAFETY: the ABI requires `bytes`/`len` to describe readable memory for this call, and
     // `len` is small.
     let patch = unsafe { core::slice::from_raw_parts(bytes, len) };
-    match plugin_hooks::patch(plugin, address as usize, patch, &text(note)) {
+    // SAFETY: the ABI requires `note` to be readable for this call.
+    let note = unsafe { text(note) };
+    match plugin_hooks::patch(plugin, address as usize, patch, &note) {
         Ok(id) => {
             // SAFETY: checked non-null; the ABI requires a writable `u64`.
             unsafe { out_id.write(id) };
@@ -536,7 +560,9 @@ unsafe extern "C" fn hook_vtable(
     if out_original.is_null() || out_id.is_null() {
         return Status::INVALID_ARGUMENT;
     }
-    match plugin_hooks::vtable(plugin, object, index, replacement, &text(note)) {
+    // SAFETY: the ABI requires `note` to be readable for this call.
+    let note = unsafe { text(note) };
+    match plugin_hooks::vtable(plugin, object, index, replacement, &note) {
         Ok((id, original)) => {
             // SAFETY: both checked non-null; the ABI requires writable out-params.
             unsafe {
@@ -564,7 +590,9 @@ unsafe extern "C" fn hook_detour(
     if out_trampoline.is_null() || out_id.is_null() {
         return Status::INVALID_ARGUMENT;
     }
-    match plugin_hooks::detour(plugin, target, replacement, &text(note)) {
+    // SAFETY: the ABI requires `note` to be readable for this call.
+    let note = unsafe { text(note) };
+    match plugin_hooks::detour(plugin, target, replacement, &note) {
         Ok((id, trampoline)) => {
             // SAFETY: both checked non-null; the ABI requires writable out-params.
             unsafe {

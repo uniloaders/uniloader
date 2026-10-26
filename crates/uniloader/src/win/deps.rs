@@ -51,38 +51,45 @@ impl Declared {
 }
 
 /// Read the dependency array out of a plugin's [`PluginInfo`].
-pub(crate) fn declared(info: &PluginInfo) -> Vec<Declared> {
+///
+/// # Safety
+/// `info` must be what a plugin's describe export returned: `dependencies` pointing at
+/// `dependency_count` entries whose strings are valid, as the ABI requires while the DLL is
+/// loaded (and a plugin DLL is never unloaded).
+pub(crate) unsafe fn declared(info: &PluginInfo) -> Vec<Declared> {
     if info.dependencies.is_null() || info.dependency_count == 0 {
         return Vec::new();
     }
-    // SAFETY: the ABI requires `dependencies` to point at `dependency_count` entries that stay
-    // valid while the DLL is loaded, and the DLL is never unloaded.
-    let entries: &[Dependency] =
-        unsafe { core::slice::from_raw_parts(info.dependencies, info.dependency_count) };
-    entries
-        .iter()
-        .filter(|d| d.struct_size >= core::mem::size_of::<Dependency>())
-        .map(|d| Declared {
-            kind: d.kind,
-            name: super::hostapi::text(d.name),
-            version: super::hostapi::text(d.version),
-            optional: d.optional != 0,
-        })
-        .collect()
+    // SAFETY: the caller's contract covers the array and every string in it.
+    unsafe {
+        core::slice::from_raw_parts(info.dependencies, info.dependency_count)
+            .iter()
+            .filter(|d| d.struct_size >= core::mem::size_of::<Dependency>())
+            .map(|d| Declared {
+                kind: d.kind,
+                name: super::hostapi::text(d.name),
+                version: super::hostapi::text(d.version),
+                optional: d.optional != 0,
+            })
+            .collect()
+    }
 }
 
 /// Read the provided service names out of a plugin's [`PluginInfo`].
-pub(crate) fn provided(info: &PluginInfo) -> Vec<String> {
+///
+/// # Safety
+/// As [`declared`], for `provides` and `provides_count`.
+pub(crate) unsafe fn provided(info: &PluginInfo) -> Vec<String> {
     if info.provides.is_null() || info.provides_count == 0 {
         return Vec::new();
     }
-    // SAFETY: the ABI requires `provides` to point at `provides_count` entries that stay valid
-    // while the DLL is loaded, and the DLL is never unloaded.
+    // SAFETY: the caller's contract covers the array and every string in it.
     let entries: &[Str] =
         unsafe { core::slice::from_raw_parts(info.provides, info.provides_count) };
     entries
         .iter()
-        .map(|s| super::hostapi::text(*s))
+        // SAFETY: as above.
+        .map(|s| unsafe { super::hostapi::text(*s) })
         .filter(|s| !s.is_empty())
         .collect()
 }
