@@ -117,7 +117,7 @@ pub(crate) struct Saved {
 }
 
 /// Read back the pipeline state the overlay is about to change.
-pub(crate) fn save(ctx: &ID3D11DeviceContext) -> Saved {
+fn save(ctx: &ID3D11DeviceContext) -> Saved {
     let mut saved = Saved {
         input_layout: None,
         vertex_buffer: None,
@@ -193,7 +193,7 @@ pub(crate) fn save(ctx: &ID3D11DeviceContext) -> Saved {
 }
 
 /// Put the state back exactly as [`save`] found it.
-pub(crate) fn restore(ctx: &ID3D11DeviceContext, saved: &Saved) {
+fn restore(ctx: &ID3D11DeviceContext, saved: &Saved) {
     // SAFETY: every value below came out of this context's own `Get` call, so each is either
     // null or a live object of the right type for the matching `Set` call.
     unsafe {
@@ -233,6 +233,28 @@ pub(crate) fn restore(ctx: &ID3D11DeviceContext, saved: &Saved) {
             Some(&saved.blend_factor),
             saved.blend_mask,
         );
+    }
+}
+
+/// The context's state, saved when made and put back when dropped: also when the renderer
+/// panics halfway through its draw.
+pub(crate) struct Restore<'a> {
+    ctx: &'a ID3D11DeviceContext,
+    saved: Saved,
+}
+
+impl<'a> Restore<'a> {
+    pub(crate) fn new(ctx: &'a ID3D11DeviceContext) -> Self {
+        Self {
+            ctx,
+            saved: save(ctx),
+        }
+    }
+}
+
+impl Drop for Restore<'_> {
+    fn drop(&mut self) {
+        restore(self.ctx, &self.saved);
     }
 }
 

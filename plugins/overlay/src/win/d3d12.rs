@@ -141,9 +141,10 @@ pub(super) fn hook_queue(host: &Host, queue: &ID3D12CommandQueue) {
     }
 }
 
-/// Stops forwarding, and lets go of the queue.
-pub(super) fn uninstall() {
-    // `REAL_EXECUTE` stays: the detour may still be entered, and must still execute.
+/// Lets go of the queue, for `stop` or a device the game replaced: the next direct queue to
+/// execute is taken instead. `REAL_EXECUTE` stays: the detour may still be entered, and must
+/// still execute.
+pub(super) fn forget_queue() {
     let queue = QUEUE.swap(0, Ordering::AcqRel);
     if queue != 0 {
         // SAFETY: the reference taken in `execute_command_lists`, given back once.
@@ -172,7 +173,8 @@ unsafe extern "system" fn execute_command_lists(
     if address == 0 {
         return;
     }
-    // Not after `stop`, which released the reference this would take again.
+    // Not after `stop`, which released the reference this would take again; after a device
+    // change (`forget_queue` with the host still there) the new device's queue is taken.
     if QUEUE.load(Ordering::Acquire) == 0 && crate::host().is_some() {
         let _ = GUARD.run(|| keep_queue(this));
     }

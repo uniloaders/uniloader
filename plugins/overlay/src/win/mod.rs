@@ -182,6 +182,52 @@ struct Overlay {
     backend: Backend,
     started: Instant,
     last_drawn: Instant,
+    /// The game's device this was made for ([`source_of`]).
+    source: usize,
+    /// When that device last presented, shown or not.
+    own_present: Instant,
+    /// The error the last frame failed with, said once until it changes.
+    failing: Option<String>,
+}
+
+/// How long only other devices must present before the renderer follows them: a game that
+/// made a new device (after losing one, or for new settings) presents only with that one,
+/// while one that presents through two devices keeps presenting with the renderer's too.
+const REPLACED_AFTER: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The device behind a swapchain, as an address to compare: its `Direct3D` 11 or 12 device,
+/// 0 for neither.
+fn source_of(chain: &IDXGISwapChain) -> usize {
+    render::device_of(chain)
+        .map(|d| d.as_raw() as usize)
+        .or_else(|| d3d12::device_of(chain).map(|d| d.as_raw() as usize))
+        .unwrap_or(0)
+}
+
+/// Notes a present on the device `source`; whether the renderer may draw on it. The renderer
+/// is dropped (and made anew by the next draw) once only other devices presented for
+/// [`REPLACED_AFTER`]: drawing a new device's backbuffer with the old one fails every frame,
+/// and the references held keep the old device and its memory alive.
+fn follow_device(slot: &mut Option<Overlay>, source: usize) -> bool {
+    let Some(overlay) = slot.as_mut() else {
+        return true;
+    };
+    if overlay.source == source {
+        overlay.own_present = Instant::now();
+        return true;
+    }
+    if overlay.own_present.elapsed() < REPLACED_AFTER {
+        return false;
+    }
+    let on12 = matches!(overlay.backend, Backend::D3D12(_));
+    *slot = None;
+    if on12 {
+        // The queue kept is the old device's: the new one's is taken on its next execute.
+        d3d12::forget_queue();
+        ON12_FAILED.store(false, Ordering::Relaxed);
+    }
+    log::info!("the game presents with a new device; the overlay renderer is made anew");
+    true
 }
 
 /// Game textures panels show (`GPU_TEXTURE`), wrapped for the renderer while asked for.
@@ -266,7 +312,7 @@ pub(crate) fn install(host: &Host) {
 /// stay reachable from the render thread until the loader has restored what they replaced,
 /// and with `crate::host()` gone they do nothing else.
 pub(crate) fn uninstall() {
-    d3d12::uninstall();
+    d3d12::forget_queue();
     wnd::unsubclass();
 }
 
@@ -291,18 +337,19 @@ pub(crate) fn frame(swapchain: *mut c_void, sync_interval: u32, flags: u32) {
     // The game's own code is below us: a panic unwinding into it would abort the process,
     // a fault would crash it. A fault disables the plugin (the guard skips it from then on).
     let outcome = uniloader_sdk::guard::call(|| {
-        if !DRAWABLE.load(Ordering::Relaxed)
-            && (render::device_of(&chain).is_some() || d3d12::device_of(&chain).is_some())
-        {
+        let source = source_of(&chain);
+        if !DRAWABLE.load(Ordering::Relaxed) && source != 0 {
             DRAWABLE.store(true, Ordering::Relaxed);
             announce(host, true);
         }
         let desc = describe(&chain);
         wnd::subclass(desc.OutputWindow.0);
         subscribers(host, &chain, &desc, (sync_interval, flags));
-        if shared::is_visible() {
+        // Not ours: another device's swapchain, while the renderer's own still presents.
+        let ours = OVERLAY.with_borrow_mut(|slot| follow_device(&mut slot.0, source));
+        if ours && shared::is_visible() {
             OVERLAY.with_borrow_mut(|slot| draw(host, &mut slot.0, &chain));
-        } else {
+        } else if ours {
             OVERLAY.with_borrow_mut(|slot| let_go_when_idle(&mut slot.0));
         }
     });
@@ -374,8 +421,20 @@ fn draw(host: &Host, slot: &mut Option<Overlay>, chain: &IDXGISwapChain) {
     }
     let Some(overlay) = slot else { return };
     overlay.last_drawn = Instant::now();
-    if let Err(e) = overlay.draw(host, chain) {
-        log::error!("overlay frame failed: {e}");
+    match overlay.draw(host, chain) {
+        Ok(()) => {
+            if let Some(e) = overlay.failing.take() {
+                log::info!("overlay frames draw again (they failed with: {e})");
+            }
+        }
+        // Once per error, not every frame: a lost device fails each one the same way.
+        Err(e) => {
+            let text = e.to_string();
+            if overlay.failing.as_deref() != Some(text.as_str()) {
+                log::error!("overlay frame failed: {text} (said once while it lasts)");
+                overlay.failing = Some(text);
+            }
+        }
     }
 }
 
@@ -428,6 +487,9 @@ fn create(chain: &IDXGISwapChain) -> Option<Overlay> {
         backend,
         started: Instant::now(),
         last_drawn: Instant::now(),
+        source: source_of(chain),
+        own_present: Instant::now(),
+        failing: None,
     })
 }
 
@@ -450,11 +512,10 @@ impl Overlay {
                 // Game textures are only wrapped over Direct3D 12.
                 native::begin(false);
                 let output = gui_pass(gui, *started, host, target.size);
-                // The game keeps drawing with this context: its state goes back as it was.
-                let saved = render::save(&context);
-                let result = renderer.render(&context, &target.view, gui.context(), output);
-                render::restore(&context, &saved);
-                result
+                // The game keeps drawing with this context: its state goes back as it was,
+                // also when the renderer panics halfway (the guard catches the unwind).
+                let _restore = render::Restore::new(&context);
+                renderer.render(&context, &target.view, gui.context(), output)
             }
             Backend::D3D12(on12) => {
                 let wrapped = on12.wrap(chain)?;
