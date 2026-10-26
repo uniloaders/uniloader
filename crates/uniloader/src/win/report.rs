@@ -7,9 +7,11 @@
 //!   no incident of its own, becomes an `exit` incident. [`SETTLE`] later (plugins have
 //!   attached theirs by then: `report attach <folder|file>`, a game's own crash reports, a
 //!   plugin's log)
-//!   every incident is bundled, and the newest report is offered with
-//!   [`topics::REPORT_READY`] (the overlay asks the player). An `exit` incident that got
-//!   attached files is a crash the game reported itself.
+//!   every incident is bundled, and the newest report and every one the player left for
+//!   later (`report later <zip>`, the overlay's prompt closed undecided) are offered with
+//!   [`topics::REPORT_READY`] (the overlay asks the player); older ones never answered go to
+//!   the Desktop. An `exit` incident that got attached files is a crash the game reported
+//!   itself.
 //! - Nobody listening, or the setting says Desktop: the report is saved to the Desktop.
 //! - `report send <zip>` POSTs it to the URL a plugin set (`report url <https url>`; the
 //!   loader has none of its own), `report desktop <zip>` copies it to the Desktop; both end
@@ -189,7 +191,7 @@ pub(super) fn start(paths: &Paths) {
                 previous_ended(&dir, previous);
             }
             bundle_all();
-            offer_newest();
+            offer_pending();
         });
     if let Err(e) = spawned {
         log::warn!("reports: cannot bundle the previous session's report: {e}");
@@ -580,21 +582,23 @@ fn bundle(session: &Session, name: &str, dir: &Path, since: Option<u64>) -> Opti
     }
 }
 
-/// Offers the newest undecided report. Older undecided ones were offered to a session that
-/// ended before the player could answer (a crash at every start never shows the prompt), so
-/// they go to the Desktop instead of being asked about again.
-fn offer_newest() {
+/// Offers the undecided reports as [`reports::plan_offers`] says: the newest and every one
+/// the player left for later, oldest first (the prompts come one after another); older ones
+/// never answered go to the Desktop instead of being asked about again.
+fn offer_pending() {
     let Some(session) = SESSION.get() else { return };
     let pending = reports::pending(&session.dir);
-    let Some((newest, older)) = pending.split_last() else {
-        return;
-    };
-    for name in older {
+    let (offers, saves) =
+        reports::plan_offers(&pending, |name| reports::is_later(&session.dir, name));
+    for name in &saves {
         if save_to_desktop(session, name).is_none() {
             reports::mark_done(&session.dir, name, "skipped");
         }
     }
-    offer(session, newest, setting() == reports::DESKTOP);
+    let save = setting() == reports::DESKTOP;
+    for name in &offers {
+        offer(session, name, save);
+    }
 }
 
 /// Tells the plugins the report `name` is ready; saved to the Desktop at once when `save` or
@@ -767,8 +771,13 @@ pub(super) fn command(args: &str) -> (Status, Vec<String>) {
             let mut lines: Vec<String> = reports::zips(&session.dir)
                 .into_iter()
                 .map(|z| {
+                    let undecided = if reports::is_later(&session.dir, &z) {
+                        "left for later"
+                    } else {
+                        "not decided"
+                    };
                     let done = fs::read_to_string(session.dir.join(format!("{z}.done")))
-                        .map_or_else(|_| "not decided".to_owned(), |d| d.trim().to_owned());
+                        .map_or_else(|_| undecided.to_owned(), |d| d.trim().to_owned());
                     format!("{z}: {done}")
                 })
                 .collect();
@@ -803,6 +812,18 @@ pub(super) fn command(args: &str) -> (Status, Vec<String>) {
             Some(name) if session.dir.join(&name).is_file() => {
                 send(session, name.clone());
                 (Status::OK, vec![format!("sending {name}")])
+            }
+            _ => (Status::NOT_FOUND, vec![format!("no report {rest}")]),
+        },
+        "later" => match named() {
+            Some(name) if session.dir.join(&name).is_file() => {
+                reports::mark_later(&session.dir, &name);
+                (
+                    Status::OK,
+                    vec![format!(
+                        "report {name} left for later: offered again at the next start"
+                    )],
+                )
             }
             _ => (Status::NOT_FOUND, vec![format!("no report {rest}")]),
         },

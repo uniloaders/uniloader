@@ -154,6 +154,11 @@ unsafe extern "C" fn answered(ctx: *mut c_void, _id: u64, answer: UiAnswer, _tex
                 prompt.name,
                 prompt.name
             );
+            // The loader keeps it for the next start's prompts; without this note an older
+            // undecided report counts as never seen and goes to the Desktop unasked.
+            if let Some(host) = crate::host() {
+                host.console_post(&format!("uniloader.report later {}", prompt.name));
+            }
         }
         return;
     };

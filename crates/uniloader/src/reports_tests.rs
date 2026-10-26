@@ -228,13 +228,52 @@ fn attached_paths_of_the_same_name_get_their_own_labels() {
 }
 
 #[test]
+fn reports_left_for_later_are_offered_again_and_only_unseen_ones_saved() {
+    let names: Vec<String> = [
+        "2026-10-26_09-00-00_crash.zip",
+        "2026-10-26_10-52-00_crash.zip",
+        "2026-10-26_11-19-00_manual.zip",
+        "2026-10-26_12-00-00_freeze.zip",
+    ]
+    .map(str::to_owned)
+    .into();
+    // The player closed the prompts of 10:52 and 11:19; 09:00 was never seen.
+    let later = |n: &str| n.contains("10-52") || n.contains("11-19");
+    let (offer, save) = plan_offers(&names, later);
+    assert_eq!(offer, names[1..], "oldest first, newest last");
+    assert_eq!(save, names[..1]);
+    // Only one, never answered: offered.
+    let (offer, save) = plan_offers(&names[..1], |_| false);
+    assert_eq!((offer.as_slice(), save.len()), (&names[..1], 0));
+    assert_eq!(plan_offers(&[], |_| true), (Vec::new(), Vec::new()));
+
+    // On disk: a note beside the zip, which stays pending, and goes with it when pruned.
+    let dir = scratch("later");
+    fs::write(dir.join(&names[1]), b"zip").unwrap_or_else(|e| panic!("{e}"));
+    assert!(!is_later(&dir, &names[1]));
+    mark_later(&dir, &names[1]);
+    assert!(is_later(&dir, &names[1]));
+    assert_eq!(
+        pending(&dir),
+        names[1..2],
+        "left for later is still undecided"
+    );
+    mark_done(&dir, &names[1], "sent");
+    assert_eq!(pending(&dir), Vec::<String>::new());
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn old_reports_are_pruned_and_decided_ones_not_offered() {
     let dir = scratch("prune");
     for i in 0..(KEEP + 2) {
         let name = format!("{}.zip", incident_name(1_000 + i as u64, Kind::Crash));
-        fs::write(dir.join(name), b"z").unwrap_or_else(|e| panic!("{e}"));
+        fs::write(dir.join(&name), b"z").unwrap_or_else(|e| panic!("{e}"));
+        mark_later(&dir, &name);
     }
     prune(&dir);
+    let oldest = format!("{}.zip", incident_name(1_000, Kind::Crash));
+    assert!(!is_later(&dir, &oldest), "its note went with it");
     let left = zips(&dir);
     assert_eq!(left.len(), KEEP);
     assert_eq!(

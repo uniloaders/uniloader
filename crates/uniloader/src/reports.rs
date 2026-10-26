@@ -558,13 +558,42 @@ pub fn zips(dir: &Path) -> Vec<String> {
     names
 }
 
-/// Removes all but the newest [`KEEP`] zips in `dir` (and their `.done` notes).
+/// Removes all but the newest [`KEEP`] zips in `dir` (and their `.done` and `.later` notes).
 pub fn prune(dir: &Path) {
     let names = zips(dir);
     for name in names.iter().take(names.len().saturating_sub(KEEP)) {
         let _ = fs::remove_file(dir.join(name));
         let _ = fs::remove_file(dir.join(format!("{name}.done")));
+        let _ = fs::remove_file(dir.join(format!("{name}.later")));
     }
+}
+
+/// Notes that the player saw the zip `name`'s prompt and left it undecided (closed it, or
+/// "Not now"): it stays pending and is offered again at every start until decided.
+pub fn mark_later(dir: &Path, name: &str) {
+    let _ = fs::write(dir.join(format!("{name}.later")), "left for later\n");
+}
+
+/// Whether the player left the zip `name` for later ([`mark_later`]).
+#[must_use]
+pub fn is_later(dir: &Path, name: &str) -> bool {
+    dir.join(format!("{name}.later")).exists()
+}
+
+/// What a start does with the undecided zips (`pending`, oldest first): the ones to offer,
+/// in that order, and the ones to save to the Desktop unasked. The newest is offered, and so
+/// is every one the player left for later (`later`); an older one never answered was
+/// offered to a session that ended before the player saw it (a crash at every start), so it
+/// is saved instead of piling up.
+#[must_use]
+pub fn plan_offers(pending: &[String], later: impl Fn(&str) -> bool) -> (Vec<String>, Vec<String>) {
+    let Some((newest, older)) = pending.split_last() else {
+        return (Vec::new(), Vec::new());
+    };
+    let (mut offer, save): (Vec<String>, Vec<String>) =
+        older.iter().cloned().partition(|n| later(n));
+    offer.push(newest.clone());
+    (offer, save)
 }
 
 /// The zips in `dir` nobody has decided about yet (no `.done` note beside them).
@@ -653,7 +682,7 @@ pub fn crash_loop(list: &str) -> Option<String> {
 
 /// The `report` command's usage.
 pub const COMMAND_USAGE: &str =
-    "report [list | now | send <zip> | desktop <zip> | url <https url> \
+    "report [list | now | send <zip> | desktop <zip> | later <zip> | url <https url> \
      | attach <folder|file> | loading on|off | crash [fault|call|stack|panic]]";
 
 #[cfg(test)]
