@@ -139,6 +139,12 @@ fn start_logging(paths: &Paths, process: &Process) -> LoaderConfig {
     if let Some(e) = config_error {
         log::error!("loader.toml ignored: {e}");
     }
+    if config.log_level.parse::<log::LevelFilter>().is_err() {
+        log::warn!(
+            "log level {:?} is none of error, warn, info, debug, trace: logging at info",
+            config.log_level
+        );
+    }
     for line in process.summary() {
         log::info!("{line}");
     }
