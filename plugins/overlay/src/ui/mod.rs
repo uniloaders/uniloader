@@ -80,6 +80,8 @@ pub(crate) struct Gui {
     scale: f32,
     /// `overlay.mouse`'s binding for the hint, and when it was read.
     mouse_binding: (Instant, String),
+    /// Typing held back from the pass that opened the console, for the next one.
+    deferred: Vec<egui::Event>,
 }
 
 impl Gui {
@@ -93,6 +95,7 @@ impl Gui {
             console_shown: false,
             scale: 1.0,
             mouse_binding: (Instant::now(), String::new()),
+            deferred: Vec::new(),
         }
     }
 
@@ -117,8 +120,13 @@ impl Gui {
     }
 
     /// Run one frame and apply what it decided.
-    pub(crate) fn run(&mut self, host: &Host, input: FrameInput) -> egui::FullOutput {
+    pub(crate) fn run(&mut self, host: &Host, mut input: FrameInput) -> egui::FullOutput {
         let console_open = shared::console_open();
+        defer_typing(
+            &mut self.deferred,
+            &mut input.raw.events,
+            console_open && !self.console_shown,
+        );
         if console_open {
             if !self.console_shown {
                 self.console.opened(host);
@@ -368,6 +376,38 @@ fn cursor(ctx: &Context, position: Pos2) {
     ));
 }
 
+/// Typing that waited a pass goes first in `events`; on the pass that opens the console
+/// (`opening`), this pass's typing waits instead.
+///
+/// That pass cannot take it: egui lays out a window it has no memory of unseen and disabled
+/// (its sizing pass), which is every window of a renderer built just now (the first open of
+/// a session, a reopen after the renderer was let go), and the console's line only gains
+/// the focus during it. `action overlay.console` followed at once by `overlay.input` lost
+/// the line that way. One pass later the window is shown and the line has the focus.
+fn defer_typing(deferred: &mut Vec<egui::Event>, events: &mut Vec<egui::Event>, opening: bool) {
+    if !deferred.is_empty() {
+        let mut first = std::mem::take(deferred);
+        first.append(events);
+        *events = first;
+    }
+    if opening {
+        let (typing, rest): (Vec<egui::Event>, Vec<egui::Event>) =
+            std::mem::take(events).into_iter().partition(|event| {
+                matches!(
+                    event,
+                    egui::Event::Text(_)
+                        | egui::Event::Key { .. }
+                        | egui::Event::Paste(_)
+                        | egui::Event::Copy
+                        | egui::Event::Cut
+                        | egui::Event::Ime(_)
+                )
+            });
+        *deferred = typing;
+        *events = rest;
+    }
+}
+
 /// Say that the game has the input, and which key takes it back.
 fn released(ctx: &Context, binding: &str) {
     let painter = ctx.layer_painter(egui::LayerId::new(
@@ -386,4 +426,42 @@ fn released(ctx: &Context, binding: &str) {
     );
     painter.rect_filled(rect, 4.0, egui::Color32::from_black_alpha(160));
     painter.galley(rect.min + Vec2::new(8.0, 4.0), galley, egui::Color32::WHITE);
+}
+
+#[cfg(test)]
+mod tests {
+    use egui::{Event, Key, Modifiers, Pos2};
+
+    use super::defer_typing;
+
+    fn enter() -> Event {
+        Event::Key {
+            key: Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn typing_on_the_opening_pass_waits_one_pass_in_order() {
+        let mut deferred = Vec::new();
+        let moved = Event::PointerMoved(Pos2::new(1.0, 2.0));
+        let mut events = vec![Event::Text("echo x".into()), moved.clone(), enter()];
+        defer_typing(&mut deferred, &mut events, true);
+        assert_eq!(events, vec![moved], "the pointer is not held back");
+        // Typed during the next pass: after what waited.
+        let mut events = vec![Event::Text("y".into())];
+        defer_typing(&mut deferred, &mut events, false);
+        assert_eq!(
+            events,
+            vec![
+                Event::Text("echo x".into()),
+                enter(),
+                Event::Text("y".into())
+            ]
+        );
+        assert_eq!(deferred, Vec::<Event>::new());
+    }
 }
