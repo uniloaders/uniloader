@@ -16,12 +16,23 @@
 use std::cell::Cell;
 use std::collections::VecDeque;
 use std::sync::mpsc;
-use std::sync::{Condvar, Mutex, PoisonError};
+use std::sync::{Condvar, Mutex, PoisonError, TryLockError};
 use std::time::{Duration, Instant};
 
 use uniloader_api::Status;
 
 use crate::run::{self, Effects, Job, Ran};
+
+/// The answer to a caller the console kept waiting too long.
+fn busy() -> (Status, Vec<String>) {
+    (
+        Status::ERROR,
+        vec![format!(
+            "the console was busy for {} s; the script runs when it is free",
+            SYNC_TIMEOUT.as_secs()
+        )],
+    )
+}
 
 /// How long a synchronous caller waits for a busy console before giving up on the answer.
 /// The script still runs when the console is free.
@@ -30,7 +41,13 @@ pub const SYNC_TIMEOUT: Duration = Duration::from_secs(5);
 thread_local! {
     /// Whether this thread is inside a run, holding the execution lock.
     static INSIDE: Cell<bool> = const { Cell::new(false) };
+    /// Whether this thread drains the queue (the input thread): queueing a script from here
+    /// would wait on itself.
+    static DRAINS: Cell<bool> = const { Cell::new(false) };
 }
+
+/// How often the draining thread looks whether the console came free.
+const RETRY: Duration = Duration::from_millis(1);
 
 /// A queued script.
 struct Pending {
@@ -94,9 +111,23 @@ impl Buffer {
         if INSIDE.with(Cell::get) {
             return self.run_here(effects, job);
         }
-        if let Ok(_lock) = self.exec.try_lock() {
+        if let Some(_lock) = self.try_exec() {
             let _inside = Inside::enter();
             return self.run_here(effects, job);
+        }
+        if DRAINS.with(Cell::get) {
+            // A plugin's hotkey callback on the input thread: only this thread runs the queue,
+            // so wait for the console itself rather than for a drain that cannot come.
+            let deadline = Instant::now() + SYNC_TIMEOUT;
+            while Instant::now() < deadline {
+                std::thread::sleep(RETRY);
+                if let Some(_lock) = self.try_exec() {
+                    let _inside = Inside::enter();
+                    return self.run_here(effects, job);
+                }
+            }
+            self.post(job);
+            return busy();
         }
         let (done, answer) = mpsc::channel();
         self.push(Pending {
@@ -104,15 +135,17 @@ impl Buffer {
             job,
             done: Some(done),
         });
-        answer.recv_timeout(SYNC_TIMEOUT).unwrap_or_else(|_| {
-            (
-                Status::ERROR,
-                vec![format!(
-                    "the console was busy for {} s; the script runs when it is free",
-                    SYNC_TIMEOUT.as_secs()
-                )],
-            )
-        })
+        answer.recv_timeout(SYNC_TIMEOUT).unwrap_or_else(|_| busy())
+    }
+
+    /// The execution lock if it is free. A run that panicked holding it leaves nothing to
+    /// guard (the lock holds no data), so a poisoned lock counts as free.
+    fn try_exec(&self) -> Option<std::sync::MutexGuard<'_, ()>> {
+        match self.exec.try_lock() {
+            Ok(lock) => Some(lock),
+            Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+            Err(TryLockError::WouldBlock) => None,
+        }
     }
 
     /// Queue `job` for the input thread, for a key bind.
@@ -144,6 +177,7 @@ impl Buffer {
 
     /// Run every queued script that is due. Called by the input thread every tick.
     pub fn drain(&self, effects: &impl Effects) {
+        DRAINS.with(|drains| drains.set(true));
         let _lock = self.exec.lock().unwrap_or_else(PoisonError::into_inner);
         let _inside = Inside::enter();
         loop {
@@ -246,5 +280,52 @@ mod tests {
         buffer.drain(&*f);
         let answer = caller.join().unwrap_or_else(|_| panic!("caller panicked"));
         assert_eq!(answer, (Status::OK, vec!["queued".to_owned()]));
+    }
+
+    #[test]
+    fn the_draining_thread_waits_for_the_console_not_for_itself() {
+        let (f, _) = fake();
+        let buffer = Arc::new(Buffer::new());
+        buffer.drain(&f); // this thread is the input thread now
+        let (held, release) = (mpsc::channel(), mpsc::channel::<()>());
+        let holder = {
+            let buffer = Arc::clone(&buffer);
+            std::thread::spawn(move || {
+                let _lock = buffer.exec.lock().unwrap_or_else(PoisonError::into_inner);
+                let _ = held.0.send(());
+                let _ = release.1.recv_timeout(Duration::from_secs(5));
+            })
+        };
+        held.1
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap_or_else(|e| panic!("holder: {e}"));
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            let _ = release.0.send(());
+        });
+        let started = Instant::now();
+        let answer = buffer.submit(&f, job("echo hotkey"));
+        assert_eq!(answer, (Status::OK, vec!["hotkey".to_owned()]));
+        assert!(started.elapsed() < Duration::from_secs(2), "ran once free");
+        for t in [holder, releaser] {
+            t.join().unwrap_or_else(|_| panic!("helper panicked"));
+        }
+    }
+
+    #[test]
+    fn a_poisoned_console_still_runs_at_once() {
+        let (f, _) = fake();
+        let buffer = Arc::new(Buffer::new());
+        let poisoner = {
+            let buffer = Arc::clone(&buffer);
+            std::thread::spawn(move || {
+                let _lock = buffer.exec.lock().unwrap_or_else(PoisonError::into_inner);
+                panic!("a run that panicked");
+            })
+        };
+        assert!(poisoner.join().is_err());
+        assert!(buffer.exec.is_poisoned());
+        let answer = buffer.submit(&f, job("echo after"));
+        assert_eq!(answer, (Status::OK, vec!["after".to_owned()]));
     }
 }
