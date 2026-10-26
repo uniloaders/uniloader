@@ -57,7 +57,8 @@ unsafe extern "C" fn collect_reply(ctx: *mut c_void, payload: Bytes) {
     // SAFETY: `ctx` is the `&mut Option<Vec<u8>>` of the `message` call in progress, which
     // the ABI guarantees is alive until that call returns.
     let slot = unsafe { &mut *ctx.cast::<Option<Vec<u8>>>() };
-    *slot = Some(bytes_from(payload).to_vec());
+    // SAFETY: the replying plugin's payload is readable for this call; it is copied here.
+    *slot = Some(unsafe { bytes_from(payload) }.to_vec());
 }
 
 pub(crate) fn check(status: Status) -> Result<(), PluginError> {
@@ -116,16 +117,24 @@ impl fmt::Debug for Host {
 /// what every ABI that hands one over promises.
 #[must_use]
 pub unsafe fn read_str(s: Str) -> String {
-    str_from(s)
+    // SAFETY: this function's contract.
+    unsafe { str_from(s) }
 }
 
-/// Copy a borrowed [`Str`] the loader passed us into an owned `String`.
-pub(crate) fn str_from(s: Str) -> String {
-    String::from_utf8_lossy(bytes_from(Bytes {
-        ptr: s.ptr,
-        len: s.len,
-    }))
-    .into_owned()
+/// Copy a borrowed [`Str`] the loader passed us into an owned `String`; invalid UTF-8 is
+/// replaced.
+///
+/// # Safety
+/// `s.ptr` must be null or point at `s.len` readable bytes for the duration of the call.
+pub(crate) unsafe fn str_from(s: Str) -> String {
+    // SAFETY: this function's contract; the bytes are copied before it returns.
+    let bytes = unsafe {
+        bytes_from(Bytes {
+            ptr: s.ptr,
+            len: s.len,
+        })
+    };
+    String::from_utf8_lossy(bytes).into_owned()
 }
 
 /// View a host-provided array.
@@ -141,12 +150,15 @@ unsafe fn slice_from<'a, T>(ptr: *const T, len: usize) -> &'a [T] {
 }
 
 /// View a borrowed [`Bytes`] the loader passed us.
-pub(crate) fn bytes_from<'a>(b: Bytes) -> &'a [u8] {
+///
+/// # Safety
+/// `b.ptr` must be null or point at `b.len` readable bytes that stay valid and unchanged for
+/// `'a`; callers keep `'a` within the callback or call that handed `b` over.
+pub(crate) unsafe fn bytes_from<'a>(b: Bytes) -> &'a [u8] {
     if b.ptr.is_null() || b.len == 0 {
         return &[];
     }
-    // SAFETY: the loader guarantees ptr/len describe readable memory for the current call;
-    // callers only use the slice within that call.
+    // SAFETY: this function's contract.
     unsafe { core::slice::from_raw_parts(b.ptr, b.len) }
 }
 
@@ -181,31 +193,36 @@ impl Host {
     /// The loader's version.
     #[must_use]
     pub fn loader_version(&self) -> String {
-        str_from(self.api.loader_version)
+        // SAFETY: the table's strings live as long as the table, for our lifetime.
+        unsafe { str_from(self.api.loader_version) }
     }
 
     /// Directory of the game executable.
     #[must_use]
     pub fn game_dir(&self) -> PathBuf {
-        PathBuf::from(str_from(self.api.game_dir))
+        // SAFETY: as in `loader_version`.
+        PathBuf::from(unsafe { str_from(self.api.game_dir) })
     }
 
     /// Full path of the game executable.
     #[must_use]
     pub fn exe_path(&self) -> PathBuf {
-        PathBuf::from(str_from(self.api.exe_path))
+        // SAFETY: as in `loader_version`.
+        PathBuf::from(unsafe { str_from(self.api.exe_path) })
     }
 
     /// Directory the plugins are loaded from.
     #[must_use]
     pub fn plugin_dir(&self) -> PathBuf {
-        PathBuf::from(str_from(self.api.plugin_dir))
+        // SAFETY: as in `loader_version`.
+        PathBuf::from(unsafe { str_from(self.api.plugin_dir) })
     }
 
     /// Directory holding plugin config files.
     #[must_use]
     pub fn config_dir(&self) -> PathBuf {
-        PathBuf::from(str_from(self.api.config_dir))
+        // SAFETY: as in `loader_version`.
+        PathBuf::from(unsafe { str_from(self.api.config_dir) })
     }
 
     /// Base address the game executable is mapped at.
@@ -217,7 +234,8 @@ impl Host {
     /// The game's command line verbatim, without the executable path.
     #[must_use]
     pub fn command_line(&self) -> String {
-        str_from(self.api.command_line)
+        // SAFETY: as in `loader_version`.
+        unsafe { str_from(self.api.command_line) }
     }
 
     /// The game's command line, parsed. Covers `--flag`, `-key=value`, `/key value` and
@@ -226,7 +244,8 @@ impl Host {
     pub fn args(&self) -> CommandLine {
         // SAFETY: the loader documents args/arg_count as a snapshot valid for our lifetime.
         let entries: &[ArgEntry] = unsafe { slice_from(self.api.args, self.api.arg_count) };
-        CommandLine::parse(entries.iter().map(|e| str_from(e.raw)))
+        // SAFETY: each entry's string belongs to that snapshot.
+        CommandLine::parse(entries.iter().map(|e| unsafe { str_from(e.raw) }))
     }
 
     /// Every environment variable of the game process, as a snapshot taken when the loader
@@ -237,7 +256,8 @@ impl Host {
         let entries: &[EnvEntry] = unsafe { slice_from(self.api.env, self.api.env_count) };
         entries
             .iter()
-            .map(|e| (str_from(e.name), str_from(e.value)))
+            // SAFETY: each entry's strings belong to that snapshot.
+            .map(|e| unsafe { (str_from(e.name), str_from(e.value)) })
             .collect()
     }
 
@@ -643,7 +663,8 @@ pub(crate) unsafe extern "C" fn collect_line(ctx: *mut c_void, line: Str) {
     }
     // SAFETY: the only caller is the loader, with the pointer we handed it.
     let lines = unsafe { &mut *ctx.cast::<Vec<String>>() };
-    lines.push(str_from(line));
+    // SAFETY: `line` is readable for this call (this function's contract); it is copied.
+    lines.push(unsafe { str_from(line) });
 }
 
 /// A hook the loader installed for this plugin, and the handle to remove it early.

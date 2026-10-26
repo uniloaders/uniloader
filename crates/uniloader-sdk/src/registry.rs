@@ -90,13 +90,21 @@ unsafe extern "C" fn collect_console(ctx: *mut c_void, line: *const ConsoleLine)
     let line = unsafe { &*line };
     // SAFETY: the only caller is the loader, with the pointer we handed it.
     let lines = unsafe { &mut *ctx.cast::<Vec<ConsoleEntry>>() };
+    // SAFETY: the line's strings are readable for this call; they are copied.
+    let (clock, target, text) = unsafe {
+        (
+            str_from(line.clock),
+            str_from(line.target),
+            str_from(line.text),
+        )
+    };
     lines.push(ConsoleEntry {
         seq: line.seq,
         kind: line.kind,
         level: line.level,
-        clock: str_from(line.clock),
-        target: str_from(line.target),
-        text: str_from(line.text),
+        clock,
+        target,
+        text,
     });
 }
 
@@ -298,49 +306,60 @@ impl UpdateEvent {
 ///
 /// # Safety
 /// `ctx` must be the `Vec<O>` the enumerating call passed, and `item` a valid entry.
-unsafe extern "C" fn collect<I, O>(ctx: *mut c_void, item: *const I)
-where
-    O: for<'a> From<&'a I>,
-{
+unsafe extern "C" fn collect<I, O: FromAbi<I>>(ctx: *mut c_void, item: *const I) {
     if ctx.is_null() || item.is_null() {
         return;
     }
     // SAFETY: the only caller is the loader, with the pointer we handed it, and an entry
     // valid for the duration of this call.
     let (out, item) = unsafe { (&mut *ctx.cast::<Vec<O>>(), &*item) };
-    out.push(O::from(item));
+    // SAFETY: the entry's strings and arrays are readable for this call, as the
+    // enumerating functions document; the conversion copies them.
+    out.push(unsafe { O::from_abi(item) });
 }
 
-impl From<&PluginEntry> for ModuleEntry {
-    fn from(e: &PluginEntry) -> Self {
-        ModuleEntry {
-            plugin: (e.handle != PluginHandle::NONE).then_some(PluginRef(e.handle)),
-            kind: e.kind,
-            state: e.state,
-            name: str_from(e.name),
-            title: str_from(e.title),
-            version: str_from(e.version),
-            description: str_from(e.description),
-            file: str_from(e.file),
-            authors: if e.authors.is_null() {
-                Vec::new()
-            } else {
-                // SAFETY: the loader passes `author_count` valid entries for the duration of
-                // the call, as documented on `PluginEntry`.
-                unsafe { core::slice::from_raw_parts(e.authors, e.author_count) }
+/// An owned entry made from the loader's borrowed one, whose strings and arrays are raw
+/// pointers: not `From`, since safe code could build an entry with any pointers in it.
+trait FromAbi<I> {
+    /// # Safety
+    /// Every string and array `item` points at must be readable for the call.
+    unsafe fn from_abi(item: &I) -> Self;
+}
+
+impl FromAbi<PluginEntry> for ModuleEntry {
+    unsafe fn from_abi(e: &PluginEntry) -> Self {
+        let authors: &[uniloader_api::Author] = if e.authors.is_null() {
+            &[]
+        } else {
+            // SAFETY: `author_count` valid entries for the call, as documented on
+            // `PluginEntry` (this function's contract).
+            unsafe { core::slice::from_raw_parts(e.authors, e.author_count) }
+        };
+        // SAFETY: every string here is readable for the call (this function's contract).
+        unsafe {
+            ModuleEntry {
+                plugin: (e.handle != PluginHandle::NONE).then_some(PluginRef(e.handle)),
+                kind: e.kind,
+                state: e.state,
+                name: str_from(e.name),
+                title: str_from(e.title),
+                version: str_from(e.version),
+                description: str_from(e.description),
+                file: str_from(e.file),
+                authors: authors
                     .iter()
                     .map(|a| AuthorEntry {
                         name: str_from(a.name),
                         url: str_from(a.url),
                     })
-                    .collect()
-            },
-            homepage: str_from(e.homepage),
-            issues: str_from(e.issues),
-            download: str_from(e.download),
-            latest: str_from(e.latest),
-            update_available: e.update_available != 0,
-            mismatch: str_from(e.mismatch),
+                    .collect(),
+                homepage: str_from(e.homepage),
+                issues: str_from(e.issues),
+                download: str_from(e.download),
+                latest: str_from(e.latest),
+                update_available: e.update_available != 0,
+                mismatch: str_from(e.mismatch),
+            }
         }
     }
 }
@@ -358,22 +377,33 @@ impl SettingEntry {
     }
 }
 
-impl From<&SettingInfo> for SettingEntry {
-    fn from(s: &SettingInfo) -> Self {
-        let (choices, labels) = uniloader_core::settings::parse_choices(&str_from(s.choices));
-        let kind = SettingKind::from_abi(s.kind);
+impl FromAbi<SettingInfo> for SettingEntry {
+    unsafe fn from_abi(s: &SettingInfo) -> Self {
+        // SAFETY: every string here is readable for the call (this function's contract).
+        let (choices, plugin, key, title, description, default, value) = unsafe {
+            (
+                str_from(s.choices),
+                str_from(s.plugin),
+                str_from(s.key),
+                str_from(s.title),
+                str_from(s.description),
+                str_from(s.default),
+                str_from(s.value),
+            )
+        };
+        let (choices, labels) = uniloader_core::settings::parse_choices(&choices);
         SettingEntry {
-            plugin: str_from(s.plugin),
-            key: str_from(s.key),
-            title: str_from(s.title),
-            description: str_from(s.description),
-            kind,
+            plugin,
+            key,
+            title,
+            description,
+            kind: SettingKind::from_abi(s.kind),
             min: s.min,
             max: s.max,
             choices,
             labels,
-            default: str_from(s.default),
-            value: str_from(s.value),
+            default,
+            value,
             restart_required: s
                 .flags
                 .contains(uniloader_api::SettingFlags::RESTART_REQUIRED),
@@ -384,13 +414,16 @@ impl From<&SettingInfo> for SettingEntry {
     }
 }
 
-impl From<&HotkeyInfo> for HotkeyEntry {
-    fn from(h: &HotkeyInfo) -> Self {
-        HotkeyEntry {
-            name: str_from(h.name),
-            title: str_from(h.title),
-            binding: str_from(h.binding),
-            default_binding: str_from(h.default_binding),
+impl FromAbi<HotkeyInfo> for HotkeyEntry {
+    unsafe fn from_abi(h: &HotkeyInfo) -> Self {
+        // SAFETY: every string here is readable for the call (this function's contract).
+        unsafe {
+            HotkeyEntry {
+                name: str_from(h.name),
+                title: str_from(h.title),
+                binding: str_from(h.binding),
+                default_binding: str_from(h.default_binding),
+            }
         }
     }
 }

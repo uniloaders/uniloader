@@ -300,14 +300,16 @@ unsafe extern "C" fn on_disable<P: Plugin>(ctx: *mut c_void) {
 unsafe extern "C" fn on_hotkey<P: Plugin>(ctx: *mut c_void, action: Str) {
     // SAFETY: documented pointer contracts of this callback.
     let s = unsafe { state::<P>(ctx) };
-    let action = str_from(action);
+    // SAFETY: the loader's argument is readable for this call; it is copied.
+    let action = unsafe { str_from(action) };
     guard(s, "on_hotkey", |s| s.plugin.on_hotkey(&s.host, &action));
 }
 
 unsafe extern "C" fn on_hotkey_release<P: Plugin>(ctx: *mut c_void, action: Str) {
     // SAFETY: documented pointer contracts of this callback.
     let s = unsafe { state::<P>(ctx) };
-    let action = str_from(action);
+    // SAFETY: the loader's argument is readable for this call; it is copied.
+    let action = unsafe { str_from(action) };
     guard(s, "on_hotkey_release", |s| {
         s.plugin.on_hotkey_release(&s.host, &action);
     });
@@ -316,7 +318,8 @@ unsafe extern "C" fn on_hotkey_release<P: Plugin>(ctx: *mut c_void, action: Str)
 unsafe extern "C" fn on_setting_changed<P: Plugin>(ctx: *mut c_void, key: Str, value: Str) {
     // SAFETY: documented pointer contracts of this callback.
     let s = unsafe { state::<P>(ctx) };
-    let (key, value) = (str_from(key), str_from(value));
+    // SAFETY: the loader's arguments are readable for this call; they are copied.
+    let (key, value) = unsafe { (str_from(key), str_from(value)) };
     guard(s, "on_setting_changed", |s| {
         s.plugin.on_setting_changed(&s.host, &key, &value);
     });
@@ -334,7 +337,8 @@ fn status_of(result: Option<&Result<(), PluginError>>) -> Status {
 unsafe extern "C" fn on_command<P: Plugin>(ctx: *mut c_void, name: Str, args: Str) -> Status {
     // SAFETY: documented pointer contracts of this callback.
     let s = unsafe { state::<P>(ctx) };
-    let (name, args) = (str_from(name), str_from(args));
+    // SAFETY: the loader's arguments are readable for this call; they are copied.
+    let (name, args) = unsafe { (str_from(name), str_from(args)) };
     let result = guard(s, "on_command", |s| {
         s.plugin.on_command(&s.host, &name, &args).inspect_err(|e| {
             if let PluginError::Message(m) = e {
@@ -355,8 +359,9 @@ unsafe extern "C" fn on_message<P: Plugin>(
 ) -> Status {
     // SAFETY: documented pointer contracts of this callback.
     let s = unsafe { state::<P>(ctx) };
-    let topic = str_from(topic);
-    let payload = bytes_from(payload);
+    // SAFETY: the loader's arguments are readable for this call, and the payload slice is
+    // used only within it (the plugin gets `&[u8]` for the callback).
+    let (topic, payload) = unsafe { (str_from(topic), bytes_from(payload)) };
     let result = guard(s, "on_message", |s| {
         s.plugin
             .on_message(&s.host, PluginRef(from), &topic, payload)
@@ -382,8 +387,8 @@ unsafe extern "C" fn on_event<P: Plugin>(
 ) {
     // SAFETY: documented pointer contracts of this callback.
     let s = unsafe { state::<P>(ctx) };
-    let topic = str_from(topic);
-    let payload = bytes_from(payload);
+    // SAFETY: as in `on_message`.
+    let (topic, payload) = unsafe { (str_from(topic), bytes_from(payload)) };
     guard(s, "on_event", |s| {
         s.plugin.on_event(&s.host, PluginRef(from), &topic, payload);
     });
