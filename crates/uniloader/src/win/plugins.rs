@@ -152,10 +152,16 @@ impl Active {
     /// Resume callback delivery and tell the plugin. Returns whether this changed anything.
     pub(crate) fn enable(&self) -> bool {
         // A stopped or faulted plugin has torn down: calling it again is not safe.
-        if super::state().has_ended(self.handle) {
+        if self.ended.load(Ordering::SeqCst) || super::state().has_ended(self.handle) {
             return false;
         }
-        let changed = !self.enabled.swap(true, Ordering::Relaxed);
+        let changed = !self.enabled.swap(true, Ordering::SeqCst);
+        // A fault on another thread may have ended it since the check: `disable` sets `ended`
+        // before it clears `enabled`, so seeing it here means our swap must not stand.
+        if self.ended.load(Ordering::SeqCst) {
+            self.enabled.store(false, Ordering::SeqCst);
+            return false;
+        }
         if changed {
             super::state().set_enabled(self.handle, true);
             // After the atomic, so the plugin may already act on frames from here on.
@@ -167,8 +173,12 @@ impl Active {
 
     /// Stop delivering callbacks after a fault, and record it in the registry.
     pub(crate) fn disable(&self, reason: &str) {
-        if self.enabled.swap(false, Ordering::Relaxed) {
-            self.ended.store(true, Ordering::Release);
+        // `ended` first: an `enable` racing this checks it after its own swap (see there).
+        // A fault of a plugin already stopped, or already disabled by an earlier fault, is
+        // not news.
+        let first = !self.ended.swap(true, Ordering::SeqCst);
+        let was_enabled = self.enabled.swap(false, Ordering::SeqCst);
+        if first || was_enabled {
             log::error!(
                 "[{}] disabled for the rest of this session: {reason}",
                 self.name
