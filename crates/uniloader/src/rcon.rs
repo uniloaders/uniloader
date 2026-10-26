@@ -11,7 +11,7 @@
 //! Platform independent: the loader passes in what runs a script.
 
 use std::collections::BTreeMap;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -436,15 +436,17 @@ fn serve(shared: &Shared, mut stream: TcpStream, peer: SocketAddr, id: usize) {
     let mut authed = false;
     let mut recent: Vec<Instant> = Vec::new();
     loop {
-        if !authed {
-            let left = login_by.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                shared.audit(&format!("{who} closed: no login within {LOGIN_TIMEOUT:?}"));
-                return;
-            }
-            let _ = stream.set_read_timeout(Some(left));
-        }
-        let packet = match Packet::read_from(&mut stream, MAX_REQUEST_BODY) {
+        let read = if authed {
+            Packet::read_from(&mut stream, MAX_REQUEST_BODY)
+        } else {
+            let mut until = Deadline {
+                stream: &stream,
+                by: login_by,
+                what: "no login",
+            };
+            Packet::read_from(&mut until, MAX_REQUEST_BODY)
+        };
+        let packet = match read {
             Ok(p) => p,
             Err(e) => {
                 shared.audit(&format!("{who} closed: {e}"));
@@ -492,6 +494,43 @@ fn serve(shared: &Shared, mut stream: TcpStream, peer: SocketAddr, id: usize) {
         if banned {
             shared.audit(&format!("{who} closed: address banned"));
             return;
+        }
+    }
+}
+
+/// Reads from a socket until a deadline. A packet is read in many `read` calls, and a socket
+/// timeout counts per call, so a client sending a byte every few seconds would never trip
+/// one set per packet: each call here gets only the time left.
+struct Deadline<'a> {
+    stream: &'a TcpStream,
+    by: Instant,
+    /// What the error says ran out ("no login").
+    what: &'static str,
+}
+
+impl Read for Deadline<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let late = || {
+            std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("{} within {LOGIN_TIMEOUT:?}", self.what),
+            )
+        };
+        let left = self.by.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(late());
+        }
+        self.stream.set_read_timeout(Some(left))?;
+        match (&mut &*self.stream).read(buf) {
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                Err(late())
+            }
+            other => other,
         }
     }
 }

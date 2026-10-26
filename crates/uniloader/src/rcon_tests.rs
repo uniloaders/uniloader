@@ -135,6 +135,44 @@ fn the_ban_also_ends_the_connection_that_kept_guessing() {
 }
 
 #[test]
+fn a_login_sent_a_byte_at_a_time_still_runs_out_of_time() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap_or_else(|e| panic!("{e}"));
+    let addr = listener.local_addr().unwrap_or_else(|e| panic!("{e}"));
+    // A valid length (40), then one body byte every 100 ms: each read is quick, the whole
+    // packet would take 4 s.
+    let trickler = std::thread::spawn(move || {
+        let mut c = TcpStream::connect(addr).unwrap_or_else(|e| panic!("{e}"));
+        let _ = c.write_all(&40i32.to_le_bytes());
+        for _ in 0..40 {
+            std::thread::sleep(Duration::from_millis(100));
+            if c.write_all(&[0]).is_err() {
+                return;
+            }
+        }
+    });
+    let (stream, _) = listener.accept().unwrap_or_else(|e| panic!("{e}"));
+    let started = Instant::now();
+    let mut until = Deadline {
+        stream: &stream,
+        by: started + Duration::from_millis(500),
+        what: "no login",
+    };
+    let read = Packet::read_from(&mut until, MAX_REQUEST_BODY);
+    let took = started.elapsed();
+    assert!(read.is_err(), "the trickle is cut off");
+    assert!(
+        took < Duration::from_secs(2),
+        "at the deadline, not the packet's end: {took:?}"
+    );
+    let shown = read.err().map(|e| e.to_string()).unwrap_or_default();
+    assert!(shown.contains("no login within"), "{shown}");
+    drop(stream);
+    trickler
+        .join()
+        .unwrap_or_else(|_| panic!("trickler panicked"));
+}
+
+#[test]
 fn commands_before_login_and_oversized_packets_close_the_connection() {
     let (server, dir) = server("another password");
     let mut c = connect(&server);
