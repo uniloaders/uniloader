@@ -270,7 +270,7 @@ pub(crate) fn uninstall() {
     wnd::unsubclass();
 }
 
-pub(crate) use wnd::inject;
+pub(crate) use wnd::{flush_input, inject};
 
 /// One `Present`, before it reaches DXGI: present subscribers, then the overlay on top.
 pub(crate) fn frame(swapchain: *mut c_void, sync_interval: u32, flags: u32) {

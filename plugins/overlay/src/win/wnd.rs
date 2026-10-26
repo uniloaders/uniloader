@@ -19,7 +19,7 @@
 #![allow(unsafe_code)]
 
 use core::ffi::c_void;
-use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicPtr, AtomicU32, Ordering};
 use std::sync::Mutex;
 
 use egui::{Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, Vec2};
@@ -56,6 +56,8 @@ struct Pending {
     last_key: Option<(u16, u16)>,
     /// Moving by raw deltas because the game holds the cursor; see the module comment.
     relative: bool,
+    /// The last key press (scan code plus one) and when, for [`flush_input`].
+    last_down: Option<(u32, std::time::Instant)>,
 }
 
 static PENDING: Mutex<Pending> = Mutex::new(Pending {
@@ -66,6 +68,7 @@ static PENDING: Mutex<Pending> = Mutex::new(Pending {
     screen: Vec2::new(1920.0, 1080.0),
     last_key: None,
     relative: false,
+    last_down: None,
 });
 
 fn pending() -> std::sync::MutexGuard<'static, Pending> {
@@ -123,11 +126,43 @@ pub(crate) fn set_screen(width: f32, height: f32) {
     pending().screen = Vec2::new(width, height);
 }
 
+/// The scan code (plus one; 0 = none) of the key press the window procedure is handing to
+/// the loader's hotkeys right now: a window that opens inside it was opened by that key.
+static KEY_IN_FLIGHT: AtomicU32 = AtomicU32::new(0);
+/// Set by [`flush_input`] inside that hand-over: the key's own press is not passed on.
+static OPENED_BY_KEY: AtomicBool = AtomicBool::new(false);
+/// The scan code (plus one) whose next character is dropped: the character of the key that
+/// opened a window belongs to the game.
+static DROP_CHAR: AtomicU32 = AtomicU32::new(0);
+
+/// Drops the input collected so far, now, because a window opened or closed. Nothing typed
+/// after this is lost (`overlay.input` right after `action overlay.console`); only when a key
+/// press opened the window are that press and its character dropped as well.
+pub(crate) fn flush_input() {
+    let recent = {
+        let mut guard = pending();
+        guard.events.clear();
+        guard
+            .last_down
+            .filter(|(_, at)| at.elapsed() < OPENING_KEY)
+            .map(|(scan, _)| scan)
+    };
+    let key = KEY_IN_FLIGHT.load(Ordering::Acquire);
+    if key != 0 {
+        OPENED_BY_KEY.store(true, Ordering::Release);
+        DROP_CHAR.store(key, Ordering::Release);
+    } else if let Some(scan) = recent {
+        // A hotkey the loader fired off this thread: its character may still be on its way.
+        DROP_CHAR.store(scan, Ordering::Release);
+    }
+}
+
+/// A key pressed this recently before a window opened, outside the window procedure, is
+/// taken for the key that opened it.
+const OPENING_KEY: std::time::Duration = std::time::Duration::from_millis(250);
+
 /// Take everything collected since the last call as one frame of egui input.
 pub(crate) fn take_input(screen: Rect, time: f64) -> RawInput {
-    if shared::take_flush() {
-        pending().events.clear();
-    }
     if shared::take_centre() {
         centre_pointer();
     }
@@ -439,6 +474,15 @@ fn record(msg: u32, wparam: WPARAM, lparam: LPARAM, capturing: bool) -> bool {
             true
         }
         WM_CHAR => {
+            // The character of the key that opened a window: the game's, not the window's.
+            #[allow(clippy::cast_sign_loss, reason = "a bit field, not a number")]
+            let scan = ((lparam.0 as u64 >> 16) & 0xFF) as u32 + 1;
+            if DROP_CHAR
+                .compare_exchange(scan, 0, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return true;
+            }
             #[allow(clippy::cast_possible_truncation)]
             let unit = wparam.0 as u32;
             // Control characters are covered by the key events; a lone surrogate is dropped.
@@ -483,13 +527,24 @@ fn keyboard(msg: u32, wparam: WPARAM, lparam: LPARAM) {
         update_modifiers(&mut guard.modifiers, vk, pressed);
         if pressed {
             guard.last_key = Some((vk, scancode));
+            guard.last_down = Some((u32::from(scancode & 0xFF) + 1, std::time::Instant::now()));
         }
         guard.modifiers
     };
+    if pressed {
+        // Another key pressed: an undelivered character of an earlier opening key is moot.
+        DROP_CHAR.store(0, Ordering::Release);
+    }
     if pressed && !repeat {
         // No lock held: the loader runs the hotkey's plugin before this returns.
         if let Some(host) = crate::host() {
+            KEY_IN_FLIGHT.store(u32::from(scancode & 0xFF) + 1, Ordering::Release);
             host.hotkey_press(scancode, key_modifiers(modifiers));
+            KEY_IN_FLIGHT.store(0, Ordering::Release);
+        }
+        if OPENED_BY_KEY.swap(false, Ordering::AcqRel) {
+            // The press opened (or closed) a window: it was the game's key, not the window's.
+            return;
         }
     }
     let mut guard = pending();

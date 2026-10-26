@@ -22,9 +22,6 @@ static CONSOLE_OPEN: AtomicBool = AtomicBool::new(false);
 static EDITOR_OPEN: AtomicBool = AtomicBool::new(false);
 /// How many plugin panels are open.
 static PANELS_OPEN: AtomicUsize = AtomicUsize::new(0);
-/// Set when the input collected so far should be dropped: the key that opened a window
-/// also produced a character, which belongs to the game.
-static FLUSH: AtomicBool = AtomicBool::new(false);
 /// Set when the virtual pointer should jump to the middle of the screen.
 static CENTRE: AtomicBool = AtomicBool::new(false);
 
@@ -65,9 +62,11 @@ pub(crate) fn close_editor() {
     refresh();
 }
 
-/// Take the pending flush request.
-pub(crate) fn take_flush() -> bool {
-    FLUSH.swap(false, Ordering::Relaxed)
+/// Drops the input collected so far: a window opened or closed. The key that opened it also
+/// produced a character, which belongs to the game (the window procedure drops that one).
+fn flush_input() {
+    #[cfg(windows)]
+    crate::win::flush_input();
 }
 
 /// Take the pending recentre request.
@@ -84,7 +83,7 @@ pub(crate) fn toggle_console() {
         // A console nobody can type into is not a console.
         GRABBED.store(true, Ordering::Relaxed);
     }
-    FLUSH.store(true, Ordering::Relaxed);
+    flush_input();
     refresh();
 }
 
@@ -96,7 +95,7 @@ pub(crate) fn toggle_editor() {
     if open {
         GRABBED.store(true, Ordering::Relaxed);
     }
-    FLUSH.store(true, Ordering::Relaxed);
+    flush_input();
     refresh();
 }
 
@@ -137,7 +136,7 @@ pub(crate) fn refresh() {
         CENTRE.store(true, Ordering::Relaxed);
     }
     if open > was {
-        FLUSH.store(true, Ordering::Relaxed);
+        flush_input();
     }
     recount();
 }
