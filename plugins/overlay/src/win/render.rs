@@ -9,6 +9,7 @@
 #![allow(unsafe_code)]
 
 use windows::core::Interface;
+use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY;
 use windows::Win32::Graphics::Direct3D11::{
     ID3D11BlendState, ID3D11Buffer, ID3D11DepthStencilView, ID3D11Device, ID3D11DeviceContext,
@@ -22,6 +23,9 @@ use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
 };
 use windows::Win32::Graphics::Dxgi::IDXGISwapChain;
+
+/// `D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT`.
+const TARGET_SLOTS: usize = 8;
 
 /// A render target view of a swapchain's backbuffer, with the size it had when it was made.
 pub(crate) struct Target {
@@ -101,7 +105,11 @@ pub(crate) struct Saved {
     resource: Option<ID3D11ShaderResourceView>,
     rasterizer: Option<ID3D11RasterizerState>,
     viewports: Vec<D3D11_VIEWPORT>,
-    render_target: Option<ID3D11RenderTargetView>,
+    /// The renderer clips each mesh with a scissor rectangle; a game whose rasterizer state
+    /// scissors would otherwise draw through the overlay's last one.
+    scissors: Vec<RECT>,
+    /// Every slot: setting one target unbinds the others.
+    render_targets: [Option<ID3D11RenderTargetView>; TARGET_SLOTS],
     depth: Option<ID3D11DepthStencilView>,
     blend: Option<ID3D11BlendState>,
     blend_factor: [f32; 4],
@@ -125,7 +133,8 @@ pub(crate) fn save(ctx: &ID3D11DeviceContext) -> Saved {
         resource: None,
         rasterizer: None,
         viewports: Vec::new(),
-        render_target: None,
+        scissors: Vec::new(),
+        render_targets: Default::default(),
         depth: None,
         blend: None,
         blend_factor: [0.0; 4],
@@ -164,9 +173,16 @@ pub(crate) fn save(ctx: &ID3D11DeviceContext) -> Saved {
             saved.viewports = vec![D3D11_VIEWPORT::default(); count as usize];
             ctx.RSGetViewports(&raw mut count, Some(saved.viewports.as_mut_ptr()));
         }
-        let mut targets = [None];
-        ctx.OMGetRenderTargets(Some(&mut targets), Some(&raw mut saved.depth));
-        saved.render_target = targets[0].take();
+        let mut count = 0;
+        ctx.RSGetScissorRects(&raw mut count, None);
+        if count > 0 {
+            saved.scissors = vec![RECT::default(); count as usize];
+            ctx.RSGetScissorRects(&raw mut count, Some(saved.scissors.as_mut_ptr()));
+        }
+        ctx.OMGetRenderTargets(
+            Some(&mut saved.render_targets[..]),
+            Some(&raw mut saved.depth),
+        );
         ctx.OMGetBlendState(
             Some(&raw mut saved.blend),
             Some(&mut saved.blend_factor),
@@ -203,10 +219,15 @@ pub(crate) fn restore(ctx: &ID3D11DeviceContext, saved: &Saved) {
         if !saved.viewports.is_empty() {
             ctx.RSSetViewports(Some(&saved.viewports));
         }
-        ctx.OMSetRenderTargets(
-            Some(core::slice::from_ref(&saved.render_target)),
-            saved.depth.as_ref(),
-        );
+        // None saved means none were set: an empty list clears the overlay's.
+        ctx.RSSetScissorRects(Some(&saved.scissors));
+        // Trailing empty slots are left out, as the game would have bound them.
+        let bound = saved
+            .render_targets
+            .iter()
+            .rposition(Option::is_some)
+            .map_or(0, |last| last + 1);
+        ctx.OMSetRenderTargets(Some(&saved.render_targets[..bound]), saved.depth.as_ref());
         ctx.OMSetBlendState(
             saved.blend.as_ref(),
             Some(&saved.blend_factor),
