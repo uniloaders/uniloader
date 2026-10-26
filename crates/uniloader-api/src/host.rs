@@ -320,4 +320,15 @@ pub struct HostApi {
         label: Str,
         chords: Str,
     ) -> Status,
+    /// [`HostApi::guarded_call`] that runs `f` whatever `target`'s state: for a plugin's own
+    /// threads, which run on while it is paused and have to be able to finish once it
+    /// stopped (a thread its `stop` starts to close connections). A fault disables `target`
+    /// if it still runs, and returns [`Status::ERROR`] either way. Hooks the game calls use
+    /// [`HostApi::guarded_call`], so a paused or stopped plugin's hook bodies stay off.
+    pub guarded_run: unsafe extern "C" fn(
+        host: *mut c_void,
+        target: PluginHandle,
+        f: Option<GuardedFn>,
+        ctx: *mut c_void,
+    ) -> Status,
 }

@@ -112,9 +112,13 @@ pub(crate) fn find_by_name(name: &str) -> Option<&'static Active> {
 /// A plugin that is still starting is not published yet, but its hooks and threads may run
 /// already: `body` runs guarded all the same, and a fault is logged (the plugin is disabled
 /// once the guard can find it, through its hook's own trip switch until then).
-pub(crate) fn guarded(target: PluginHandle, body: impl FnOnce()) -> Status {
+///
+/// `always` runs `body` even for a paused or ended `target` (its own threads, which must be
+/// able to finish); otherwise such a target is answered [`Status::NOT_FOUND`] unrun (its
+/// hooks, which stay off).
+pub(crate) fn guarded(target: PluginHandle, always: bool, body: impl FnOnce()) -> Status {
     let plugin = find(target);
-    if plugin.is_some_and(|p| !p.is_enabled()) {
+    if !always && plugin.is_some_and(|p| !p.is_enabled()) {
         return Status::NOT_FOUND;
     }
     // SAFETY: the caller passes a closure performing one call into `target`; the guard
@@ -123,6 +127,10 @@ pub(crate) fn guarded(target: PluginHandle, body: impl FnOnce()) -> Status {
         Ok(()) => Status::OK,
         Err(fault) => {
             match plugin {
+                // Stopped or faulted before: nothing to disable, but the fault is news.
+                Some(plugin) if plugin.ended.load(Ordering::SeqCst) => {
+                    log::error!("[{}] (stopped) guarded call {fault}", plugin.name);
+                }
                 Some(plugin) => plugin.disable(&format!("guarded call {fault}")),
                 None => log::error!("plugin {} (starting): guarded call {fault}", target.0),
             }

@@ -130,6 +130,7 @@ pub(crate) fn build(paths: &Paths, process: &Process) -> &'static HostApi {
         plugin_of: caller::plugin_of,
         bind_default,
         keys_reserve,
+        guarded_run: registry::guarded_run,
     }))
 }
 

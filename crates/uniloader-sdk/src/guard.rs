@@ -49,15 +49,26 @@ pub enum Failed {
 /// # Errors
 /// [`Failed`]: `f` panicked or faulted, or could not be run.
 pub fn call<R>(f: impl FnOnce() -> R) -> Result<R, Failed> {
+    guarded(false, f)
+}
+
+/// [`call`], or with `always` run even while the plugin is paused or after it stopped (its
+/// own threads); then [`Failed::Disabled`] never comes back.
+fn guarded<R>(always: bool, f: impl FnOnce() -> R) -> Result<R, Failed> {
     let Some(host) = HOST.get() else {
         return catch_unwind(AssertUnwindSafe(f)).map_err(|_| Failed::Panicked);
     };
     let mut out = None;
     let mut panicked = false;
-    let ran = host.guarded(host.me(), || match catch_unwind(AssertUnwindSafe(f)) {
+    let body = || match catch_unwind(AssertUnwindSafe(f)) {
         Ok(value) => out = Some(value),
         Err(_) => panicked = true,
-    });
+    };
+    let ran = if always {
+        host.guarded_run(host.me(), body)
+    } else {
+        host.guarded(host.me(), body)
+    };
     match (ran, out) {
         (Ok(()), Some(value)) => Ok(value),
         (Ok(()), None) if panicked => Err(Failed::Panicked),
@@ -141,8 +152,12 @@ pub fn service<R>(name: &str, fallback: R, f: impl FnOnce() -> R) -> R {
     })
 }
 
-/// [`std::thread::Builder::spawn`] with the thread's body under [`call`]: a panic or fault
-/// ends the thread, not the game, and `join` says so as it does for a panic.
+/// [`std::thread::Builder::spawn`] with the thread's body under the loader's guard: a panic
+/// or fault ends the thread, not the game, and `join` says so as it does for a panic.
+///
+/// Unlike [`call`], the body runs while the plugin is paused and after it stopped: a
+/// plugin's threads are its own, and one its `stop` starts (closing connections, say) has to
+/// be able to finish.
 ///
 /// # Errors
 /// The thread could not be created.
@@ -153,7 +168,7 @@ pub fn spawn<T: Send + 'static>(
     let label = name.to_owned();
     std::thread::Builder::new()
         .name(label.clone())
-        .spawn(move || match call(body) {
+        .spawn(move || match guarded(true, body) {
             Ok(value) => value,
             Err(why) => {
                 log::error!("thread {label} ended: {why:?}");

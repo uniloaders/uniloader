@@ -443,11 +443,36 @@ pub(super) unsafe extern "C" fn guarded_call(
     f: Option<GuardedFn>,
     ctx: *mut c_void,
 ) -> Status {
+    // SAFETY: the plugin's call passes its contract on.
+    unsafe { run_guarded(target, false, f, ctx) }
+}
+
+pub(super) unsafe extern "C" fn guarded_run(
+    _host: *mut c_void,
+    target: PluginHandle,
+    f: Option<GuardedFn>,
+    ctx: *mut c_void,
+) -> Status {
+    // SAFETY: the plugin's call passes its contract on.
+    unsafe { run_guarded(target, true, f, ctx) }
+}
+
+/// `guarded_call` and `guarded_run`: `always` runs `f` whatever the target's state.
+///
+/// # Safety
+/// `f(ctx)` must be a call the plugin vouches for, as the ABI requires of both host
+/// functions; the guard contains a fault inside it, not a wrong signature.
+unsafe fn run_guarded(
+    target: PluginHandle,
+    always: bool,
+    f: Option<GuardedFn>,
+    ctx: *mut c_void,
+) -> Status {
     let Some(f) = f else {
         return Status::INVALID_ARGUMENT;
     };
-    plugins::guarded(target, || {
-        // SAFETY: the caller vouches for `f` and `ctx`; the guard contains a fault inside.
+    plugins::guarded(target, always, || {
+        // SAFETY: this function's contract.
         unsafe { f(ctx) };
     })
 }

@@ -624,6 +624,25 @@ impl Host {
             )
         })
     }
+
+    /// [`Host::guarded`] that runs `f` even while `target` is paused or after it stopped:
+    /// for a plugin's own threads ([`crate::guard::spawn`]), which must be able to finish.
+    pub(crate) fn guarded_run<F: FnOnce()>(
+        &self,
+        target: PluginRef,
+        f: F,
+    ) -> Result<(), PluginError> {
+        let mut slot = Some(f);
+        // SAFETY: `slot` outlives the call and `run_once::<F>` only receives that pointer.
+        check(unsafe {
+            (self.api.guarded_run)(
+                self.api.host,
+                target.0,
+                Some(run_once::<F>),
+                core::ptr::from_mut(&mut slot).cast(),
+            )
+        })
+    }
 }
 
 #[cfg(test)]
