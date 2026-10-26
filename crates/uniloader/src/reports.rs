@@ -175,14 +175,14 @@ pub fn kind_of(name: &str) -> Option<Kind> {
 }
 
 /// Keys whose values are never shown, in `key = value` or `key: value` text.
-const SECRET_KEYS: [&str; 7] = [
-    "password", "passwd", "token", "secret", "apikey", "api_key", "invite",
+const SECRET_KEYS: [&str; 8] = [
+    "password", "passwd", "token", "secret", "apikey", "api_key", "api-key", "invite",
 ];
 
 /// `text` with what identifies a player or opens their session cut out: IP addresses (not
-/// loopback, and not quads starting 1-9, which in logs are mostly version numbers), the part
-/// after `scheme://` for schemes other than http(s) and file (invites), query strings, Steam
-/// ids, long mixed-case tokens and the values of password/token/secret keys.
+/// loopback, and not version-like quads such as `4.26.2.0`: first number 1-9, last 0, never a
+/// host), the part after `scheme://` for schemes other than http(s) and file (invites), query
+/// strings, Steam ids, long mixed-case tokens and the values of password/token/secret keys.
 #[must_use]
 pub fn redact(text: &str) -> String {
     text.lines().map(redact_line).collect::<Vec<_>>().join("\n")
@@ -190,29 +190,39 @@ pub fn redact(text: &str) -> String {
 }
 
 fn redact_line(line: &str) -> String {
-    let lower = line.to_ascii_lowercase();
-    if let Some(at) = SECRET_KEYS.iter().find_map(|k| {
-        let i = lower.find(k)?;
-        // a key starts a word: not `?token=` inside a URL, whose query goes below
-        let starts = lower[..i]
-            .chars()
-            .next_back()
-            .is_none_or(|c| c.is_whitespace() || matches!(c, '"' | '\'' | '{' | ',' | ';'));
-        if !starts {
-            return None;
-        }
-        let rest = &line[i + k.len()..];
-        let sep = rest.find(['=', ':'])?;
-        // `password = x`, `token: x`, not `tokens loaded 3`
-        rest[..sep]
-            .trim()
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '"')
-            .then_some(i + k.len() + sep + 1)
-    }) {
+    if let Some(at) = secret_value(line) {
         return format!("{} [redacted]", &line[..at]);
     }
     split_keep(line).into_iter().map(redact_word).collect()
+}
+
+/// Where the value of the first secret key in `line` starts (after its `=` or `:`). Every
+/// occurrence counts, and a key may end a longer one (`rcon_password`, `--token`), but not
+/// follow a letter or digit (`mytokens`) or a URL's `?`/`&` (its query is cut below).
+fn secret_value(line: &str) -> Option<usize> {
+    // ASCII lower case keeps every byte where it was, so its positions index `line`.
+    let lower = line.to_ascii_lowercase();
+    SECRET_KEYS
+        .iter()
+        .flat_map(|k| lower.match_indices(k))
+        .filter_map(|(i, k)| {
+            let starts = lower[..i]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !c.is_ascii_alphanumeric() && !matches!(c, '?' | '&'));
+            if !starts {
+                return None;
+            }
+            let rest = &line[i + k.len()..];
+            let sep = rest.find(['=', ':'])?;
+            // `password = x`, `token: x`, `password_hash = x`, not `tokens loaded 3`
+            rest[..sep]
+                .trim()
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '"')
+                .then_some(i + k.len() + sep + 1)
+        })
+        .min()
 }
 
 /// `line` cut into words and the separators between them, in order.
@@ -280,7 +290,9 @@ fn is_ipv6(word: &str) -> bool {
     w.contains("::") && groups.iter().filter(|g| !g.is_empty()).count() >= 2 || colons >= 4
 }
 
-/// Dotted quads in `word` replaced, unless loopback, unspecified, or starting 1-9.
+/// Dotted quads in `word` replaced, unless loopback, unspecified, or a version (1-9 first, 0
+/// last: `1.0.0.0`, `4.26.2.0`). A quad that starts 1-9 but is a host (`5.6.7.8`, many home
+/// connections) goes like any other.
 fn redact_ipv4(word: &str) -> String {
     let bytes = word.as_bytes();
     let mut out = String::with_capacity(word.len());
@@ -289,8 +301,8 @@ fn redact_ipv4(word: &str) -> String {
         let boundary = i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'.');
         if boundary && bytes[i].is_ascii_digit() {
             if let Some((len, octets)) = quad_at(&bytes[i..]) {
-                let keep =
-                    octets[0] == 127 || octets == [0, 0, 0, 0] || (1..=9).contains(&octets[0]);
+                let version = (1..=9).contains(&octets[0]) && octets[3] == 0;
+                let keep = octets[0] == 127 || octets == [0, 0, 0, 0] || version;
                 if !keep {
                     // `i` and `i + len` sit on ASCII digits: character boundaries
                     out.push_str(&word[copied..i]);
@@ -451,7 +463,17 @@ fn tail(path: &Path, max: u64) -> io::Result<Vec<u8>> {
 /// When the zip cannot be written.
 pub fn bundle(out: &Path, parts: &[Part]) -> io::Result<u64> {
     let tmp = out.with_extension("zip.part");
-    let file = fs::File::create(&tmp)?;
+    let written = write_zip(&tmp, parts).and_then(|()| fs::rename(&tmp, out));
+    if written.is_err() {
+        // A disk that filled up mid-zip leaves no half zip behind to fill it further.
+        let _ = fs::remove_file(&tmp);
+    }
+    written?;
+    Ok(fs::metadata(out)?.len())
+}
+
+fn write_zip(tmp: &Path, parts: &[Part]) -> io::Result<()> {
+    let file = fs::File::create(tmp)?;
     let mut zip = zip::ZipWriter::new(io::BufWriter::new(file));
     let options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
@@ -478,10 +500,7 @@ pub fn bundle(out: &Path, parts: &[Part]) -> io::Result<u64> {
         zip.write_all(missing.join("\n").as_bytes())?;
     }
     let mut writer = zip.finish().map_err(io::Error::other)?;
-    writer.flush()?;
-    drop(writer);
-    fs::rename(&tmp, out)?;
-    Ok(fs::metadata(out)?.len())
+    writer.flush()
 }
 
 /// Whether `name` ends in `.zip`.

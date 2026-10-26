@@ -76,6 +76,40 @@ fn addresses_invites_and_ids_are_scrubbed() {
 }
 
 #[test]
+fn hosts_that_look_like_versions_and_later_keys_are_scrubbed_too() {
+    // a home connection in 2.x-9.x is a host, not a version
+    assert_eq!(redact("joined 5.6.7.8:7442"), "joined [ip]:7442");
+    assert_eq!(redact("peer 9.8.7.65"), "peer [ip]");
+    // a key's second mention, and a key at the end of a longer one
+    assert_eq!(
+        redact("3 tokens loaded, token = abc"),
+        "3 tokens loaded, token = [redacted]"
+    );
+    assert_eq!(
+        redact("rcon_password = hunter2"),
+        "rcon_password = [redacted]"
+    );
+    assert_eq!(redact("--api-key: k1"), "--api-key: [redacted]");
+    assert_eq!(redact("mytokens: 3"), "mytokens: 3");
+}
+
+#[test]
+fn a_bundle_that_fails_leaves_no_part_file() {
+    let dir = std::env::temp_dir().join(format!("uniloader-bundle-fail-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("{e}"));
+    // The zip's name is taken by a folder, so the final rename fails.
+    let out = dir.join("2026-10-26_01-02-03_manual.zip");
+    fs::create_dir_all(out.join("occupied")).unwrap_or_else(|e| panic!("{e}"));
+    assert!(bundle(&out, &[]).is_err());
+    assert!(
+        !out.with_extension("zip.part").exists(),
+        "the part file went"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn only_text_and_dumps_go_in() {
     assert_eq!(content_of("UE4Minidump.dmp"), Some(Content::Dump));
     assert_eq!(content_of("CrashContext.runtime-xml"), Some(Content::Text));
