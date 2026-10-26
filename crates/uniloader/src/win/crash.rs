@@ -327,9 +327,22 @@ unsafe fn report_crash(pointers: *const EXCEPTION_POINTERS, thread: u32) {
     });
 }
 
+thread_local! {
+    /// This thread is inside [`on_crash`]. A filter that replaced ours and calls the one it
+    /// replaced calls ours, once [`rearm`] made it our `PREVIOUS`: without this the crash
+    /// went round the two until the stack ran out, running the other filter (an engine's
+    /// crash reporter, say) on every lap. Const-initialised with no destructor, so reading it
+    /// allocates nothing on a crashed thread.
+    static IN_FILTER: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+}
+
 /// The unhandled-exception filter: a crash folder with the dump and what faulted, then the
 /// filter that was there before.
 unsafe extern "system" fn on_crash(pointers: *const EXCEPTION_POINTERS) -> i32 {
+    if IN_FILTER.get() {
+        // Back from the filter we called below: the chain has come round to us.
+        return CONTINUE_SEARCH;
+    }
     if CRASHES.fetch_add(1, Ordering::AcqRel) == 0 {
         handling(true);
         // SAFETY: the OS passes a valid record for the duration of the filter, raised on this
@@ -341,14 +354,17 @@ unsafe extern "system" fn on_crash(pointers: *const EXCEPTION_POINTERS) -> i32 {
     if previous.is_null() {
         return CONTINUE_SEARCH;
     }
+    IN_FILTER.set(true);
     // SAFETY: `previous` came from `SetUnhandledExceptionFilter`, so it is a filter function.
-    unsafe {
+    let verdict = unsafe {
         let filter = core::mem::transmute::<
             *mut core::ffi::c_void,
             unsafe extern "system" fn(*const EXCEPTION_POINTERS) -> i32,
         >(previous);
         filter(pointers)
-    }
+    };
+    IN_FILTER.set(false);
+    verdict
 }
 
 /// The thread that writes the dump of a stack overflow, waiting for one, and the handler
