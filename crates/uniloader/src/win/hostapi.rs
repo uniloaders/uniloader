@@ -253,7 +253,24 @@ unsafe extern "C" fn setting_set(
     name: Str,
     value: Str,
 ) -> Status {
-    let (name, value) = (text(name), text(value));
+    let (name, mut value) = (text(name), text(value));
+    // A password is hashed (Argon2, tens of ms) without the state lock, which every host
+    // call of every thread takes.
+    let needs_hash = state().needs_hash(Some(plugin), &name, &value);
+    match needs_hash {
+        Ok(false) => {}
+        Ok(true) => match crate::secret::hash(&value) {
+            Ok(hashed) => value = hashed,
+            Err(e) => {
+                log::warn!("set {name}: {e}");
+                return Status::ERROR;
+            }
+        },
+        Err((status, message)) => {
+            log::warn!("set {name}: {message}");
+            return status;
+        }
+    }
     let outcome = state().set_setting(Some(plugin), &name, &value);
     match outcome {
         Ok(changed) => {

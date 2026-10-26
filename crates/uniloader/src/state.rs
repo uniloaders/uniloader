@@ -511,8 +511,30 @@ impl State {
             .ok_or(Status::NOT_FOUND)
     }
 
+    /// [`crate::secret::needs_hash`] for the setting `name`; [`State::set_setting`] stores a
+    /// hash the caller made without the lock as it is.
+    ///
+    /// # Errors
+    /// An unknown setting, or a password that is too short.
+    pub fn needs_hash(
+        &self,
+        caller: Option<PluginHandle>,
+        name: &str,
+        value: &str,
+    ) -> Result<bool, (Status, String)> {
+        let (handle, key) = self
+            .resolve(caller, name)
+            .ok_or((Status::NOT_FOUND, format!("unknown setting {name}")))?;
+        let owner = self.plugin(handle).map(PluginRecord::name);
+        let hashed = self
+            .hashed
+            .contains(&format!("{}.{key}", owner.unwrap_or_default()));
+        crate::secret::needs_hash(hashed, name, value)
+    }
+
     /// Validate and store a setting. Returns the notification to deliver and the file to
-    /// write, once the lock is released.
+    /// write, once the lock is released. A password ([`State::needs_hash`]) is hashed here,
+    /// under the lock, unless the caller already did.
     ///
     /// # Errors
     /// The status and the validation message.
@@ -522,6 +544,13 @@ impl State {
         name: &str,
         value: &str,
     ) -> Result<Changed, (Status, String)> {
+        let hashed;
+        let value = if self.needs_hash(caller, name, value)? {
+            hashed = crate::secret::hash(value).map_err(|e| (Status::ERROR, e))?;
+            hashed.as_str()
+        } else {
+            value
+        };
         let (handle, key) = self
             .resolve(caller, name)
             .ok_or((Status::NOT_FOUND, format!("unknown setting {name}")))?;
@@ -530,25 +559,6 @@ impl State {
             .map(|p| p.name().to_owned())
             .unwrap_or_default();
         let config_path = self.paths.plugin_config(&owner);
-        let hashed;
-        let value = if self.hashed.contains(&format!("{owner}.{key}"))
-            && !value.is_empty()
-            && !crate::secret::is_hash(value)
-        {
-            if value.chars().count() < crate::rcon::MIN_PASSWORD {
-                return Err((
-                    Status::INVALID_ARGUMENT,
-                    format!(
-                        "{name}: use at least {} characters",
-                        crate::rcon::MIN_PASSWORD
-                    ),
-                ));
-            }
-            hashed = crate::secret::hash(value).map_err(|e| (Status::ERROR, e))?;
-            hashed.as_str()
-        } else {
-            value
-        };
         let record = self
             .plugin_mut(handle)
             .ok_or((Status::NOT_FOUND, String::new()))?;

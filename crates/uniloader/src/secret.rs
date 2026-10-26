@@ -4,6 +4,7 @@
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
 use password_hash::rand_core::OsRng;
+use uniloader_api::Status;
 use uniloader_core::console::{self, Line};
 use uniloader_core::script;
 
@@ -18,6 +19,24 @@ pub fn shown(value: &str) -> &'static str {
     } else {
         "<set>"
     }
+}
+
+/// Whether `value` for the setting `name`, kept as a hash when `hashed`, is a password to
+/// hash before it is stored: neither empty nor a hash already, and long enough. Cheap, so a
+/// caller can ask under the state lock and [`hash`] (Argon2, tens of ms) without it.
+///
+/// # Errors
+/// A password shorter than [`crate::rcon::MIN_PASSWORD`].
+pub fn needs_hash(hashed: bool, name: &str, value: &str) -> Result<bool, (Status, String)> {
+    if !hashed || value.is_empty() || is_hash(value) {
+        return Ok(false);
+    }
+    let min = crate::rcon::MIN_PASSWORD;
+    if value.chars().count() < min {
+        let message = format!("{name}: use at least {min} characters");
+        return Err((Status::INVALID_ARGUMENT, message));
+    }
+    Ok(true)
 }
 
 /// Hash a password for storage. Returns the PHC string (`$argon2id$...`).
