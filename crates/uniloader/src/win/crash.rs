@@ -129,6 +129,15 @@ static REPORTS: OnceLock<PathBuf> = OnceLock::new();
 static PREVIOUS: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(core::ptr::null_mut());
 /// Crashes written this session: one dump is enough, a second fault in the filter is not.
 static CRASHES: AtomicUsize = AtomicUsize::new(0);
+/// Crash handlers running now (the filter, or a stack overflow waiting for its dump).
+static HANDLING: AtomicUsize = AtomicUsize::new(0);
+/// When the last crash handler finished, on [`clock`]; 0: none did.
+static HANDLED_AT: AtomicU64 = AtomicU64::new(0);
+/// How long after a crash handler finished the process may take to end. Still answering
+/// after that, it lived on (Wine ends only the thread of an overflow on a loader thread; a
+/// game can survive a crash on a thread of its own): the watchdog watches again, and a next
+/// crash gets its own report.
+const SURVIVED_AFTER: Duration = Duration::from_secs(30);
 /// The overflow dumper's events ([`start_overflow_dumper`]).
 static DUMPER: OnceLock<(usize, usize)> = OnceLock::new();
 /// The stack overflow being dumped: its exception and its thread.
@@ -322,9 +331,11 @@ unsafe fn report_crash(pointers: *const EXCEPTION_POINTERS, thread: u32) {
 /// filter that was there before.
 unsafe extern "system" fn on_crash(pointers: *const EXCEPTION_POINTERS) -> i32 {
     if CRASHES.fetch_add(1, Ordering::AcqRel) == 0 {
+        handling(true);
         // SAFETY: the OS passes a valid record for the duration of the filter, raised on this
         // thread.
         unsafe { report_crash(pointers, GetCurrentThreadId()) };
+        handling(false);
     }
     let previous = PREVIOUS.load(Ordering::Acquire);
     if previous.is_null() {
@@ -404,6 +415,7 @@ unsafe extern "system" fn on_exception(pointers: *mut EXCEPTION_POINTERS) -> i32
         return CONTINUE_SEARCH;
     };
     if CRASHES.fetch_add(1, Ordering::AcqRel) == 0 {
+        handling(true);
         OVERFLOW.store(pointers, Ordering::Release);
         // SAFETY: plain query; live event handles; the wait times out.
         unsafe {
@@ -411,8 +423,44 @@ unsafe extern "system" fn on_exception(pointers: *mut EXCEPTION_POINTERS) -> i32
             let _ = SetEvent(handle(asked));
             WaitForSingleObject(handle(done), OVERFLOW_DUMP_MS);
         }
+        handling(false);
     }
     CONTINUE_SEARCH
+}
+
+/// A crash handler starts (`true`) or is done. Atomics and a clock read only: it runs on a
+/// crashed thread.
+fn handling(started: bool) {
+    if started {
+        HANDLING.fetch_add(1, Ordering::AcqRel);
+    } else {
+        HANDLED_AT.store(clock().max(1), Ordering::Release);
+        HANDLING.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// For the watchdog: whether a crash is being handled, or was so recently that the process
+/// may still be ending. A crash the process outlived (its window `hwnd` answers well after the
+/// handler was done; one stuck in the engine's own crash reporter does not) is forgotten
+/// here, so the watchdog and the filter work again; `true` while it has to stay quiet.
+fn crash_in_hand(hwnd: HWND) -> bool {
+    if CRASHES.load(Ordering::Acquire) == 0 {
+        return false;
+    }
+    if HANDLING.load(Ordering::Acquire) > 0 {
+        return true;
+    }
+    let done = HANDLED_AT.load(Ordering::Acquire);
+    let grace = u64::try_from(SURVIVED_AFTER.as_millis()).unwrap_or(u64::MAX);
+    if done == 0 || clock().saturating_sub(done) < grace || !answers(hwnd) {
+        return true;
+    }
+    CRASHES.store(0, Ordering::Release);
+    log::warn!(
+        "reports: the game lived on after a crash (its report is written); the freeze \
+         watchdog watches again, and a next crash gets its own report"
+    );
+    false
 }
 
 /// The process's main window: its largest visible, unowned top-level window.
@@ -527,7 +575,8 @@ pub(super) fn watch(tell: fn(&Seen)) {
                 let Some(hwnd) = window else { continue };
                 // A crash is being handled (its dump, the engine's own crash reporter): the
                 // silent window is that, not a freeze.
-                if CRASHES.load(Ordering::Acquire) > 0 {
+                if crash_in_hand(hwnd) {
+                    silent_since = None;
                     continue;
                 }
                 // A freeze that began before the load was said keeps counting.
