@@ -81,6 +81,17 @@ pub(super) struct Renderer {
     started: Instant,
     /// Number of the next submission.
     frame: u64,
+    /// What the last frame failed with, said once while it lasts.
+    failing: Option<String>,
+}
+
+/// Says `what` went wrong once while it keeps going wrong: a lost device or a swapchain the
+/// overlay cannot draw on fails every frame the same way.
+fn say_once(failing: &mut Option<String>, what: String) {
+    if failing.as_deref() != Some(what.as_str()) {
+        log::warn!("{what} (said once while it lasts)");
+        *failing = Some(what);
+    }
 }
 
 // SAFETY: Vulkan handles and function tables, used under the tracking lock only.
@@ -158,6 +169,7 @@ impl Renderer {
             gui: Gui::new(),
             started: Instant::now(),
             frame: 1,
+            failing: None,
         })
     }
 
@@ -187,7 +199,10 @@ impl Renderer {
                     self.targets.insert(key, target);
                 }
                 Err(e) => {
-                    log::warn!("Vulkan overlay: no target for the swapchain ({e})");
+                    say_once(
+                        &mut self.failing,
+                        format!("Vulkan overlay: no target for the swapchain ({e})"),
+                    );
                     return None;
                 }
             }
@@ -219,7 +234,11 @@ impl Renderer {
             linear: target.linear,
         };
         if let Err(e) = record(&pass, slot, &mut self.textures, &self.gui, output, frame) {
-            log::warn!("Vulkan overlay frame not recorded: {e}");
+            say_once(
+                &mut self.failing,
+                format!("Vulkan overlay frame not recorded: {e}"),
+            );
+            self.resend_textures();
             return None;
         }
         let stages = vec![vk::PipelineStageFlags::ALL_COMMANDS; p.waits.len()];
@@ -239,7 +258,6 @@ impl Renderer {
                 .and_then(|()| self.gpu.device.queue_submit(p.queue, &[submit], slot.fence))
         };
         if let Err(e) = submitted {
-            log::warn!("Vulkan overlay submit failed: {e}");
             // The fence may be reset with nothing to signal it; a fresh signalled one keeps
             // the next present of this image from waiting out the timeout every time.
             let info = vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
@@ -251,11 +269,27 @@ impl Renderer {
                     slot.fence = fresh;
                 }
             }
+            say_once(
+                &mut self.failing,
+                format!("Vulkan overlay submit failed: {e}"),
+            );
+            self.resend_textures();
             return None;
         }
         slot.pending = Some(frame);
         self.frame += 1;
+        if let Some(e) = self.failing.take() {
+            log::info!("Vulkan overlay frames draw again (they failed with: {e})");
+        }
         Some(slot.done)
+    }
+
+    /// After a frame that was not submitted: the texture uploads it recorded never ran, but
+    /// egui counts them as sent (the font atlas only comes once), so the overlay would draw
+    /// nothing or garbage from then on. A fresh egui sends every texture whole again; the
+    /// old images go as their ids are set anew.
+    fn resend_textures(&mut self) {
+        self.gui = Gui::new();
     }
 
     /// Release what no pending submission can use any more.
