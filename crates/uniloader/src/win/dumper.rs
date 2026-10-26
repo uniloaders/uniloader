@@ -45,7 +45,8 @@ pub(super) const DUMP_WAIT_MS: u32 = 60_000;
 /// The export rundll32 calls.
 const ENTRY: &str = "UniloaderDumper";
 
-/// What the game asks for, in the shared mapping.
+/// What the game asks for, in the shared mapping. Both processes write it, so it is only
+/// ever touched through raw pointers with volatile accesses, never through a reference.
 #[repr(C)]
 struct Request {
     /// The thread that raised the exception.
@@ -54,11 +55,18 @@ struct Request {
     with_exception: u32,
     /// The game's `EXCEPTION_POINTERS`, an address in the game's process.
     pointers: u64,
+    /// Which request this is; the game counts up.
+    seq: u32,
+    /// The helper's answer: the `seq` it served, then `done`.
+    answered: u32,
     /// The helper's answer: 1 written.
     written: u32,
     /// Where the dump goes, NUL terminated.
     path: [u16; PATH_LEN],
 }
+
+/// The last request's number, game side (under [`BUSY`]).
+static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// The game's side: handle values (a `HANDLE` is not `Sync`) and the mapping's view.
 struct Link {
@@ -214,23 +222,35 @@ pub(super) fn dump(
     if wide.len() >= PATH_LEN || BUSY.swap(true, Ordering::AcqRel) {
         return None;
     }
-    let request = std::ptr::with_exposed_provenance_mut::<Request>(link.view);
-    // SAFETY: the view is mapped for the process and sized for one `Request`; only this
-    // function writes it, one call at a time (`BUSY`), while the helper waits for `ask`.
+    let r = std::ptr::with_exposed_provenance_mut::<Request>(link.view);
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_millis(DUMP_WAIT_MS.into());
+    // SAFETY: the view is mapped for the process and sized for one `Request`; this side writes
+    // the request one call at a time (`BUSY`). The helper may still be finishing an earlier
+    // request that timed out, so every access is volatile through the raw pointer, and its
+    // `done` counts only once `answered` names this request.
     let answer = unsafe {
-        let r = &mut *request;
-        r.thread = exception.map_or(0, |(_, t)| t);
-        r.with_exception = u32::from(exception.is_some());
-        r.pointers = exception.map_or(0, |(p, _)| p.expose_provenance() as u64);
-        r.written = 0;
-        r.path[..wide.len()].copy_from_slice(&wide);
-        r.path[wide.len()] = 0;
+        (&raw mut (*r).thread).write_volatile(exception.map_or(0, |(_, t)| t));
+        (&raw mut (*r).with_exception).write_volatile(u32::from(exception.is_some()));
+        let pointers = exception.map_or(0, |(p, _)| p.expose_provenance() as u64);
+        (&raw mut (*r).pointers).write_volatile(pointers);
+        let path = (&raw mut (*r).path).cast::<u16>();
+        for (i, unit) in wide.iter().chain([&0]).enumerate() {
+            path.add(i).write_volatile(*unit);
+        }
+        (&raw mut (*r).seq).write_volatile(seq);
         let _ = SetEvent(handle(link.ask));
-        let waited = WaitForSingleObject(handle(link.done), DUMP_WAIT_MS);
-        if waited == WAIT_OBJECT_0 {
-            (r.written == 1).then_some(true)
-        } else {
-            Some(false)
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            let left = u32::try_from(left.as_millis()).unwrap_or(DUMP_WAIT_MS);
+            if WaitForSingleObject(handle(link.done), left) != WAIT_OBJECT_0 {
+                break Some(false);
+            }
+            // A late answer to a request that timed out: wait on for ours.
+            if (&raw const (*r).answered).read_volatile() == seq {
+                break ((&raw const (*r).written).read_volatile() == 1).then_some(true);
+            }
         }
     };
     BUSY.store(false, Ordering::Release);
@@ -315,21 +335,38 @@ fn serve(pid: u32) -> Result<(), String> {
         if woke != WAIT_OBJECT_0 {
             return Ok(());
         }
-        // SAFETY: the game wrote the request before setting `ask` and waits for `done`.
-        let r = unsafe { &mut *request };
-        let len = r.path.iter().position(|c| *c == 0).unwrap_or(PATH_LEN);
-        let path = PathBuf::from(String::from_utf16_lossy(&r.path[..len]));
-        let exception = (r.with_exception == 1).then(|| MINIDUMP_EXCEPTION_INFORMATION {
-            ThreadId: r.thread,
+        let r = request;
+        // SAFETY: the game wrote the request before setting `ask`; the mapping is sized for
+        // one `Request`, and the game's process may write it too, hence volatile accesses
+        // through the raw pointer only.
+        let (seq, thread, with_exception, pointers, path) = unsafe {
+            let units = (&raw const (*r).path).cast::<u16>();
+            let path: Vec<u16> = (0..PATH_LEN)
+                .map(|i| units.add(i).read_volatile())
+                .take_while(|c| *c != 0)
+                .collect();
+            (
+                (&raw const (*r).seq).read_volatile(),
+                (&raw const (*r).thread).read_volatile(),
+                (&raw const (*r).with_exception).read_volatile(),
+                (&raw const (*r).pointers).read_volatile(),
+                PathBuf::from(String::from_utf16_lossy(&path)),
+            )
+        };
+        let exception = (with_exception == 1).then(|| MINIDUMP_EXCEPTION_INFORMATION {
+            ThreadId: thread,
             ExceptionPointers: std::ptr::with_exposed_provenance_mut(
-                usize::try_from(r.pointers).unwrap_or(0),
+                usize::try_from(pointers).unwrap_or(0),
             ),
             // The pointers are the game's, read from its memory.
             ClientPointers: BOOL(1),
         });
         let written = super::crash::write_dump_of(minidump, process, pid, &path, exception);
-        r.written = u32::from(written);
-        // SAFETY: a live event.
-        let _ = unsafe { SetEvent(done) };
+        // SAFETY: as above; the answer names the request it belongs to, and `done` follows.
+        unsafe {
+            (&raw mut (*r).written).write_volatile(u32::from(written));
+            (&raw mut (*r).answered).write_volatile(seq);
+            let _ = SetEvent(done);
+        }
     }
 }
