@@ -128,17 +128,41 @@ struct Prompt {
     can_send: bool,
 }
 
-/// The report dialog's answer: send, save, or (closed) leave it for the next start.
+/// What the player's answer to a report prompt does: the `report` verb to run, or `None` to
+/// leave the report for later. Only the buttons decide; closing the prompt (X, Escape) or
+/// "Not now" leaves it undecided, so it is offered again at the next start.
+fn verb(answer: UiAnswer, can_send: bool) -> Option<&'static str> {
+    match (answer, can_send) {
+        (UiAnswer::ACCEPTED, true) => Some("send"),
+        (UiAnswer::ACCEPTED, false) | (UiAnswer::CANCELLED, true) => Some("desktop"),
+        _ => None,
+    }
+}
+
+/// The report dialog's answer: send, save, or leave it for the next start.
 unsafe extern "C" fn answered(ctx: *mut c_void, _id: u64, answer: UiAnswer, _text: Str) {
     // SAFETY: `ctx` is the `Prompt` leaked in `ready`, read here once and never freed.
     let Some(prompt) = (unsafe { (ctx as *const Prompt).as_ref() }) else {
         return;
     };
-    let verb = match (answer, prompt.can_send) {
-        (UiAnswer::ACCEPTED, true) => "send",
-        (UiAnswer::ACCEPTED, false) | (UiAnswer::CANCELLED, true) => "desktop",
-        _ => return,
+    let Some(verb) = verb(answer, prompt.can_send) else {
+        // Taken down because it was decided elsewhere (`done`): that said what happened.
+        if answer != UiAnswer::CLOSED {
+            log::info!(
+                "report {}: left undecided, nothing saved or sent; it is offered again at the \
+                 next start, or `uniloader.report send|desktop {}` decides now",
+                prompt.name,
+                prompt.name
+            );
+        }
+        return;
     };
+    let chosen = if verb == "send" {
+        "send it to the mod authors"
+    } else {
+        "save it to the Desktop"
+    };
+    log::info!("report {}: the player chose to {chosen}", prompt.name);
     if let Some(host) = crate::host() {
         // Answered on the render thread; saving copies a zip and sending starts an upload.
         host.console_post(&format!("uniloader.report {verb} {}", prompt.name));
@@ -180,4 +204,24 @@ fn done(host: &Host, f: &[String]) {
     notices::passing(None, UiNotice::NOTICE, level, title, &text, DONE_SECONDS);
     // A hidden overlay draws nothing until told it has something to show.
     crate::shared::recount();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{verb, UiAnswer};
+
+    #[test]
+    fn only_a_button_decides_closing_the_prompt_leaves_it_for_later() {
+        // With somewhere to send it: Send / Save to Desktop.
+        assert_eq!(verb(UiAnswer::ACCEPTED, true), Some("send"));
+        assert_eq!(verb(UiAnswer::CANCELLED, true), Some("desktop"));
+        // Without: Save to Desktop / Not now.
+        assert_eq!(verb(UiAnswer::ACCEPTED, false), Some("desktop"));
+        assert_eq!(verb(UiAnswer::CANCELLED, false), None);
+        for can_send in [true, false] {
+            for gone in [UiAnswer::DISMISSED, UiAnswer::CLOSED, UiAnswer::SUPPRESSED] {
+                assert_eq!(verb(gone, can_send), None, "{gone:?}");
+            }
+        }
+    }
 }

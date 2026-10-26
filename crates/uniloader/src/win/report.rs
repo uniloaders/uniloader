@@ -815,7 +815,7 @@ pub(super) fn command(args: &str) -> (Status, Vec<String>) {
             Some((name, path)) => {
                 let shown = path.display().to_string();
                 deliver(topics::REPORT_DONE, &[&name, "saved", &shown]);
-                (Status::OK, vec![format!("saved to {shown}")])
+                (Status::OK, vec![format!("report {name} saved to {shown}")])
             }
             None => (Status::NOT_FOUND, vec![format!("cannot save {rest}")]),
         },

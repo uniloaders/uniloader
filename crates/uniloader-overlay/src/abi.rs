@@ -67,13 +67,18 @@ pub struct UiAnswer(pub u32);
 impl UiAnswer {
     /// The confirming button, or Enter in an input dialog.
     pub const ACCEPTED: UiAnswer = UiAnswer(0);
-    /// The cancelling button, Escape, or the window's close button.
+    /// The cancelling button.
     pub const CANCELLED: UiAnswer = UiAnswer(1);
     /// Taken down by [`OverlayApi::close`].
     pub const CLOSED: UiAnswer = UiAnswer(2);
     /// Not shown: the user ticked "Don't show again" on a dialog with the same
     /// [`DialogDesc::remember`] key before.
     pub const SUPPRESSED: UiAnswer = UiAnswer(3);
+    /// Gone without a choice: Escape, Back, the window's close button, or a provider that
+    /// lost or could not show it. A dialog whose cancel button does something (not only
+    /// "no") takes this as "decide later"; for the others it is the same as
+    /// [`UiAnswer::CANCELLED`].
+    pub const DISMISSED: UiAnswer = UiAnswer(4);
 }
 
 /// Which widget [`OverlayApi::widget`] adds.
