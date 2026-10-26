@@ -164,16 +164,47 @@ unsafe fn write_over(address: usize, bytes: &[u8]) -> Result<Vec<u8>, Status> {
     Ok(original)
 }
 
-/// Whether this address already carries a hook of a kind that cannot be stacked.
+impl Installed {
+    /// The bytes this hook wrote over, as `(start, length)`.
+    fn span(&self) -> (usize, usize) {
+        match self {
+            Installed::Patch { address, original } => (*address, original.len()),
+            Installed::Vtable { slot, .. } => (*slot, core::mem::size_of::<usize>()),
+            Installed::Detour { detour } => (detour.target, detour.original.len()),
+        }
+    }
+
+    fn verb(&self) -> &'static str {
+        match self {
+            Installed::Patch { .. } => "patched",
+            Installed::Vtable { .. } => "replaced",
+            Installed::Detour { .. } => "detoured",
+        }
+    }
+}
+
+/// Whether `len` bytes from `address` would land on a hook already there.
+///
+/// Refused: any hook that starts at the same address, and any hook of *another* plugin whose
+/// bytes overlap. Two plugins writing into each other's bytes can only be undone in the
+/// reverse order, and they stop in whatever order they like: a patch over the tail of a
+/// detour's jump, removed after the detour, writes half a jump to a stopped plugin back into
+/// the game. One plugin's own overlapping hooks are undone in reverse order by
+/// [`remove_all`], so they stay allowed.
 ///
 /// Callers hold the registry from this check until the hook is recorded, so two plugins
 /// hooking one address at once cannot both pass it.
-fn already_hooked(hooks: &[Entry], address: usize) -> Option<&'static str> {
-    hooks.iter().find_map(|entry| match entry.installed {
-        Installed::Patch { address: at, .. } if at == address => Some("patched"),
-        Installed::Detour { ref detour } if detour.target == address => Some("detoured"),
-        Installed::Vtable { slot, .. } if slot == address => Some("replaced"),
-        _ => None,
+fn already_hooked(
+    hooks: &[Entry],
+    plugin: PluginHandle,
+    address: usize,
+    len: usize,
+) -> Option<&'static str> {
+    let end = address.saturating_add(len);
+    hooks.iter().find_map(|entry| {
+        let (start, length) = entry.installed.span();
+        let overlaps = start < end && address < start.saturating_add(length);
+        (start == address || (overlaps && entry.plugin != plugin)).then(|| entry.installed.verb())
     })
 }
 
@@ -207,7 +238,7 @@ pub(super) fn patch(
         return Err(Status::INVALID_ARGUMENT);
     }
     let mut hooks = registry();
-    if let Some(how) = already_hooked(&hooks, address) {
+    if let Some(how) = already_hooked(&hooks, plugin, address, bytes.len()) {
         log::error!("refusing to patch {address:#X}: already {how} by another hook");
         return Err(Status::ALREADY_EXISTS);
     }
@@ -239,13 +270,18 @@ pub(super) fn vtable(
     // SAFETY: an object with a virtual table starts with a pointer to it, which the check
     // above established is readable.
     let table = unsafe { object.cast::<*mut c_void>().read() } as usize;
-    let slot = table + index as usize * pointer_size;
+    // A garbage table pointer near the top of the address space must be refused, not
+    // overflow (which panics across the C boundary in a debug build).
+    let slot = (index as usize)
+        .checked_mul(pointer_size)
+        .and_then(|offset| table.checked_add(offset))
+        .ok_or(Status::INVALID_ARGUMENT)?;
     if !is_writable_region(slot, pointer_size) {
         log::error!("refusing to hook vtable slot {index}: {slot:#X} is not writable");
         return Err(Status::INVALID_ARGUMENT);
     }
     let mut hooks = registry();
-    if let Some(how) = already_hooked(&hooks, slot) {
+    if let Some(how) = already_hooked(&hooks, plugin, slot, pointer_size) {
         log::error!("refusing to hook vtable slot {index}: already {how}");
         return Err(Status::ALREADY_EXISTS);
     }
@@ -295,7 +331,8 @@ pub(super) fn detour_with(
         return Err(Status::INVALID_ARGUMENT);
     }
     let mut hooks = registry();
-    if let Some(how) = already_hooked(&hooks, target as usize) {
+    // The shortest jump here; the stolen length is checked again once it is known.
+    if let Some(how) = already_hooked(&hooks, plugin, target as usize, 5) {
         log::error!("refusing to detour {target:p}: already {how}");
         return Err(Status::ALREADY_EXISTS);
     }
@@ -309,6 +346,10 @@ pub(super) fn detour_with(
             replacement as usize,
             ready,
             |at, bytes| {
+                if let Some(how) = already_hooked(&hooks, plugin, at, bytes.len()) {
+                    log::error!("the jump at {at:#X} would cover bytes already {how}");
+                    return Err(Status::ALREADY_EXISTS);
+                }
                 // `install` only ever asks for the target's own entry bytes, inside the
                 // readable window; the enclosing `unsafe` block carries the obligation.
                 write_over(at, bytes)
@@ -440,4 +481,50 @@ pub(crate) fn console_lines() -> Vec<String> {
             format!("{} [{name}] {what}: {}", entry.id, entry.note)
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn patch_at(plugin: u32, address: usize, len: usize) -> Entry {
+        Entry {
+            id: 0,
+            plugin: PluginHandle(plugin),
+            name: String::new(),
+            note: String::new(),
+            installed: Installed::Patch {
+                address,
+                original: vec![0; len],
+            },
+        }
+    }
+
+    #[test]
+    fn another_plugins_bytes_are_off_limits_and_ones_own_overlap() {
+        let hooks = [patch_at(1, 0x1000, 6)];
+        // The same start is refused for anyone.
+        assert_eq!(
+            already_hooked(&hooks, PluginHandle(1), 0x1000, 2),
+            Some("patched")
+        );
+        assert_eq!(
+            already_hooked(&hooks, PluginHandle(2), 0x1000, 2),
+            Some("patched")
+        );
+        // Bytes inside the patch: refused for another plugin, allowed for the owner.
+        assert_eq!(
+            already_hooked(&hooks, PluginHandle(2), 0x1003, 4),
+            Some("patched")
+        );
+        assert_eq!(already_hooked(&hooks, PluginHandle(1), 0x1003, 4), None);
+        // A range that ends where the patch starts, or starts where it ends, is clear.
+        assert_eq!(already_hooked(&hooks, PluginHandle(2), 0x0FFB, 5), None);
+        assert_eq!(already_hooked(&hooks, PluginHandle(2), 0x1006, 5), None);
+        // One that runs into it from below is not.
+        assert_eq!(
+            already_hooked(&hooks, PluginHandle(2), 0x0FFC, 5),
+            Some("patched")
+        );
+    }
 }
