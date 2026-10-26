@@ -47,12 +47,16 @@ fn decode(bytes: &[u8]) -> String {
     }
 }
 
-/// Whether the report is about the executable `exe` (a file name, lower case).
+/// Whether the report is about the executable `exe` (a file name, lower case): the file
+/// name of its `AppPath` or `OriginalFilename` is `exe` itself, not merely ends with it.
 fn is_about(text: &str, exe: &str) -> bool {
     text.lines().any(|line| {
         let line = line.to_lowercase();
-        (line.starts_with("apppath=") || line.starts_with("originalfilename="))
-            && line.trim_end().ends_with(exe)
+        let Some((key, value)) = line.split_once('=') else {
+            return false;
+        };
+        (key == "apppath" || key == "originalfilename")
+            && value.trim_end().rsplit(['\\', '/']).next() == Some(exe)
     })
 }
 
@@ -114,6 +118,14 @@ mod tests {
         assert_eq!(decoded, text);
         assert!(is_about(&decoded, "trainsimworld.exe"));
         assert!(!is_about(&decoded, "other.exe"));
+        assert!(
+            !is_about(&decoded, "simworld.exe"),
+            "a longer name ending the same"
+        );
+        assert!(is_about(
+            "OriginalFilename=TrainSimWorld.exe",
+            "trainsimworld.exe"
+        ));
         assert!(!is_about(
             "LoadedModule[0]=C:\\TrainSimWorld.exe",
             "trainsimworld.exe"
