@@ -6,9 +6,11 @@
 //! loaded at start is looked for for a while (games that load it at run time, through SDL or
 //! GLFW), and never loaded by the overlay itself, so a `Direct3D` game is not touched.
 //!
-//! The renderer belongs to the context that was current when it was made. A frame from
-//! another context (a game that recreated its context, or presents from two) builds a new
-//! one; the old one's objects are left to its context, which may be gone already.
+//! The renderer belongs to the context that was current when it was made. Once only other
+//! contexts presented for a while (a game that recreated its context), a new one is built;
+//! the old one's objects are left to its context, which may be gone already. A game that
+//! presents from two contexts keeps the first one's: rebuilding at every switch compiled
+//! shaders and leaked a renderer each frame.
 
 // FFI module: the detour, Win32 and WGL calls.
 #![allow(unsafe_code)]
@@ -59,6 +61,28 @@ struct GlOverlay {
     gui: Gui,
     painter: painter::Painter,
     started: Instant,
+    /// When its context last presented, shown or not.
+    own_present: Instant,
+}
+
+/// Notes a frame of `context`; whether the overlay may draw in it (see the module docs).
+fn follow_context(slot: &mut Option<GlOverlay>, context: HGLRC) -> bool {
+    let Some(overlay) = slot.as_mut() else {
+        return true;
+    };
+    if overlay.context == context {
+        overlay.own_present = Instant::now();
+        return true;
+    }
+    if overlay.own_present.elapsed() < super::REPLACED_AFTER {
+        return false;
+    }
+    log::info!("the game presents from another OpenGL context; the overlay follows it");
+    // Its objects belong to the other context: left to it, not deleted from this one.
+    if let Some(old) = slot.take() {
+        std::mem::forget(old);
+    }
+    true
 }
 
 /// Hook `wglSwapBuffers` once it is clear the game draws with `OpenGL`: `opengl32.dll` is
@@ -167,17 +191,11 @@ fn frame(hdc: HDC) {
     }
     wnd::subclass(hwnd.0);
     subscribers(host, hdc, context, hwnd, size);
-    if !shared::is_visible() {
+    let ours = OVERLAY.with_borrow_mut(|slot| follow_context(slot, context));
+    if !ours || !shared::is_visible() {
         return;
     }
     OVERLAY.with_borrow_mut(|slot| {
-        if slot.as_ref().is_some_and(|o| o.context != context) {
-            log::info!("the game made another OpenGL context current; the overlay follows it");
-            // Its objects belong to the other context: left to it, not deleted from this one.
-            if let Some(old) = slot.take() {
-                std::mem::forget(old);
-            }
-        }
         if slot.is_none() {
             *slot = create(context);
         }
@@ -217,6 +235,7 @@ fn create(context: HGLRC) -> Option<GlOverlay> {
                 gui: Gui::new(),
                 painter,
                 started: Instant::now(),
+                own_present: Instant::now(),
             })
         }
         Err(e) => {

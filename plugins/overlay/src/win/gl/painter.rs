@@ -155,9 +155,13 @@ impl Painter {
                 glow::DEPTH_TEST,
                 glow::STENCIL_TEST,
                 glow::FRAMEBUFFER_SRGB,
+                glow::RASTERIZER_DISCARD,
             ] {
                 gl.disable(cap);
             }
+            // A game that left channels masked (after a depth-only pass) would get a
+            // half-drawn overlay, or none.
+            gl.color_mask(true, true, true, true);
             gl.use_program(Some(self.program));
             #[allow(clippy::cast_precision_loss, reason = "pixel sizes")]
             gl.uniform_2_f32(
@@ -260,8 +264,13 @@ impl Painter {
             ] {
                 gl.tex_parameter_i32(glow::TEXTURE_2D, name, i32::try_from(value).unwrap_or(0));
             }
+            // The pixels come from memory: a pixel unpack buffer the game left bound would be
+            // read instead, at their address as an offset.
+            gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
             gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
             gl.pixel_store_i32(glow::UNPACK_ROW_LENGTH, 0);
+            gl.pixel_store_i32(glow::UNPACK_SKIP_PIXELS, 0);
+            gl.pixel_store_i32(glow::UNPACK_SKIP_ROWS, 0);
             let data = glow::PixelUnpackData::Slice(Some(&pixels));
             match delta.pos {
                 None => gl.tex_image_2d(
@@ -373,8 +382,11 @@ struct Saved {
     viewport: [i32; 4],
     scissor_box: [i32; 4],
     blend: [i32; 6],
-    unpack: [i32; 2],
-    enabled: [(u32, bool); 6],
+    /// Alignment, row length, skipped pixels and rows.
+    unpack: [i32; 4],
+    unpack_buffer: i32,
+    color_mask: [bool; 4],
+    enabled: [(u32, bool); 7],
 }
 
 impl Saved {
@@ -407,7 +419,14 @@ impl Saved {
                     get(glow::BLEND_EQUATION_RGB),
                     get(glow::BLEND_EQUATION_ALPHA),
                 ],
-                unpack: [get(glow::UNPACK_ALIGNMENT), get(glow::UNPACK_ROW_LENGTH)],
+                unpack: [
+                    get(glow::UNPACK_ALIGNMENT),
+                    get(glow::UNPACK_ROW_LENGTH),
+                    get(glow::UNPACK_SKIP_PIXELS),
+                    get(glow::UNPACK_SKIP_ROWS),
+                ],
+                unpack_buffer: get(glow::PIXEL_UNPACK_BUFFER_BINDING),
+                color_mask: [true; 4],
                 enabled: [
                     glow::BLEND,
                     glow::SCISSOR_TEST,
@@ -415,11 +434,15 @@ impl Saved {
                     glow::DEPTH_TEST,
                     glow::STENCIL_TEST,
                     glow::FRAMEBUFFER_SRGB,
+                    glow::RASTERIZER_DISCARD,
                 ]
                 .map(|cap| (cap, gl.is_enabled(cap))),
             };
             gl.get_parameter_i32_slice(glow::VIEWPORT, &mut saved.viewport);
             gl.get_parameter_i32_slice(glow::SCISSOR_BOX, &mut saved.scissor_box);
+            let mut mask = [1i32; 4];
+            gl.get_parameter_i32_slice(glow::COLOR_WRITEMASK, &mut mask);
+            saved.color_mask = mask.map(|on| on != 0);
             saved
         }
     }
@@ -452,8 +475,17 @@ impl Saved {
             let [src_rgb, dst_rgb, src_a, dst_a, eq_rgb, eq_a] = self.blend.map(unsigned);
             gl.blend_func_separate(src_rgb, dst_rgb, src_a, dst_a);
             gl.blend_equation_separate(eq_rgb, eq_a);
-            gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, self.unpack[0]);
-            gl.pixel_store_i32(glow::UNPACK_ROW_LENGTH, self.unpack[1]);
+            let [alignment, row_length, skip_pixels, skip_rows] = self.unpack;
+            gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, alignment);
+            gl.pixel_store_i32(glow::UNPACK_ROW_LENGTH, row_length);
+            gl.pixel_store_i32(glow::UNPACK_SKIP_PIXELS, skip_pixels);
+            gl.pixel_store_i32(glow::UNPACK_SKIP_ROWS, skip_rows);
+            gl.bind_buffer(
+                glow::PIXEL_UNPACK_BUFFER,
+                id(self.unpack_buffer).map(glow::NativeBuffer),
+            );
+            let [red, green, blue, alpha] = self.color_mask;
+            gl.color_mask(red, green, blue, alpha);
             for (cap, on) in self.enabled {
                 if on {
                     gl.enable(cap);
