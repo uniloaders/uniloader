@@ -18,14 +18,18 @@ use crate::notices::Answered;
 use crate::registry::{Panel, Subscriber};
 
 /// Fill one panel body. `false` when the owner is not running or faulted inside.
+///
+/// The guard sits inside [`frame::with`]: a hardware fault is unwound by the structured
+/// handler, which skips destructors on the way, so with the guard outside, `with`'s restore
+/// was skipped and the token kept pointing at this call's dead `egui::Ui`.
 pub(crate) fn panel(host: &Host, panel: &Panel, ui: &mut egui::Ui, token: u64) -> bool {
     let owner_name = panel.id.split_once('.').map_or("", |(owner, _)| owner);
-    host.guarded(PluginRef::from_raw(panel.owner), || {
-        frame::with(token, panel.owner, owner_name, ui, || {
+    frame::with(token, panel.owner, owner_name, ui, || {
+        host.guarded(PluginRef::from_raw(panel.owner), || {
             // SAFETY: `draw` and `ctx` are what the owner registered together, and the
             // owner promised the callback is valid while it runs; the name lives for the call.
             unsafe { (panel.draw)(panel.ctx as *mut c_void, Str::new(&panel.name), token) };
-        });
+        })
     })
     .is_ok()
 }
